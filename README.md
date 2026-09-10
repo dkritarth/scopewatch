@@ -1,8 +1,8 @@
-# Workplace agent monitor
+# Scopewatch
 
-Working title for our Nebius x NVIDIA Global AI Hackathon project. The final name is undecided.
+Working title for our Nebius x NVIDIA Global AI Hackathon project.
 
-We are exploring a monitoring tool that helps teams detect when an AI agent moves beyond its authorized task or access boundaries. It would examine the agent's activity and available reasoning traces, compare them with workplace permissions and the user's request, and give reviewers evidence of suspicious behavior.
+Scopewatch is an early-stage concept for reviewing whether an AI agent stays within the task and permissions it was given. It would collect observable actions, available reasoning summaries or traces, and authorization context, then give a human reviewer a clear evidence trail when an agent appears to move outside its scope.
 
 **Status: initial concept and repository setup.** There is no runnable application yet. The interface, architecture, models, and feature scope remain open for team discussion.
 
@@ -40,8 +40,8 @@ See the [submission checklist](docs/hackathon.md) for source-linked requirements
 ## Start here
 
 ```bash
-git clone https://github.com/dkritarth/Nebius-x-NVIDIA-Global-AI-Hackathon-Dummy-Name-.git
-cd Nebius-x-NVIDIA-Global-AI-Hackathon-Dummy-Name-
+git clone https://github.com/dkritarth/scopewatch.git
+cd scopewatch
 ```
 
 Read this README and [CONTRIBUTING.md](CONTRIBUTING.md), then discuss a proposal through an issue. There are no dependencies to install or application commands to run yet. Add verified setup, configuration, run, and demo instructions with the first implementation.
@@ -50,6 +50,8 @@ Read this README and [CONTRIBUTING.md](CONTRIBUTING.md), then discuss a proposal
 | --- | --- |
 | [docs/](docs/README.md) | Hackathon notes, repository governance, and team discussion |
 | [docs/ideas/gpt-6-notes.md](docs/ideas/gpt-6-notes.md) | Suggestions written by GPT-6 via Codex, pending team review |
+| [docs/ideas/gemini-3.8-flash-notes.md](docs/ideas/gemini-3.8-flash-notes.md) | Alternative ideation proposals written by Gemini 3.8 Flash, pending team review |
+| [BUILDING.md](BUILDING.md) | Working notes and an API-equivalent model/token cost ledger |
 | [.github/](.github/) | Issue templates, PR template, labels, and protection configuration |
 | [AGENTS.md](AGENTS.md) | Instructions for coding agents contributing here |
 
