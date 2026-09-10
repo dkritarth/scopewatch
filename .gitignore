@@ -1,0 +1,26 @@
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Dependencies and generated output
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+.next/
+coverage/
+.pytest_cache/
+# Private runtime artifacts
+traces/
+logs/
+*.log
+# Local editor and OS state
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

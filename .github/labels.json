@@ -1,0 +1,67 @@
+[
+  {
+    "name": "type: idea",
+    "color": "D4C5F9",
+    "description": "Product or architecture proposal"
+  },
+  {
+    "name": "type: task",
+    "color": "0075CA",
+    "description": "Agreed work with completion criteria"
+  },
+  {
+    "name": "type: bug",
+    "color": "D73A4A",
+    "description": "Reproducible incorrect behavior"
+  },
+  {
+    "name": "type: docs",
+    "color": "0075CA",
+    "description": "Documentation work"
+  },
+  {
+    "name": "area: monitoring",
+    "color": "5319E7",
+    "description": "Agent telemetry, reasoning, and detection"
+  },
+  {
+    "name": "area: permissions",
+    "color": "B60205",
+    "description": "Access policy and authorization"
+  },
+  {
+    "name": "area: ui",
+    "color": "C5DEF5",
+    "description": "Reviewer experience"
+  },
+  {
+    "name": "area: infrastructure",
+    "color": "0052CC",
+    "description": "Hosting and runtime integration"
+  },
+  {
+    "name": "area: evaluation",
+    "color": "BFDADC",
+    "description": "Scenarios and monitor quality"
+  },
+  {
+    "name": "priority: high",
+    "color": "D93F0B",
+    "description": "Work the team considers urgent"
+  },
+  {
+    "name": "priority: normal",
+    "color": "FBCA04",
+    "description": "Normal priority"
+  },
+  {
+    "name": "status: needs-discussion",
+    "color": "D4C5F9",
+    "description": "Decision needed before implementation"
+  },
+  {
+    "name": "status: blocked",
+    "color": "E4E669",
+    "description": "Cannot proceed; describe the dependency"
+  }
+]
