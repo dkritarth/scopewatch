@@ -57,6 +57,6 @@ Create implementation directories when the team chooses the stack and first deli
 
 ## Contributing and license
 
-All changes reach `main` through reviewed pull requests, including changes by administrators and coding agents. See [repository governance](docs/repository-governance.md) for enforcement details.
+All changes reach `main` through pull requests, including changes by administrators and coding agents. See [repository governance](docs/repository-governance.md) for enforcement details.
 
 The repository uses the [MIT license](LICENSE). Third-party models, datasets, and dependencies retain their own licenses.

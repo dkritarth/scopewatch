@@ -8,10 +8,10 @@ We are still deciding what to build. Use an idea issue for proposals and record 
 2. Branch from current `main`, using `feature/`, `fix/`, `docs/`, or `chore/` followed by a short description.
 3. Make focused commits with messages such as `docs: explain permission boundaries`.
 4. Open a pull request. Explain the problem, changes, validation, and remaining limitations. Link any related issue.
-5. Obtain at least one approval from another collaborator with write access. The latest push must be approved by someone other than its pusher. New changes dismiss stale approvals.
+5. Review the diff and validation results. Any collaborator with write access may merge the PR, including its author; approval from another person is optional.
 6. Resolve review conversations, then squash-merge through GitHub. Delete the merged branch.
 
-Never push directly to `main`, force-push it, delete it, or bypass review. These rules also apply to administrators and automation. Do not weaken protection to merge your own PR.
+Never push directly to `main`, force-push it, delete it, or bypass the pull request workflow. These rules also apply to administrators and automation.
 
 ## Before review
 

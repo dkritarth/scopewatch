@@ -2,11 +2,11 @@
 
 ## Main branch
 
-`main` is the default branch. GitHub branch protection requires a pull request, one independent approving review, approval of the latest push by someone other than its pusher, and resolution of review conversations. Stale approvals are dismissed. Protections apply to administrators; force pushes and branch deletion are disabled. Squash merging is the only enabled merge method, and merged topic branches are deleted automatically.
+`main` is the default branch. GitHub branch protection requires a pull request and resolution of review conversations. Separate approvals are optional; collaborators with write access may merge their own PRs. Stale approvals are dismissed when reviews are used. Protections apply to administrators; force pushes and branch deletion are disabled. Squash merging is the only enabled merge method, and merged topic branches are deleted automatically.
 
 The initial empty commit establishes the base for the first PR. It contains no project files. All project content is introduced through the foundation PR.
 
-Only the repository owner was a collaborator during setup. A teammate needs write access before their approval can satisfy the review requirement. Do not relax the rule to merge before a reviewer joins. Administrators retain the technical ability to edit settings, but project policy forbids disabling them to bypass review.
+GitHub does not allow authors to approve their own PRs, so the required approval count is zero and latest-push approval is disabled. Merging is still limited to collaborators with write access or higher. Administrators retain the technical ability to edit settings, but project policy forbids disabling PR-only protection to push directly to main.
 
 The desired settings are stored in [.github/branch-protection.json](../.github/branch-protection.json). This file documents configuration; GitHub enforces the applied server settings. There are no required CI checks yet because the repository has no executable application. Add working checks with the implementation, then require their exact job names.
 

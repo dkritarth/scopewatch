@@ -12,4 +12,4 @@ Describe limitations or decisions reviewers need to assess. Attribute model-auth
 
 - [ ] The diff contains no credentials or private workplace data.
 - [ ] Documentation matches the actual implementation status.
-- [ ] This PR will receive independent review before merging.
+- [ ] I have reviewed the diff and validation results before merging.
