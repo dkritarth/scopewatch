@@ -4,13 +4,14 @@ This file is a small project diary for the parts of the build that are easy to f
 
 The numbers below are shadow prices. Work performed through a ChatGPT or Codex subscription is not automatically an API charge. We use the published API rates only to make the compute easier to compare across runs.
 
-## Astra thread ledger
+## Model run ledger
 
-The current workspace does not expose the Astra thread's raw usage export. The row is therefore an honest placeholder, not an estimate. Fill in the token columns from the thread or API usage record when available.
+The current workspace does not expose raw usage exports for interactive sessions. The rows below are honest placeholders, not estimates. Fill in the token columns from thread or API usage records when available.
 
 | Run | Date | Interface | Model | Uncached input | Cached input | Cache writes | Output | API-equivalent cost | Evidence/status |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | Astra thread for this repo | 2026-09-09 | Codex | GPT-6 Astra | unavailable | unavailable | unavailable | unavailable | pending usage export | User-reported run; no raw counters are present in this repository |
+| Alternative ideation review | 2026-09-09 | T3 Code / Antigravity | Gemini 3.8 Flash | unavailable | unavailable | unavailable | unavailable | pending usage export | T3 Code Antigravity session run |
 
 Do not replace `unavailable` with zero. Zero means the counter was measured and found to be zero.
 
