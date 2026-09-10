@@ -13,7 +13,7 @@ The desired settings are stored in [.github/branch-protection.json](../.github/b
 An administrator can restore the recorded settings with:
 
 ```bash
-gh api --method PUT repos/dkritarth/Nebius-x-NVIDIA-Global-AI-Hackathon-Dummy-Name-/branches/main/protection --input .github/branch-protection.json
+gh api --method PUT repos/dkritarth/scopewatch/branches/main/protection --input .github/branch-protection.json
 ```
 
 See GitHub's [protected branch documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches).
