@@ -4,5 +4,6 @@
 - [Repository governance](repository-governance.md) explains collaboration settings and labels.
 - [GPT-6 discussion notes](ideas/gpt-6-notes.md) contain model-authored suggestions, pending team review.
 - [Gemini 3.8 Flash discussion notes](ideas/gemini-3.8-flash-notes.md) contain alternative proposals (active gateway, taint tracking, two-tier monitor), pending team review.
+- [PR #4 discussion record](ideas/pr-4-discussion-record.md) preserves the chronological proposals, reviews, human feedback, technical notes, and open decisions from the ideation PR.
 
 Record accepted product and architecture decisions here when the team makes them. No product stack or feature set has been approved yet.
