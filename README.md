@@ -50,6 +50,7 @@ Read this README and [CONTRIBUTING.md](CONTRIBUTING.md), then discuss a proposal
 | --- | --- |
 | [docs/](docs/README.md) | Hackathon notes, repository governance, and team discussion |
 | [docs/ideas/gpt-6-notes.md](docs/ideas/gpt-6-notes.md) | Suggestions written by GPT-6 via Codex, pending team review |
+| [docs/ideas/gemini-3.8-flash-notes.md](docs/ideas/gemini-3.8-flash-notes.md) | Alternative ideation proposals written by Gemini 3.8 Flash, pending team review |
 | [BUILDING.md](BUILDING.md) | Working notes and an API-equivalent model/token cost ledger |
 | [.github/](.github/) | Issue templates, PR template, labels, and protection configuration |
 | [AGENTS.md](AGENTS.md) | Instructions for coding agents contributing here |
