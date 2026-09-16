@@ -41,6 +41,8 @@ run isolation, and fixture provenance. CSS includes narrow-screen layouts, visib
 focus indicators, reduced-motion support, and light/dark palettes. Controls use native
 buttons, labels, semantic lists, a skip link, and a polite result-count status region.
 
-Browser validation is intentionally deferred to the parent task. Check keyboard focus
-on run/event selection, empty-state recovery, screen-reader announcements, 320px and
-desktop layouts, zoom, and both color schemes. Unit tests do not verify rendering.
+Parent browser validation used local headless Chromium. Run/event selection, keyboard
+run selection and retained focus, status/search filters, empty evidence, and reset passed.
+No JavaScript errors or horizontal overflow were observed at 320, 390, 768, or 1440px.
+Light and dark modes rendered. Screen-reader behavior, zoom, and other browsers remain
+unverified. The shared T3 preview host was unavailable. Unit tests do not verify rendering.

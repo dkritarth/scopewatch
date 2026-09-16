@@ -107,6 +107,7 @@ h1 { margin: 0; font-size: clamp(1.8rem, 3vw, 2.4rem); line-height: 1.1; }
 }
 .panel-heading h2 { margin: 0; font-size: 1.15rem; }
 .panel-heading p { margin: 5px 0 0; color: var(--slate-500); font-size: 0.88rem; }
+.runs-panel > .panel-heading, .evidence-panel > .panel-heading { flex-direction: column; gap: 4px; }
 
 .run-buttons { display: grid; gap: 10px; margin-bottom: 18px; }
 .run-button {
