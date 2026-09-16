@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any
 from .models import TaskScope, ScopeClassification, ScopeClassificationEnum
 from .cot_capture import ReasoningCapture
 from .scope_auditor import ScopeAuditor
+from .diagnostics import AuditError, AuditErrorCode
 
 class AuditPipeline:
     """Wires reasoning capture and scope auditing together."""
@@ -24,31 +25,31 @@ class AuditPipeline:
             trace = self.capture.extract(raw_output, source_model, metadata)
         except Exception:
             return ScopeClassification(status=ScopeClassificationEnum.HOLD, confidence=0.0,
-                                       reason="Reasoning capture failed.")
+                                       reason="Reasoning capture failed.", error_code=AuditErrorCode.CAPTURE_ERROR)
         if not trace:
             return ScopeClassification(
                 status=ScopeClassificationEnum.HOLD,
                 confidence=0.0,
                 reason="No reasoning available to audit.",
+                error_code=AuditErrorCode.MISSING_REASONING,
                 flagged_excerpts=[]
             )
 
         try:
-            # We wrap the auditor call to catch malformed responses and errors
             return self.auditor.audit(task_scope, trace)
-        except ValueError:
-            # Handles json decode errors or validation errors
+        except AuditError as error:
             return ScopeClassification(
                 status=ScopeClassificationEnum.HOLD,
                 confidence=0.0,
-                reason="Malformed or ungrounded auditor response.",
+                reason=str(AuditError(error.error_code)),
+                error_code=error.error_code,
                 flagged_excerpts=[]
             )
         except Exception:
-            # Handles general timeout or connection errors
             return ScopeClassification(
                 status=ScopeClassificationEnum.HOLD,
                 confidence=0.0,
                 reason="Auditor error or timeout.",
+                error_code=AuditErrorCode.AUDITOR_ERROR,
                 flagged_excerpts=[]
             )

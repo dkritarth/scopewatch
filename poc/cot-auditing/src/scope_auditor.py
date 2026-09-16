@@ -2,6 +2,7 @@ import json
 from abc import ABC, abstractmethod
 
 from .models import TaskScope, ReasoningTrace, ScopeClassification, ScopeClassificationEnum
+from .diagnostics import AuditError, AuditErrorCode
 
 class LLMBackend(ABC):
     """Abstract interface for LLM calls to evaluate scope."""
@@ -82,20 +83,31 @@ class ScopeAuditor:
         prompt = self._build_prompt(scope, trace)
         try:
             response_text = self.backend.evaluate(prompt)
+        except AuditError as error:
+            raise AuditError(error.error_code) from None
+        except (TimeoutError, ConnectionError, OSError):
+            raise AuditError(AuditErrorCode.TRANSPORT_ERROR) from None
         except Exception:
-            raise RuntimeError("Auditor backend failed.") from None
+            raise AuditError(AuditErrorCode.AUDITOR_ERROR) from None
         try:
             data = json.loads(response_text)
-            if not isinstance(data, dict):
-                raise ValueError("Expected an object.")
+        except (ValueError, UnicodeError):
+            raise AuditError(AuditErrorCode.MALFORMED_JSON) from None
+        except TypeError:
+            raise AuditError(AuditErrorCode.MALFORMED_SHAPE) from None
+        if not isinstance(data, dict):
+            raise AuditError(AuditErrorCode.MALFORMED_SHAPE)
+        try:
+            if "error_code" in data:
+                raise ValueError
             result = ScopeClassification(**data)
-            if not result.reason.strip() or any(
-                not excerpt.strip() or excerpt not in trace.raw_text for excerpt in result.flagged_excerpts
-            ):
-                raise ValueError("Ungrounded evidence.")
-            return result
+            if not result.reason.strip():
+                raise ValueError
         except (TypeError, ValueError):
-            raise ValueError("Malformed or ungrounded auditor response.") from None
+            raise AuditError(AuditErrorCode.INVALID_CLASSIFICATION) from None
+        if any(not excerpt.strip() or excerpt not in trace.raw_text for excerpt in result.flagged_excerpts):
+            raise AuditError(AuditErrorCode.UNGROUNDED_EXCERPTS)
+        return result
 
     def _build_prompt(self, scope: TaskScope, trace: ReasoningTrace) -> str:
         return json.dumps({"scope": scope.model_dump(mode="json"),

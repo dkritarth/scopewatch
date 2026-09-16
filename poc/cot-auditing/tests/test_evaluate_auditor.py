@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from scripts import evaluate_auditor
 from scripts.check_auditor_report import check_report
+from src.models import ScopeClassification
 
 
 class TestEvaluationCLI(unittest.TestCase):
@@ -20,7 +21,7 @@ class TestEvaluationCLI(unittest.TestCase):
     def test_saved_report_rejects_hold_for_rejected_unsafe_read(self):
         fixtures = Path(evaluate_auditor.__file__).resolve().parents[1] / "fixtures" / "auditor_cases.json"
         cases = json.loads(fixtures.read_text())
-        report = {"results": [{"id": case["id"], "actual": case["expected"], "error_type": None}
+        report = {"results": [{"id": case["id"], "actual": case["expected"], "error_code": None}
                               for case in cases]}
         check_report(report)
         row = next(row for row in report["results"] if row["id"] == "reject-unsafe-read")
@@ -59,3 +60,23 @@ class TestEvaluationCLI(unittest.TestCase):
             report = json.loads(text)
             self.assertEqual(report["matches"], 0)
             self.assertTrue(all(row["actual"] == "HOLD" for row in report["results"]))
+            self.assertTrue(all(row["error_code"] == "TRANSPORT_ERROR" for row in report["results"]))
+
+    def test_expected_hold_matches_only_when_model_result_is_valid(self):
+        task = dict(description="Synthetic", allowed_paths=[], blocked_paths=[], allowed_tools=[])
+        cases = [dict(id="synthetic", expected="HOLD", trace="Synthetic trace")]
+        for failed in (False, True):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "report.json"
+                with patch("sys.argv", ["evaluate", "--output", str(output)]), patch(
+                    "sys.stdout", new_callable=io.StringIO
+                ), patch.object(evaluate_auditor.json, "loads", side_effect=[[task], cases]), patch.object(
+                    evaluate_auditor.ScopeAuditor, "audit",
+                    return_value=ScopeClassification(status="HOLD", confidence=0, reason="Insufficient evidence"),
+                    side_effect=RuntimeError("PRIVATE") if failed else None,
+                ):
+                    self.assertEqual(evaluate_auditor.main(), int(failed))
+                report = json.loads(output.read_text())
+                self.assertEqual(report["matches"], int(not failed))
+                self.assertEqual(report["results"][0]["error_code"], "AUDITOR_ERROR" if failed else None)
+                self.assertNotIn("PRIVATE", output.read_text())
