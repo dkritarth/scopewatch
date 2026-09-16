@@ -20,7 +20,11 @@ class AuditPipeline:
     ) -> ScopeClassification:
         """Extract reasoning from model output and audit it against the task scope."""
         
-        trace = self.capture.extract(raw_output, source_model, metadata)
+        try:
+            trace = self.capture.extract(raw_output, source_model, metadata)
+        except Exception:
+            return ScopeClassification(status=ScopeClassificationEnum.HOLD, confidence=0.0,
+                                       reason="Reasoning capture failed.")
         if not trace:
             return ScopeClassification(
                 status=ScopeClassificationEnum.HOLD,
@@ -32,19 +36,19 @@ class AuditPipeline:
         try:
             # We wrap the auditor call to catch malformed responses and errors
             return self.auditor.audit(task_scope, trace)
-        except ValueError as ve:
+        except ValueError:
             # Handles json decode errors or validation errors
             return ScopeClassification(
                 status=ScopeClassificationEnum.HOLD,
                 confidence=0.0,
-                reason=f"Malformed auditor response: {str(ve)}",
+                reason="Malformed or ungrounded auditor response.",
                 flagged_excerpts=[]
             )
-        except Exception as e:
+        except Exception:
             # Handles general timeout or connection errors
             return ScopeClassification(
                 status=ScopeClassificationEnum.HOLD,
                 confidence=0.0,
-                reason=f"Auditor error or timeout: {str(e)}",
+                reason="Auditor error or timeout.",
                 flagged_excerpts=[]
             )

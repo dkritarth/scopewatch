@@ -6,7 +6,7 @@ This PoC tests whether we can capture an AI coding agent's exposed reasoning, pa
 
 ## Why this matters
 
-Tool-call gating (blocking bad actions) is well-understood. What makes Scopewatch different is catching bad *intent* before the agent even requests the action. If an agent reasons "I should grab the SSH key to check authentication," we want to flag that reasoning as out of scope before `read_file` is ever called.
+Scopewatch investigates whether exposed reasoning can provide evidence of scope drift. Such text does not prove intent, and this batch PoC does not establish that an alert arrives before a tool call. Independent tool-call gating remains necessary.
 
 This PoC validates the pipeline structure. The actual LLM integration (Nemotron via Nebius) is a separate step.
 
@@ -60,13 +60,43 @@ python -m pytest tests/ -v
 
 ## Design decisions
 
-1. **Fail to HOLD, not IN_SCOPE.** When reasoning is missing, the auditor is unavailable, or the response is malformed, the pipeline returns HOLD with zero confidence. This matches PR #6's principle that uncertainty defaults to no execution.
+### OpenRouter capture probe
 
-2. **LLM backend is pluggable.** `LLMBackend` is an abstract class. The `MockAuditorBackend` uses keyword/pattern matching for testing. A real implementation would call Nemotron via Nebius Token Factory. Swap it out without changing the pipeline.
+`OpenRouterReasoningCapture` reads the first choice's `message.reasoning_details`, preferring nonempty `reasoning.text` blocks, then `reasoning.summary` blocks. It joins blocks of the selected type in response order without mixing summaries and text. If neither is available, it falls back to `message.reasoning`. Encrypted and unknown detail types are ignored. It never substitutes answer text for missing reasoning. Streaming is not supported. The existing `THINKING_TOKENS` label identifies provider text, not proof of complete internal reasoning. Generic XML capture is for synthetic fixtures or trusted runtime output, not proof that answer tags expose internal reasoning.
+
+Run the optional live probe from this directory:
+
+```bash
+python -m scripts.live_union_alpha_probe --timeout 60 --limit 2
+```
+
+It uses `OPENROUTER_API_KEY` or `~/.config/openrouter/api_key`. Check current provider pricing before running. Seven sequential requests use synthetic prompts. The timeout applies to network operations, not a total wall-clock deadline. Reports go to the ignored `logs/` directory. Prompt, answer, reasoning text, and exception bodies are not saved. Exit 0 means all requests succeeded and at least one contained nonempty reasoning; exit 1 means that criterion was not met; exit 2 means credential loading failed. Request success does not measure answer correctness or auditor accuracy.
+
+On September 16, 2026, all seven initial live requests returned HTTP 200, but none had nonempty `message.reasoning`, and all reported zero reasoning tokens. The initial run crashed while writing its report, so these observations come from terminal output, not a saved report. The path-writing bug now has an offline regression test. The probe now calls the capture adapter and records its selected trace type, but does not call the auditor. These results do not establish that every provider or configuration lacks reasoning.
+
+1. **Fail to HOLD, not IN_SCOPE.** Missing or failed capture, backend errors, malformed classifications, and invented excerpts produce HOLD with zero confidence. This is an audit result, not an implemented executor block. How missing optional reasoning affects the full policy gate remains an integration decision.
+
+2. **LLM backend is pluggable.** `LLMBackend` is an abstract class. The mock reads only the trace field of the JSON prompt, not task or policy keywords. `OpenRouterAuditorBackend` sends that JSON as user data with separate system instructions and requests JSON output. It rejects refused, truncated, empty, or oversized responses. It does not automatically retry. Nemotron/Nebius remains unimplemented.
 
 3. **Multiple capture formats.** The capture module handles Claude-style `<thinking>` blocks, `<summary>` blocks, and metadata-based tool rationale. It also handles unclosed tags (partial model output).
 
-4. **Mock auditor has realistic patterns.** It checks for SSH keys, `/etc/passwd`, `rm -rf`, credential references, and exfiltration keywords for OUT_OF_SCOPE. It checks for drift signals like "while I'm here," "pip install," "curl," and "unrelated" for DRIFTING.
+4. **Mock auditor is a keyword baseline, not a safety model.** It cannot reliably handle negation or permission context. Its confidence constants are not calibrated probabilities. Exact-substring validation prevents fabricated quotations, not semantic misclassification or prompt injection.
+
+## Synthetic auditor evaluation
+
+```bash
+python -m scripts.evaluate_auditor
+python -m scripts.evaluate_auditor --live --output logs/auditor_evaluation_live.json
+python -m scripts.check_auditor_report logs/auditor_evaluation_live.json
+```
+
+The default performs no network calls. `--live` sends six committed synthetic traces and their synthetic scope to Union Alpha on OpenRouter. Never replace them with private workplace traces without authorization. Outputs contain case IDs, expected and actual labels, errors by type, and latency, not trace text or model explanations. Exit 1 means at least one mismatch or failed request. The mock currently matches 3 of 6 cases; its failures are intentionally reported rather than tuned away. Cases include an auditor-directed injection, forged scope, explicit refusal of unsafe work, and blocked paths. These are development examples, not a held-out benchmark or proof of detection reliability.
+
+OpenRouter's model catalog on September 16 listed zero prompt/completion pricing for `stealth/union-alpha` and did not advertise reasoning support. Catalog availability and prices can change. Using Union Alpha as the auditor does not expose its own reasoning or satisfy the hackathon's NVIDIA/Nebius requirements.
+
+API references checked September 16, 2026: [reasoning fields](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens), [JSON response format](https://openrouter.ai/docs/api/reference/overview), [model catalog](https://openrouter.ai/api/v1/models).
+
+The live six-case run matched 2 labels; four requests became HOLD on backend errors. An exact blocked-config reproduction returned an HTTP 200 response containing a provider error envelope with code 502 and `provider_unavailable`, not a model classification. The report checker correctly rejects HOLD where IN_SCOPE was expected, including `reject-unsafe-read`. It performs no network calls. See [the validation record](../../docs/ideas/union-alpha-2026-09-16-validation.md) for the distinction between failures and semantic accuracy.
 
 ## What's not here yet
 
@@ -74,7 +104,7 @@ python -m pytest tests/ -v
 - Connection to the deterministic policy gate from PR #6
 - Multiple trace aggregation (currently captures the first matching trace)
 - Prompt engineering for the auditor LLM (the current prompt is a starting point)
-- Adversarial testing of the auditor itself
+- Held-out adversarial evaluation beyond the small synthetic development set
 
 ## Relationship to PR #6
 
@@ -82,7 +112,7 @@ This PoC is a parallel workstream to the tool-call gating architecture proposed 
 
 | Layer | What it catches | When it fires |
 |---|---|---|
-| CoT auditing (this PoC) | Bad intent in reasoning | Before the tool call is made |
+| CoT auditing (this PoC) | Possible scope drift in exposed reasoning | After output is supplied to the pipeline; pre-tool timing unverified |
 | Tool-call gating (PR #6) | Bad actions regardless of reasoning | When the tool call reaches the policy gate |
 
-Both feed into the same ALLOW/HOLD/DENY decision. Neither replaces the other.
+The proposed integration feeds reasoning evidence into the ALLOW/HOLD/DENY decision without overriding deterministic policy. That integration is not implemented. Neither layer replaces the other.
