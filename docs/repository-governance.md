@@ -8,7 +8,7 @@ The initial empty commit establishes the base for the first PR. It contains no p
 
 GitHub does not allow authors to approve their own PRs, so the required approval count is zero and latest-push approval is disabled. Merging is still limited to collaborators with write access or higher. Administrators retain the technical ability to edit settings, but project policy forbids disabling PR-only protection to push directly to main.
 
-The desired settings are stored in [.github/branch-protection.json](../.github/branch-protection.json). This file documents configuration; GitHub enforces the applied server settings. There are no required CI checks yet because the repository has no executable application. Add working checks with the implementation, then require their exact job names.
+The desired settings are stored in [.github/branch-protection.json](../.github/branch-protection.json). This file documents configuration; GitHub enforces the applied server settings. The `CoT auditing tests` workflow now runs the Python PoC's offline tests. It is not yet a required status check; require the exact successful job name separately after verifying CI. This change does not modify branch protection.
 
 An administrator can restore the recorded settings with:
 
