@@ -9,6 +9,7 @@ from scripts.live_union_alpha_probe import read_api_key
 from src.models import ReasoningTrace, TaskScope, TraceType
 from src.scope_auditor import ScopeAuditor, MockAuditorBackend
 from src.openrouter_backend import OpenRouterAuditorBackend
+from src.diagnostics import AuditError, AuditErrorCode
 
 
 def main():
@@ -34,12 +35,15 @@ def main():
         try:
             classification = auditor.audit(scope, trace)
             status = classification.status.value
-            error_type = None
-        except Exception as error:
+            error_code = None
+        except AuditError as error:
             status = "HOLD"
-            error_type = type(error).__name__
+            error_code = error.error_code.value
+        except Exception:
+            status = "HOLD"
+            error_code = AuditErrorCode.AUDITOR_ERROR.value
         results.append({"id": case["id"], "expected": case["expected"], "actual": status,
-                        "match": status == case["expected"], "error_type": error_type,
+                        "match": error_code is None and status == case["expected"], "error_code": error_code,
                         "latency_seconds": round(time.monotonic() - started, 3)})
         print(json.dumps(results[-1]), flush=True)
     report = {"backend": "stealth/union-alpha" if args.live else "mock",

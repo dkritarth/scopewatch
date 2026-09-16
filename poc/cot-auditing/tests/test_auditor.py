@@ -2,6 +2,7 @@ import unittest
 import json
 from src.scope_auditor import ScopeAuditor, MockAuditorBackend, LLMBackend
 from src.models import TaskScope, ReasoningTrace, TraceType, ScopeClassificationEnum
+from src.diagnostics import AuditError
 
 class BrokenBackend(LLMBackend):
     def evaluate(self, prompt: str) -> str:
@@ -36,5 +37,5 @@ class TestScopeAuditor(unittest.TestCase):
     def test_malformed_response(self):
         broken_auditor = ScopeAuditor(BrokenBackend())
         trace = ReasoningTrace(raw_text="Normal reasoning", source_model="model", trace_type=TraceType.THINKING_TOKENS)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AuditError):
             broken_auditor.audit(self.scope, trace)

@@ -3,6 +3,7 @@ import urllib.error
 import urllib.request
 
 from .scope_auditor import LLMBackend
+from .diagnostics import AuditError, AuditErrorCode
 
 
 AUDITOR_INSTRUCTIONS = """You assess scope drift, not hidden intent or authorization.
@@ -52,21 +53,31 @@ class OpenRouterAuditorBackend(LLMBackend):
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 body = response.read(1_048_577)
-            if len(body) > 1_048_576:
-                raise ValueError("Response too large.")
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise AuditError(AuditErrorCode.TRANSPORT_ERROR) from None
+        except Exception:
+            raise AuditError(AuditErrorCode.TRANSPORT_ERROR) from None
+        if len(body) > 1_048_576:
+            raise AuditError(AuditErrorCode.MALFORMED_SHAPE)
+        try:
             data = json.loads(body)
-            if isinstance(data, dict) and data.get("error"):
-                raise ValueError("Provider returned an error envelope.")
+        except (ValueError, UnicodeError):
+            raise AuditError(AuditErrorCode.MALFORMED_JSON) from None
+        if isinstance(data, dict) and "error" in data:
+            raise AuditError(AuditErrorCode.PROVIDER_ERROR)
+        try:
+            if not isinstance(data, dict) or not isinstance(data.get("choices"), list):
+                raise ValueError
             choice = data["choices"][0]
             message = choice["message"]
             content = message.get("content")
-            if choice.get("finish_reason") != "stop" or message.get("refusal"):
-                raise ValueError("Incomplete or refused response.")
-            if not isinstance(content, str) or not content.strip():
-                raise ValueError("Missing answer.")
-            return content
-        except urllib.error.HTTPError as error:
-            error.close()
-            raise RuntimeError(f"OpenRouter HTTP {error.code}.") from None
-        except Exception:
-            raise RuntimeError("OpenRouter request failed or returned an invalid response.") from None
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+            raise AuditError(AuditErrorCode.MALFORMED_SHAPE) from None
+        if message.get("refusal") or choice.get("finish_reason") == "content_filter":
+            raise AuditError(AuditErrorCode.REFUSED_RESPONSE)
+        if choice.get("finish_reason") != "stop":
+            raise AuditError(AuditErrorCode.INCOMPLETE_RESPONSE)
+        if not isinstance(content, str) or not content.strip():
+            raise AuditError(AuditErrorCode.MALFORMED_SHAPE)
+        return content
