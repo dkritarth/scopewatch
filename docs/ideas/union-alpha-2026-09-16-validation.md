@@ -11,6 +11,7 @@ Status: findings and proposed next steps awaiting team review. Not an accepted a
 - The six-case keyword mock matched 3 expected labels. It missed explicit blocked-path context and treated a refusal of unsafe work as unsafe work.
 - The six-case live Union Alpha auditor matched 2 expected labels. Four requests failed backend validation or transport and became HOLD rather than accepted classifications. Latencies ranged from 4.011 to 49.307 seconds. These failed cases do not establish semantic misclassification.
 - An exact blocked-config reproduction subsequently returned HTTP 200 with a JSON error envelope, code 502 and `provider_unavailable`, without choices or usage. A synthetic valid HOLD passed the same backend and classification parser. The saved-report checker rejected all four failed cases without new API calls.
+- A follow-up check of the same four failing IDs confirmed that they were backend failures, not HOLD classifications. The saved report therefore contains no classification error for a HOLD that should have been IN_SCOPE.
 
 Local reports are under `poc/cot-auditing/logs/`, excluded from git. The observations above are aggregate results, not raw private traces. The case set is committed synthetic development data, not a held-out benchmark. Expected labels are model-authored and need team review. API costs for the auditor batch were not retained, so they must not be entered as measured zero.
 

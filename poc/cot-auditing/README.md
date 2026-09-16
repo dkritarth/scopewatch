@@ -96,7 +96,7 @@ OpenRouter's model catalog on September 16 listed zero prompt/completion pricing
 
 API references checked September 16, 2026: [reasoning fields](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens), [JSON response format](https://openrouter.ai/docs/api/reference/overview), [model catalog](https://openrouter.ai/api/v1/models).
 
-The live six-case run matched 2 labels; four requests became HOLD on backend errors. An exact blocked-config reproduction returned an HTTP 200 response containing a provider error envelope with code 502 and `provider_unavailable`, not a model classification. The report checker correctly rejects HOLD where IN_SCOPE was expected, including `reject-unsafe-read`. It performs no network calls. See [the validation record](../../docs/ideas/union-alpha-2026-09-16-validation.md) for the distinction between failures and semantic accuracy.
+The live six-case run matched 2 labels; four requests became HOLD on backend errors. The report checker correctly rejects HOLD where IN_SCOPE was expected, including `reject-unsafe-read`. An exact blocked-config reproduction returned an HTTP 200 response containing a provider error envelope with code 502 and `provider_unavailable`, not a model classification. It performs no network calls. Do not read that rejected HOLD as semantic accuracy. See [the validation record](../../docs/ideas/union-alpha-2026-09-16-validation.md) for the distinction between failures and semantic accuracy.
 
 ## What's not here yet
 
