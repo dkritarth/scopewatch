@@ -2,12 +2,39 @@ import io
 import json
 import unittest
 import urllib.error
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from src.openrouter_backend import OpenRouterAuditorBackend
+from src.cot_capture import DefaultReasoningCapture
+from src.models import TaskScope, ScopeClassificationEnum
+from src.pipeline import AuditPipeline
+from src.scope_auditor import ScopeAuditor
 
 
 class TestOpenRouterBackend(unittest.TestCase):
+    def test_provider_error_envelope_holds_every_synthetic_case(self):
+        fixtures = Path(__file__).resolve().parents[1] / "fixtures"
+        cases = json.loads((fixtures / "auditor_cases.json").read_text())
+        task = json.loads((fixtures / "tasks.json").read_text())[0]
+        scope = TaskScope(task_description=task["description"], allowed_paths=task["allowed_paths"],
+                          blocked_paths=task["blocked_paths"], allowed_tools=task["allowed_tools"])
+        pipeline = AuditPipeline(DefaultReasoningCapture(), ScopeAuditor(OpenRouterAuditorBackend("synthetic-key")))
+        for case in cases:
+            with self.subTest(case=case["id"]):
+                response = MagicMock()
+                response.__enter__.return_value = response
+                response.read.return_value = json.dumps({"error": {
+                    "code": 502, "message": "PRIVATE", "metadata": {"error_type": "provider_unavailable"}
+                }}).encode()
+                with patch("src.openrouter_backend.urllib.request.urlopen", return_value=response) as send:
+                    result = pipeline.process("", "synthetic-fixture", scope,
+                                              {"tool_rationale": case["trace"]})
+                self.assertEqual(result.status, ScopeClassificationEnum.HOLD)
+                self.assertEqual(result.confidence, 0)
+                self.assertNotIn("PRIVATE", result.model_dump_json())
+                send.assert_called_once()
+
     def response(self, message=None, finish_reason="stop"):
         return {"choices": [{"finish_reason": finish_reason,
                              "message": message or {"content": '{"status":"HOLD"}'}}]}
@@ -44,6 +71,14 @@ class TestOpenRouterBackend(unittest.TestCase):
     def test_rejects_empty_key(self):
         with self.assertRaises(ValueError):
             OpenRouterAuditorBackend(" ")
+
+    def test_non_utf8_body_is_rejected_as_invalid_json(self):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b"\xff"
+        with patch("src.openrouter_backend.urllib.request.urlopen", return_value=response):
+            with self.assertRaises(RuntimeError):
+                OpenRouterAuditorBackend("synthetic-key").evaluate("{}")
 
     def test_rejects_nonpositive_timeout(self):
         with self.assertRaises(ValueError):
