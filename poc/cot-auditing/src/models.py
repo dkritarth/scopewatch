@@ -4,6 +4,8 @@ from typing import List
 
 from pydantic import BaseModel, Field, ConfigDict
 
+from .diagnostics import AuditErrorCode
+
 class TraceType(str, Enum):
     """Types of reasoning traces that can be captured."""
     THINKING_TOKENS = "THINKING_TOKENS"
@@ -38,3 +40,4 @@ class ScopeClassification(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0, strict=True, allow_inf_nan=False)
     reason: str = Field(min_length=1)
     flagged_excerpts: List[str] = Field(default_factory=list)
+    error_code: AuditErrorCode | None = None
