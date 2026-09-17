@@ -8,7 +8,7 @@ are connected. Run selection and filters only change in-memory display state.
 ## Run locally
 
 Requires Node.js 20 or newer for tests and Python 3 for the static server. No npm install
-or build is needed.
+or build is needed to serve the UI or run unit tests. Browser tests have separate development dependencies.
 
 ```sh
 cd frontend
@@ -41,8 +41,18 @@ run isolation, and fixture provenance. CSS includes narrow-screen layouts, visib
 focus indicators, reduced-motion support, and light/dark palettes. Controls use native
 buttons, labels, semantic lists, a skip link, and a polite result-count status region.
 
-Parent browser validation used local headless Chromium. Run/event selection, keyboard
-run selection and retained focus, status/search filters, empty evidence, and reset passed.
-No JavaScript errors or horizontal overflow were observed at 320, 390, 768, or 1440px.
-Light and dark modes rendered. Screen-reader behavior, zoom, and other browsers remain
-unverified. The shared T3 preview host was unavailable. Unit tests do not verify rendering.
+Run the same isolated Chromium smoke test used in CI:
+
+```sh
+npm ci
+npx playwright install chromium
+npm run test:browser
+```
+
+On Linux, browser system libraries may require `npx playwright install --with-deps chromium`.
+Installation downloads development tools; the test itself serves only committed synthetic
+fixtures on an ephemeral loopback port and blocks non-local page requests. It closes the
+server and browser on success or failure. Tests cover every fixture event, keyboard focus,
+intersecting filters, empty evidence, reset, run isolation, and light/dark layouts at
+320, 390, 768, and 1440px. Screen-reader behavior, zoom, and non-Chromium browsers remain
+unverified. Unit tests alone do not verify rendering.
