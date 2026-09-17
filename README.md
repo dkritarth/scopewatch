@@ -4,7 +4,7 @@ Working title for our Nebius x NVIDIA Global AI Hackathon project.
 
 Scopewatch is an early-stage concept for reviewing whether an AI agent stays within the task and permissions it was given. It would collect observable actions, available reasoning summaries or traces, and authorization context, then give a human reviewer a clear evidence trail when an agent appears to move outside its scope.
 
-**Status: concept with a runnable reasoning-auditing PoC.** There is no integrated application yet. The interface, architecture, models, and feature scope remain open for team discussion. See [the PoC instructions](poc/cot-auditing/README.md) for offline tests and optional live OpenRouter experiments.
+**Status: concept with two independent runnable prototypes.** The [reasoning-auditing PoC](poc/cot-auditing/README.md) provides offline tests and optional live OpenRouter experiments. The [synthetic reviewer UI](frontend/README.md) lets reviewers explore replay fixtures, task scope, and event evidence. The UI does not connect to the PoC, a live agent, or an auditor. Neither prototype implements enforcement. There is no integrated application yet; the architecture, production stack, models, and feature scope remain open for team discussion.
 
 ## The problem
 
@@ -44,7 +44,7 @@ git clone https://github.com/dkritarth/scopewatch.git
 cd scopewatch
 ```
 
-Read this README and [CONTRIBUTING.md](CONTRIBUTING.md), then discuss a proposal through an issue. The Python PoC has its own dependencies and run instructions; it does not choose the application stack or implement enforcement.
+Read this README and [CONTRIBUTING.md](CONTRIBUTING.md), then discuss a proposal through an issue. See [frontend setup and tests](frontend/README.md) to run the synthetic reviewer prototype locally, and [PoC setup and tests](poc/cot-auditing/README.md) for the Python dependencies and run instructions. These prototypes do not choose the application stack or implement enforcement.
 
 | Location | Purpose |
 | --- | --- |
