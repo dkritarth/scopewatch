@@ -55,7 +55,7 @@ Read this README and [CONTRIBUTING.md](CONTRIBUTING.md), then discuss a proposal
 | [.github/](.github/) | Issue templates, PR template, labels, and protection configuration |
 | [AGENTS.md](AGENTS.md) | Instructions for coding agents contributing here |
 
-Create implementation directories when the team chooses the stack and first deliverable.
+See the [tested baseline handoff](docs/baseline-2026-09-17.md) for combined validation commands and remaining limitations. Existing prototype directories do not imply a team decision on the production stack or first integrated deliverable.
 
 ## Contributing and license
 
