@@ -38,6 +38,8 @@ Use the usage fields supplied by the run. Do not add reasoning tokens separately
 
 ## Logging rules
 
+September 16, 2026, Union Alpha via Codex extended the Python PoC. Codex token usage is unavailable. A minimal OpenRouter `stealth/union-alpha` call reported 30 prompt tokens, including 12 cached, 5 completion tokens, and cost 0. Two subsequent capture probes each reported cost 0. Auditor evaluation costs were not retained. See [validation notes](docs/ideas/union-alpha-2026-09-16-validation.md) for outcomes. These are provider-reported API observations, not subscription-cost estimates.
+
 - Record the model name and interface for every run.
 - Keep uncached input, cached input, cache writes, and output in separate columns.
 - Link to a public usage export or commit when one exists. Never commit API keys, private prompts, workplace data, or raw private traces.

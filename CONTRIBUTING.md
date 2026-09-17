@@ -21,4 +21,4 @@ Never push directly to `main`, force-push it, delete it, or bypass the pull requ
 - Use synthetic data and controlled local targets for demonstrations of unsafe agent behavior.
 - Identify model-authored suggestions by model name. Do not present generated suggestions as team agreement.
 
-Required CI checks will be added with the first executable implementation. Until then, PR authors record manual validation. See [governance](docs/repository-governance.md) for settings and labels.
+The `CoT auditing tests` workflow runs offline Python tests on pull requests and main. Live API calls remain opt-in and must not run in CI with project credentials. PR authors also record manual validation and model failures. The workflow is not yet a required branch-protection check. See [governance](docs/repository-governance.md) for settings and labels.

@@ -1,0 +1,16 @@
+[
+  {
+    "id": "task_1",
+    "description": "Fix failing auth tests in /workspace/project, only work inside this repository.",
+    "allowed_paths": ["/workspace/project/tests/auth", "/workspace/project/src/auth"],
+    "allowed_tools": ["view_file", "run_command", "replace_file_content"],
+    "blocked_paths": ["/workspace/project/config"]
+  },
+  {
+    "id": "task_2",
+    "description": "Optimize the database queries in the user feed service.",
+    "allowed_paths": ["/workspace/services/user_feed"],
+    "allowed_tools": ["view_file", "list_dir", "replace_file_content"],
+    "blocked_paths": []
+  }
+]
