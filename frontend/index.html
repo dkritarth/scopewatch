@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Scopewatch | Synthetic replay reviewer</title>
+    <link rel="stylesheet" href="./styles/reviewer.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to dashboard</a>
+    <div class="app-shell">
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">Scopewatch</p>
+          <h1>Reviewer dashboard</h1>
+          <p class="header-subtitle">Human review for agent activity within assigned task scope.</p>
+        </div>
+        <p class="safety-banner" id="synthetic-banner">
+          <strong>Synthetic replay.</strong> No actual enforcement. Preview controls change this page only.
+        </p>
+      </header>
+
+      <noscript>This synthetic replay viewer needs JavaScript. No live actions are connected.</noscript>
+      <main id="main" class="dashboard-grid" tabindex="-1">
+        <section class="panel runs-panel" aria-labelledby="runs-heading">
+          <div class="panel-heading">
+            <h2 id="runs-heading">Runs</h2>
+            <p>Three fixture replays are available.</p>
+          </div>
+          <div class="run-buttons" id="run-buttons" role="group" aria-label="Select synthetic replay run"></div>
+          <section class="scope-card" aria-labelledby="scope-heading">
+            <h3 id="scope-heading">Task scope</h3>
+            <p id="run-task"></p>
+            <ul id="run-scope" class="scope-list"></ul>
+          </section>
+        </section>
+
+        <section class="panel timeline-panel" aria-labelledby="timeline-heading">
+          <div class="panel-heading filters-heading">
+            <div>
+              <h2 id="timeline-heading">Timeline</h2>
+            <p id="timeline-count" role="status"></p>
+            </div>
+            <button type="button" id="reset-filters">Reset filters</button>
+          </div>
+          <form class="filters" id="filters" aria-label="Timeline filters">
+            <div class="field-group">
+              <label for="status-filter">Replay status</label>
+              <select id="status-filter" name="status">
+                <option value="all">All statuses</option>
+                <option value="attempted">Action: attempted</option>
+                <option value="executed">Action: executed</option>
+                <option value="blocked">Policy: blocked</option>
+                <option value="pending-approval">Policy: pending approval</option>
+              </select>
+            </div>
+            <div class="field-group grow">
+              <label for="text-filter">Search</label>
+              <input id="text-filter" name="text" type="search" placeholder="Tool, resource, or description" autocomplete="off" />
+            </div>
+          </form>
+          <ol id="timeline" class="timeline"></ol>
+          <div id="empty-state" class="empty-state" hidden>
+            <h3>No matching replay events</h3>
+            <p>Adjust the status or text filters to see more of this synthetic run.</p>
+            <button type="button" id="empty-reset">Clear filters</button>
+          </div>
+        </section>
+
+        <section class="panel evidence-panel" aria-labelledby="evidence-heading">
+          <div class="panel-heading">
+            <h2 id="evidence-heading">Selected evidence</h2>
+            <p id="evidence-caption"></p>
+          </div>
+          <article id="event-evidence" class="evidence"></article>
+          <p class="evidence-note">
+            Attempted means observed as a call, not completed. Blocked is a policy decision.
+            Execution does not imply authorization. Summaries are fixture-authored, not full reasoning
+            traces. Missing traces remain unavailable; intent is not inferred.
+          </p>
+        </section>
+      </main>
+
+      <footer class="app-footer">
+        <p>
+          Synthetic replay fixtures for interface review. Statuses separate what the fixture observed
+          from its policy outcomes. No fake execute approvals are offered or represented.
+        </p>
+      </footer>
+    </div>
+    <script type="module" src="./scripts/app.js"></script>
+  </body>
+</html>
