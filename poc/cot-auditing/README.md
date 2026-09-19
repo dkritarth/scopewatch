@@ -25,7 +25,7 @@ Agent LLM output (with exposed reasoning)
   ScopeClassification       -- IN_SCOPE / DRIFTING / OUT_OF_SCOPE / HOLD
         |
         v
-  Feed into Policy Gate     -- (future: connect to the deterministic gate from PR #6)
+  Feed into Policy Gate     -- (proposed in PR #6; not implemented)
 ```
 
 ## What's here
@@ -122,18 +122,18 @@ Evaluation uses `error_code` instead of the older `error_type`. Fallback HOLD ne
 ## What's not here yet
 
 - Actual LLM backend calling Nemotron/Nebius (needs API access)
-- Connection to the deterministic policy gate from PR #6
+- A deterministic policy gate and integration with it; PR #6 contains a proposal only
 - Multiple trace aggregation (currently captures the first matching trace)
 - Prompt engineering for the auditor LLM (the current prompt is a starting point)
 - Held-out adversarial evaluation beyond the small synthetic development set
 
 ## Relationship to PR #6
 
-This PoC is a parallel workstream to the tool-call gating architecture proposed in PR #6. They protect against different failure modes:
+This PoC is a parallel workstream to the tool-call gating architecture proposed in PR #6. The proposal is not an implemented gate or an accepted team decision. The intended responsibilities differ:
 
 | Layer | What it catches | When it fires |
 |---|---|---|
 | CoT auditing (this PoC) | Possible scope drift in exposed reasoning | After output is supplied to the pipeline; pre-tool timing unverified |
-| Tool-call gating (PR #6) | Bad actions regardless of reasoning | When the tool call reaches the policy gate |
+| Tool-call gating (PR #6 proposal, not implemented) | Would evaluate tool actions independently of reasoning | Would require integration before execution |
 
 The proposed integration feeds reasoning evidence into the ALLOW/HOLD/DENY decision without overriding deterministic policy. That integration is not implemented. Neither layer replaces the other.
