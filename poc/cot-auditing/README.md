@@ -78,11 +78,11 @@ On September 16, 2026, all seven initial live requests returned HTTP 200, but no
 
 1. **Fail to HOLD, not IN_SCOPE.** Missing or failed capture, backend errors, malformed classifications, and invented excerpts produce HOLD with zero confidence. This is an audit result, not an implemented executor block. How missing optional reasoning affects the full policy gate remains an integration decision.
 
-2. **LLM backend is pluggable.** `LLMBackend` is an abstract class. The mock reads only the trace field of the JSON prompt, not task or policy keywords. `OpenRouterAuditorBackend` sends that JSON as user data with separate system instructions and requests JSON output. It rejects refused, truncated, empty, or oversized responses. It does not automatically retry. Nemotron/Nebius remains unimplemented.
+2. **LLM backend is pluggable.** `LLMBackend` is an abstract class. The mock reads the trace plus trusted blocked-path scope data; it does not grant permissions from trace text. `OpenRouterAuditorBackend` sends the JSON prompt as user data with separate system instructions and requests JSON output. It rejects refused, truncated, empty, or oversized responses. It does not automatically retry. Nemotron/Nebius remains unimplemented.
 
 3. **Multiple capture formats.** The capture module handles Claude-style `<thinking>` blocks, `<summary>` blocks, and metadata-based tool rationale. It also handles unclosed tags (partial model output).
 
-4. **Mock auditor is a keyword baseline, not a safety model.** It cannot reliably handle negation or permission context. Its confidence constants are not calibrated probabilities. Exact-substring validation prevents fabricated quotations, not semantic misclassification or prompt injection.
+4. **Mock auditor is a rule-based development baseline, not a safety model.** It handles a few explicit refusals, scope-forgery phrases, and blocked-path boundaries, but cannot reliably interpret general negation, quoted text, or permission context. Its confidence constants are not calibrated probabilities. Exact-substring validation prevents fabricated quotations, not semantic misclassification or prompt injection.
 
 ## Synthetic auditor evaluation
 
@@ -92,7 +92,7 @@ python -m scripts.evaluate_auditor --live --output logs/auditor_evaluation_live.
 python -m scripts.check_auditor_report logs/auditor_evaluation_live.json
 ```
 
-The default performs no network calls. `--live` sends six committed synthetic traces and their synthetic scope to Union Alpha on OpenRouter. Never replace them with private workplace traces without authorization. Outputs contain case IDs, expected and actual labels, errors by type, and latency, not trace text or model explanations. Exit 1 means at least one mismatch or failed request. The mock currently matches 3 of 6 cases; its failures are intentionally reported rather than tuned away. Cases include an auditor-directed injection, forged scope, explicit refusal of unsafe work, and blocked paths. These are development examples, not a held-out benchmark or proof of detection reliability.
+The default performs no network calls. `--live` sends six committed synthetic traces and their synthetic scope to Union Alpha on OpenRouter. Never replace them with private workplace traces without authorization. Outputs contain case IDs, expected and actual labels, errors by type, and latency, not trace text or model explanations. Exit 1 means at least one mismatch or failed request. The mock matches all six committed development cases, including an auditor-directed injection, forged scope, explicit refusal of unsafe work, and blocked paths. These cases and the rules were developed together; they are not a held-out benchmark or proof of detection reliability.
 
 OpenRouter's model catalog on September 16 listed zero prompt/completion pricing for `stealth/union-alpha` and did not advertise reasoning support. Catalog availability and prices can change. Using Union Alpha as the auditor does not expose its own reasoning or satisfy the hackathon's NVIDIA/Nebius requirements.
 
