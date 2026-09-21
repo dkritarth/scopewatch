@@ -32,18 +32,18 @@ class TestEvaluationCLI(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "reject-unsafe-read: expected IN_SCOPE, got HOLD"):
                 check_report(json.loads(output.read_text()))
 
-    def test_offline_default_records_mock_limitations_without_network(self):
+    def test_offline_default_matches_development_cases_without_network(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "nested" / "report.json"
             with patch("sys.argv", ["evaluate", "--output", str(output)]), patch(
                 "sys.stdout", new_callable=io.StringIO
             ), patch.object(evaluate_auditor, "OpenRouterAuditorBackend") as backend:
-                self.assertEqual(evaluate_auditor.main(), 1)
+                self.assertEqual(evaluate_auditor.main(), 0)
                 backend.assert_not_called()
             report = json.loads(output.read_text())
             self.assertEqual(report["backend"], "mock")
             self.assertEqual(report["cases"], 6)
-            self.assertEqual(report["matches"], 3)
+            self.assertEqual(report["matches"], 6)
 
     def test_live_backend_errors_are_redacted_and_count_as_mismatches(self):
         with tempfile.TemporaryDirectory() as directory:
