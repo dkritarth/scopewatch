@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = "stealth/union-alpha"
 DEFAULT_TIMEOUT = 90
+MAX_RESPONSE_BYTES = 1_048_576
 
 
 @dataclass(frozen=True)
@@ -113,7 +114,10 @@ def http_post(url: str, payload: Dict[str, Any], api_key: str, timeout: int) -> 
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.status, json.loads(response.read().decode("utf-8"))
+            body = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(body) > MAX_RESPONSE_BYTES:
+                raise ValueError("response exceeds size limit")
+            return response.status, json.loads(body.decode("utf-8"))
     except urllib.error.HTTPError as error:
         error.close()
         raise RuntimeError(f"HTTP {error.code}") from None

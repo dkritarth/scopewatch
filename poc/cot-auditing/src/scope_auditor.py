@@ -4,6 +4,15 @@ from abc import ABC, abstractmethod
 from .models import TaskScope, ReasoningTrace, ScopeClassification, ScopeClassificationEnum
 from .diagnostics import AuditError, AuditErrorCode
 
+
+MAX_REASONING_CHARS = 65_536
+MAX_TASK_DESCRIPTION_CHARS = 16_384
+MAX_SOURCE_MODEL_CHARS = 512
+MAX_SCOPE_ITEMS = 256
+MAX_SCOPE_ITEM_CHARS = 4_096
+MAX_TOTAL_INPUT_CHARS = 131_072
+MAX_PROMPT_BYTES = 262_144
+
 class LLMBackend(ABC):
     """Abstract interface for LLM calls to evaluate scope."""
 
@@ -110,6 +119,23 @@ class ScopeAuditor:
         return result
 
     def _build_prompt(self, scope: TaskScope, trace: ReasoningTrace) -> str:
-        return json.dumps({"scope": scope.model_dump(mode="json"),
-                           "trace": {"raw_text": trace.raw_text, "trace_type": trace.trace_type.value,
-                                     "source_model": trace.source_model}})
+        scope_groups = (scope.allowed_paths, scope.allowed_tools, scope.blocked_paths)
+        if sum(len(group) for group in scope_groups) > MAX_SCOPE_ITEMS:
+            raise AuditError(AuditErrorCode.INPUT_TOO_LARGE)
+        scope_items = [item for group in scope_groups for item in group]
+        input_fields = [scope.task_description, trace.raw_text, trace.source_model, *scope_items]
+        if (
+            len(trace.raw_text) > MAX_REASONING_CHARS
+            or len(scope.task_description) > MAX_TASK_DESCRIPTION_CHARS
+            or len(trace.source_model) > MAX_SOURCE_MODEL_CHARS
+            or any(len(item) > MAX_SCOPE_ITEM_CHARS for item in scope_items)
+            or sum(len(value) for value in input_fields) > MAX_TOTAL_INPUT_CHARS
+        ):
+            raise AuditError(AuditErrorCode.INPUT_TOO_LARGE)
+
+        prompt = json.dumps({"scope": scope.model_dump(mode="json"),
+                             "trace": {"raw_text": trace.raw_text, "trace_type": trace.trace_type.value,
+                                       "source_model": trace.source_model}})
+        if len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
+            raise AuditError(AuditErrorCode.INPUT_TOO_LARGE)
+        return prompt

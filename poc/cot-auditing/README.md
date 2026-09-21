@@ -72,6 +72,8 @@ python -m scripts.live_union_alpha_probe --timeout 60 --limit 2
 
 It uses `OPENROUTER_API_KEY` or `~/.config/openrouter/api_key`. Check current provider pricing before running. Seven sequential requests use synthetic prompts. The timeout applies to network operations, not a total wall-clock deadline. Reports go to the ignored `logs/` directory. Prompt, answer, reasoning text, and exception bodies are not saved. Exit 0 means all requests succeeded and at least one contained nonempty reasoning; exit 1 means that criterion was not met; exit 2 means credential loading failed. Request success does not measure answer correctness or auditor accuracy.
 
+The live probe and auditor backend accept at most 1 MiB from any HTTP response. The auditor rejects reasoning over 65,536 characters, task descriptions over 16,384 characters, source-model names over 512 characters, more than 256 combined scope items, scope items over 4,096 characters, more than 131,072 aggregate input characters, or a serialized prompt over 262,144 bytes. Over-limit audit input fails to a sanitized HOLD before the backend is called.
+
 On September 16, 2026, all seven initial live requests returned HTTP 200, but none had nonempty `message.reasoning`, and all reported zero reasoning tokens. The initial run crashed while writing its report, so these observations come from terminal output, not a saved report. The path-writing bug now has an offline regression test. The probe now calls the capture adapter and records its selected trace type, but does not call the auditor. These results do not establish that every provider or configuration lacks reasoning.
 
 1. **Fail to HOLD, not IN_SCOPE.** Missing or failed capture, backend errors, malformed classifications, and invented excerpts produce HOLD with zero confidence. This is an audit result, not an implemented executor block. How missing optional reasoning affects the full policy gate remains an integration decision.
@@ -112,6 +114,7 @@ The live six-case run matched 2 labels; four requests became HOLD on backend err
 | `MALFORMED_SHAPE` | Invalid envelope, oversized response, missing answer, or non-object classification |
 | `INVALID_CLASSIFICATION` | Invalid fields, extra fields, confidence, status, or blank reason |
 | `UNGROUNDED_EXCERPTS` | Empty excerpts or excerpts absent from the supplied trace |
+| `INPUT_TOO_LARGE` | Reasoning, scope, model name, or serialized prompt exceeds a local limit |
 | `CAPTURE_ERROR` / `MISSING_REASONING` | Capture failed or produced no trace |
 | `AUDITOR_ERROR` | Unexpected auditor failure without a more specific diagnostic |
 
