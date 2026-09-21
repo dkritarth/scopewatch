@@ -68,3 +68,28 @@ class TestAuditFailures(unittest.TestCase):
         result = self.pipeline.process("<thinking> </thinking>", "synthetic", self.scope)
         self.assertEqual(result.status, ScopeClassificationEnum.HOLD)
         self.backend.evaluate.assert_not_called()
+
+    def test_oversized_reasoning_holds_without_calling_backend(self):
+        result = self.pipeline.process(
+            f"<thinking>{'x' * 65_537}</thinking>", "synthetic", self.scope
+        )
+        self.assertEqual(result.status, ScopeClassificationEnum.HOLD)
+        self.assertEqual(result.error_code, "INPUT_TOO_LARGE")
+        self.assertEqual(result.confidence, 0)
+        self.assertEqual(result.flagged_excerpts, [])
+        self.backend.evaluate.assert_not_called()
+
+    def test_oversized_scope_holds_without_calling_backend(self):
+        scope = TaskScope(task_description="x" * 16_385)
+        result = self.pipeline.process("<thinking>Inspect tests</thinking>", "synthetic", scope)
+        self.assertEqual(result.status, ScopeClassificationEnum.HOLD)
+        self.assertEqual(result.error_code, "INPUT_TOO_LARGE")
+        self.backend.evaluate.assert_not_called()
+
+    def test_oversized_serialized_prompt_holds_without_calling_backend(self):
+        result = self.pipeline.process(
+            f"<thinking>{'\U0001f600' * 65_536}</thinking>", "synthetic", self.scope
+        )
+        self.assertEqual(result.status, ScopeClassificationEnum.HOLD)
+        self.assertEqual(result.error_code, "INPUT_TOO_LARGE")
+        self.backend.evaluate.assert_not_called()

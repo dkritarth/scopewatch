@@ -45,6 +45,16 @@ class TestLiveProbe(unittest.TestCase):
                 probe.http_post(probe.API_URL, {}, "PRIVATE KEY", 1)
         self.assertEqual(str(raised.exception), "HTTP 429")
 
+    def test_oversized_response_is_rejected_with_a_bounded_read(self):
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b"x" * 1_048_577
+        with patch.object(probe.urllib.request, "urlopen", return_value=response):
+            with self.assertRaisesRegex(ValueError, "response exceeds size limit"):
+                probe.http_post(probe.API_URL, {}, "PRIVATE KEY", 1)
+        response.read.assert_called_once_with(1_048_577)
+
     def test_provider_reasoning_is_detected_without_retaining_text(self):
         response = {
             "choices": [{"message": {"content": "PRIVATE ANSWER", "reasoning": "PRIVATE TRACE"}}]

@@ -57,6 +57,7 @@ test("synthetic reviewer controls, evidence, keyboard focus, and layouts", { tim
       assert.equal(await runButton.getAttribute("aria-pressed"), "true");
       assert.equal(await runButton.evaluate((button) => button === document.activeElement), true);
       assert.equal(await page.locator("#run-task").innerText(), run.task);
+      assert.deepEqual(await page.locator("#run-scope li").allInnerTexts(), run.scope);
       assert.equal(await page.locator("#timeline button").count(), run.events.length);
       for (const event of run.events) {
         const eventButton = page.locator(`[data-event-id="${event.id}"]`);
@@ -64,8 +65,41 @@ test("synthetic reviewer controls, evidence, keyboard focus, and layouts", { tim
         await page.keyboard.press("Enter");
         assert.equal(await eventButton.getAttribute("aria-current"), "true");
         assert.equal(await eventButton.evaluate((button) => button === document.activeElement), true);
+        assert.equal(await eventButton.locator(".event-status").innerText(), event.statusLabel);
         assert.equal(await page.locator("#event-evidence h3").innerText(), event.title);
-        assert.match(await page.locator("#event-evidence").innerText(), /Unavailable/);
+        assert.equal(
+          await page.locator("#evidence-caption").innerText(),
+          `${run.name} • ${event.offset} • ${event.statusLabel}`,
+        );
+        assert.deepEqual(
+          await page.locator("#event-evidence > p").allInnerTexts(),
+          [`${event.tool} — ${event.resource}`, event.description, event.statusDescription],
+        );
+
+        const evidenceLists = page.locator("#event-evidence .evidence-list");
+        const interpretedEvidence = evidenceLists.nth(0);
+        assert.deepEqual(await interpretedEvidence.locator("dt").allTextContents(), [
+          "Action observation / execution",
+          "Fixture policy decision",
+          "Full reasoning trace",
+          "Reasoning summary",
+        ]);
+        assert.deepEqual(await interpretedEvidence.locator("dd").allInnerTexts(), [
+          event.execution,
+          event.policyDecision,
+          event.reasoningTrace,
+          event.reasoningSummary,
+        ]);
+
+        const fixtureEvidence = evidenceLists.nth(1);
+        assert.deepEqual(
+          await fixtureEvidence.locator("dt").allTextContents(),
+          event.evidence.map((item) => item.label),
+        );
+        assert.deepEqual(
+          await fixtureEvidence.locator("dd").allInnerTexts(),
+          event.evidence.map((item) => item.value),
+        );
       }
     }
     await page.getByRole("button", { name: runs[0].name, exact: true }).click();
