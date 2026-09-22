@@ -15,9 +15,10 @@
           <p class="eyebrow">Scopewatch</p>
           <h1>Reviewer dashboard</h1>
           <p class="header-subtitle">Human review for agent activity within assigned task scope.</p>
+          <span class="gateway-status" id="gateway-status" role="status">Initializing gateway...</span>
         </div>
         <p class="safety-banner" id="synthetic-banner">
-          <strong>Synthetic replay.</strong> No actual enforcement. Preview controls change this page only.
+          <strong>Synthetic demo gateway.</strong> This local baseline mediates only actions submitted through its synthetic demo gateway. It does not intercept arbitrary host or agent operations. No actual enforcement outside the synthetic sandbox. Preview controls change this page only.
         </p>
       </header>
 
@@ -26,7 +27,7 @@
         <section class="panel runs-panel" aria-labelledby="runs-heading">
           <div class="panel-heading">
             <h2 id="runs-heading">Runs</h2>
-            <p>Three fixture replays are available.</p>
+            <p>Select a synthetic run or replay.</p>
           </div>
           <div class="run-buttons" id="run-buttons" role="group" aria-label="Select synthetic replay run"></div>
           <section class="scope-card" aria-labelledby="scope-heading">
@@ -34,13 +35,55 @@
             <p id="run-task"></p>
             <ul id="run-scope" class="scope-list"></ul>
           </section>
+
+          <section class="simulator-card" id="simulator-panel" aria-labelledby="simulator-heading">
+            <h3 id="simulator-heading">Action simulator</h3>
+            <p class="simulator-subtitle">Simulate agent actions against task scope.</p>
+            
+            <div class="preset-group">
+              <label for="action-preset">Presets</label>
+              <select id="action-preset">
+                <option value="safe_list">Safe: List approved directory</option>
+                <option value="safe_read">Safe: Read approved invoice</option>
+                <option value="blocked_path">Blocked: Read private payroll</option>
+                <option value="traversal">Traversal: Read parent ../etc/passwd</option>
+                <option value="network">Disallowed: External HTTP request</option>
+                <option value="approval_required">Approval: Delete old report</option>
+              </select>
+            </div>
+
+            <form id="action-form" class="action-form">
+              <div class="form-row">
+                <label for="action-tool">Tool</label>
+                <input id="action-tool" name="tool" value="workspace" required />
+              </div>
+              <div class="form-row">
+                <label for="action-operation">Operation</label>
+                <input id="action-operation" name="operation" value="list_directory" required />
+              </div>
+              <div class="form-row">
+                <label for="action-resource">Resource</label>
+                <input id="action-resource" name="resource" value="invoices/approved" required />
+              </div>
+              <div class="form-row">
+                <label for="action-summary">Reasoning summary (agent-authored)</label>
+                <input id="action-summary" name="summary" value="Reviewing approved invoice listing" />
+              </div>
+              <div class="form-row">
+                <label for="action-arguments">Arguments (JSON)</label>
+                <textarea id="action-arguments" name="arguments" rows="2" placeholder="{}">{}</textarea>
+              </div>
+              <button type="submit" id="submit-action-btn" class="primary-btn">Submit simulated action</button>
+            </form>
+            <p id="action-status-msg" class="action-status-msg" role="status" hidden></p>
+          </section>
         </section>
 
         <section class="panel timeline-panel" aria-labelledby="timeline-heading">
           <div class="panel-heading filters-heading">
             <div>
               <h2 id="timeline-heading">Timeline</h2>
-            <p id="timeline-count" role="status"></p>
+              <p id="timeline-count" role="status"></p>
             </div>
             <button type="button" id="reset-filters">Reset filters</button>
           </div>
@@ -66,6 +109,16 @@
             <p>Adjust the status or text filters to see more of this synthetic run.</p>
             <button type="button" id="empty-reset">Clear filters</button>
           </div>
+
+          <section class="approvals-card" id="approvals-panel" aria-labelledby="approvals-heading">
+            <div class="approvals-header">
+              <h3 id="approvals-heading">Pending human approvals</h3>
+              <span id="pending-approvals-count" class="badge-pending">0</span>
+            </div>
+            <div id="approvals-list" class="approvals-list">
+              <p id="no-approvals-msg" class="no-approvals-msg">No pending approvals.</p>
+            </div>
+          </section>
         </section>
 
         <section class="panel evidence-panel" aria-labelledby="evidence-heading">
@@ -76,7 +129,7 @@
           <article id="event-evidence" class="evidence"></article>
           <p class="evidence-note">
             Attempted means observed as a call, not completed. Blocked is a policy decision.
-            Execution does not imply authorization. Summaries are fixture-authored, not full reasoning
+            Execution does not imply authorization. Summaries are agent-authored, not full reasoning
             traces. Missing traces remain unavailable; intent is not inferred.
           </p>
         </section>
