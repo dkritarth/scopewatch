@@ -21,4 +21,4 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - run: python -m pip install -r backend/requirements.txt
       - run: python -m pytest backend/tests -v
-      - run: python -m compileall -q backend/scopewatch backend/tests
+      - run: python -m compileall -q backend/scopewatch backend/tests scripts

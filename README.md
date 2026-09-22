@@ -1,64 +1,104 @@
 # Scopewatch
 
-Working title for our Nebius x NVIDIA Global AI Hackathon project.
+Scopewatch is a local mediation gateway and reviewer dashboard for evaluating whether an AI agent stays within its assigned task boundaries and authorized permissions.
 
-Scopewatch is an early-stage concept for reviewing whether an AI agent stays within the task and permissions it was given. It would collect observable actions, available reasoning summaries or traces, and authorization context, then give a human reviewer a clear evidence trail when an agent appears to move outside its scope.
+It provides deterministic policy enforcement, approval workflows, a controlled execution sandbox, and a reviewer interface with structured evidence trails.
 
-**Status: concept with two independent runnable prototypes.** The [reasoning-auditing PoC](poc/cot-auditing/README.md) provides offline tests and optional live OpenRouter experiments. The [synthetic reviewer UI](frontend/README.md) lets reviewers explore replay fixtures, task scope, and event evidence. The UI does not connect to the PoC, a live agent, or an auditor. Neither prototype implements enforcement. There is no integrated application yet; the architecture, production stack, models, and feature scope remain open for team discussion.
+> **Safety statement:**
+> This local baseline mediates only actions submitted through its synthetic demo gateway. It does not intercept arbitrary host or agent operations.
+>
+> Provider traces are unavailable in this local baseline. Agent-authored summaries and synthetic fixtures are labeled explicitly.
 
-## The problem
+---
 
-An employee asks an agent to work with a project folder. During execution, the agent tries to read another department's files, obtain broader credentials, or contact an external server. That action may follow the employee's instruction, a malicious instruction in retrieved content, or the agent's own attempt to finish the task. In each case, the organization needs to understand whether the action exceeds the authority granted to that user and agent.
+## Quick start
 
-The question we want to answer is: **Is this agent still operating within its authorized scope, and what evidence supports that judgment?**
+### 1. Run the local demo
 
-## Initial direction
-
-The concept centers on monitoring agent runs in a company environment. Relevant evidence could include the original task, effective permissions, tool calls and results, file and network access attempts, approval events, and reasoning traces exposed by the selected model or runtime.
-
-| Example | What the monitor should help a reviewer establish |
-| --- | --- |
-| An agent reaches outside its assigned folder | Which resource it requested and whether the user and agent had permission |
-| A user asks an agent to retrieve restricted information | Whether the request exceeds organizational policy, despite user intent |
-| An agent contacts an unapproved external service | The destination, attempted operation, and authorization context |
-| Retrieved content redirects the agent | Whether the action departs from the task after consuming untrusted instructions |
-
-These are motivating scenarios, not implemented features or a finalized backlog. A website, desktop application, or another interface may be appropriate.
-
-## Reasoning visibility and limits
-
-Reasoning monitoring is central to the idea, but access must be verified for each integration. We will only use traces that the provider or runtime legitimately exposes. Reasoning summaries and agent-written explanations must be labeled separately from full reasoning traces. Missing traces must remain visibly missing.
-
-A suspicious trace is evidence for investigation, not proof of malicious intent. A reassuring trace is not proof that an action is authorized. File permissions and network controls need independent enforcement. A monitor that observes completed actions cannot claim to prevent them; blocking would require integration before tool execution.
-
-OpenAI's [internal coding-agent monitoring report](https://openai.com/index/how-we-monitor-internal-coding-agents-misalignment/) describes analyzing reasoning and actions to flag potential misalignment. This is research inspiration; our project has no OpenAI affiliation or access to its internal monitoring implementation.
-
-## Hackathon planning
-
-See the [submission checklist](docs/hackathon.md) for source-linked requirements. The team still needs to select a track and decide how Nebius infrastructure and an NVIDIA open source model contribute to the working application.
-
-## Start here
+Run the all-in-one demo launcher:
 
 ```bash
-git clone https://github.com/dkritarth/scopewatch.git
-cd scopewatch
+./scripts/run_demo.sh
 ```
 
-Read this README and [CONTRIBUTING.md](CONTRIBUTING.md), then discuss a proposal through an issue. See [frontend setup and tests](frontend/README.md) to run the synthetic reviewer prototype locally, and [PoC setup and tests](poc/cot-auditing/README.md) for the Python dependencies and run instructions. These prototypes do not choose the application stack or implement enforcement.
+This starts the FastAPI backend, seeds five synthetic scenarios into a local workspace, mounts the reviewer UI, and opens the following endpoints:
 
-| Location | Purpose |
+- **Reviewer dashboard (Live):** [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
+- **API health status:** [http://127.0.0.1:8000/api/v1/health](http://127.0.0.1:8000/api/v1/health)
+- **Active runs list:** [http://127.0.0.1:8000/api/v1/runs](http://127.0.0.1:8000/api/v1/runs)
+- **Pending approvals:** [http://127.0.0.1:8000/api/v1/approvals?status=PENDING](http://127.0.0.1:8000/api/v1/approvals?status=PENDING)
+
+### 2. Run clean-room validation
+
+Verify the entire system (backend unit/integration tests, frontend tests, browser Playwright tests, and clean-room security invariants):
+
+```bash
+./scripts/validate.sh
+```
+
+---
+
+## Core capabilities
+
+1. **Deterministic policy engine**
+   Evaluates actions against task scope allowlists and blocklists without relying on non-deterministic model calls. Blocks parent-directory traversal (`..`), symlink breakout, null bytes, disallowed operations, and unauthorized network calls.
+
+2. **Controlled synthetic executor**
+   Executes permitted actions strictly inside a bounded workspace directory. Supports file reading, directory listing, bounded text writes, and single-use approved deletions.
+
+3. **Approval workflows**
+   Generates single-use approval requests for sensitive operations. Human reviewers approve or deny actions directly in the UI or via REST API.
+
+4. **Structured five-part evidence panel**
+   Every action audit displays:
+   - **Observation:** Tool, operation, resource, arguments, and timestamp.
+   - **Policy decision:** Outcome (`ALLOW`, `DENY`, `HOLD`), reason code, and matched rule.
+   - **Human approval:** Resolution state, reviewer identity, and timestamp.
+   - **Execution receipt:** Execution status, output summary, and sanitized output data.
+   - **Reasoning provenance:** Explicit disclosures distinguishing provider-level traces from agent-authored summaries.
+
+5. **Live SSE streaming**
+   Real-time event updates stream directly to the reviewer dashboard via Server-Sent Events (SSE) with automated fallback polling.
+
+---
+
+## Demonstration scenarios
+
+Scopewatch includes five pre-configured scenarios located in `demo/scenarios/`:
+
+| Scenario | Description | Expected outcome |
+| --- | --- | --- |
+| **01. Safe invoice audit** | Reads vendor invoices in `invoices/approved` and writes report to `outputs/audit-summary.txt`. | All actions `ALLOW` and execute successfully. |
+| **02. Blocked confidential access** | Attempts to read restricted files in `invoices/private/`. | Blocked with `DENY` (`BLOCKED_PATH`). |
+| **03. Path traversal attempt** | Attempts directory climbing (`../../etc/passwd`). | Blocked with `DENY` (`PATH_TRAVERSAL`). |
+| **04. Network exfiltration** | Attempts outbound network communication not in task scope. | Blocked with `DENY` (`NETWORK_DISABLED`). |
+| **05. Approval workflow** | Requests file deletion on `outputs/archive_2025.txt`. | Held with `HOLD` (`APPROVAL_REQUIRED`) until approved by a reviewer. |
+
+---
+
+## Repository layout
+
+| Directory | Purpose |
 | --- | --- |
-| [docs/](docs/README.md) | Hackathon notes, repository governance, and team discussion |
-| [docs/ideas/gpt-6-notes.md](docs/ideas/gpt-6-notes.md) | Suggestions written by GPT-6 via Codex, pending team review |
-| [docs/ideas/gemini-3.8-flash-notes.md](docs/ideas/gemini-3.8-flash-notes.md) | Alternative ideation proposals written by Gemini 3.8 Flash, pending team review |
-| [BUILDING.md](BUILDING.md) | Working notes and an API-equivalent model/token cost ledger |
-| [.github/](.github/) | Issue templates, PR template, labels, and protection configuration |
-| [AGENTS.md](AGENTS.md) | Instructions for coding agents contributing here |
+| `backend/scopewatch/` | FastAPI gateway, policy engine, bounded executor, SQLite repository, and SSE broadcaster |
+| `frontend/` | Vanilla HTML, CSS, and JavaScript reviewer UI, action simulator, and browser tests |
+| `demo/` | Synthetic workspace fixtures and demonstration scenario definitions |
+| `scripts/` | `run_demo.sh`, `validate.sh`, and `seed_demo.py` CLI utilities |
+| `docs/` | Architectural design, governance documentation, and hackathon notes |
+| `poc/cot-auditing/` | Offline chain-of-thought reasoning audit prototype |
 
-See the [tested baseline handoff](docs/baseline-2026-09-17.md) for combined validation commands and remaining limitations. Existing prototype directories do not imply a team decision on the production stack or first integrated deliverable.
+---
+
+## Architecture and documentation
+
+For deeper technical documentation, review:
+- [Architecture overview](docs/ARCHITECTURE.md)
+- [Building and testing guide](BUILDING.md)
+- [Agent integration guidelines](AGENTS.md)
+- [Repository governance](docs/repository-governance.md)
+
+---
 
 ## Contributing and license
 
-All changes reach `main` through pull requests, including changes by administrators and coding agents. See [repository governance](docs/repository-governance.md) for enforcement details.
-
-The repository uses the [MIT license](LICENSE). Third-party models, datasets, and dependencies retain their own licenses.
+All changes reach `main` through pull requests. The repository uses the [MIT license](LICENSE).

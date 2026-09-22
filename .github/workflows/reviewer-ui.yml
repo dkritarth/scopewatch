@@ -27,3 +27,4 @@ jobs:
       - run: npm test --prefix frontend
       - run: npx --prefix frontend playwright install --with-deps chromium
       - run: npm run test:browser --prefix frontend
+      - run: ./scripts/validate.sh
