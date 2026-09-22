@@ -4,6 +4,7 @@
 !.env.example
 *.pem
 *.key
+
 # Dependencies and generated output
 node_modules/
 .venv/
@@ -15,10 +16,15 @@ build/
 .next/
 coverage/
 .pytest_cache/
+
 # Private runtime artifacts
 traces/
 logs/
 *.log
+runtime-data/
+*.sqlite3
+*.db
+
 # Local editor and OS state
 .idea/
 .vscode/
