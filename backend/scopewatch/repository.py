@@ -102,27 +102,28 @@ class ScopewatchRepository:
         return runs
 
     @staticmethod
-    def update_run_status(conn: sqlite3.Connection, run_id: str, status: RunStatus, updated_at: str) -> None:
+    def update_run_status(
+        conn: sqlite3.Connection, run_id: str, new_status: RunStatus, updated_at: str
+    ) -> None:
         conn.execute(
             "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
-            (status.value, updated_at, run_id),
+            (new_status.value, updated_at, run_id),
         )
 
-    # ---------------- Action Requests ----------------
+    # ---------------- Actions ----------------
 
     @staticmethod
     def create_action_request(conn: sqlite3.Connection, action: ActionRequest) -> ActionRequest:
         conn.execute(
             """
             INSERT INTO action_requests (
-                id, schema_version, run_id, tool, operation, resource,
-                arguments_json, requested_by, requested_at, reasoning_summary,
+                id, run_id, tool, operation, resource, arguments_json,
+                requested_by, requested_at, reasoning_summary,
                 exposed_reasoning_trace, reasoning_provenance
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 action.id,
-                action.schema_version,
                 action.run_id,
                 action.tool,
                 action.operation,
@@ -145,7 +146,6 @@ class ScopewatchRepository:
             return None
         return ActionRequest(
             id=row["id"],
-            schema_version=row["schema_version"],
             run_id=row["run_id"],
             tool=row["tool"],
             operation=row["operation"],
@@ -167,7 +167,7 @@ class ScopewatchRepository:
             INSERT INTO policy_decisions (
                 id, action_request_id, outcome, reason_code, explanation,
                 matched_rule, decided_at, deterministic
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 decision.id,
@@ -177,7 +177,6 @@ class ScopewatchRepository:
                 decision.explanation,
                 decision.matched_rule,
                 decision.decided_at,
-                1 if decision.deterministic else 0,
             ),
         )
         return decision
@@ -234,7 +233,15 @@ class ScopewatchRepository:
 
     @staticmethod
     def get_approval_request(conn: sqlite3.Connection, approval_id: str) -> Optional[ApprovalRequest]:
-        cur = conn.execute("SELECT * FROM approval_requests WHERE id = ?", (approval_id,))
+        cur = conn.execute(
+            """
+            SELECT ar.*, a.operation, a.resource, a.tool
+            FROM approval_requests ar
+            LEFT JOIN action_requests a ON ar.action_request_id = a.id
+            WHERE ar.id = ?
+            """,
+            (approval_id,),
+        )
         row = cur.fetchone()
         if not row:
             return None
@@ -250,11 +257,23 @@ class ScopewatchRepository:
             resolved_by=row["resolved_by"],
             resolution_reason=row["resolution_reason"],
             approval_token_version=row["approval_token_version"],
+            operation=row["operation"] if "operation" in row.keys() else None,
+            resource=row["resource"] if "resource" in row.keys() else None,
+            tool=row["tool"] if "tool" in row.keys() else None,
         )
 
     @staticmethod
     def get_approval_by_action(conn: sqlite3.Connection, action_id: str) -> Optional[ApprovalRequest]:
-        cur = conn.execute("SELECT * FROM approval_requests WHERE action_request_id = ? ORDER BY requested_at DESC LIMIT 1", (action_id,))
+        cur = conn.execute(
+            """
+            SELECT ar.*, a.operation, a.resource, a.tool
+            FROM approval_requests ar
+            LEFT JOIN action_requests a ON ar.action_request_id = a.id
+            WHERE ar.action_request_id = ?
+            ORDER BY ar.requested_at DESC LIMIT 1
+            """,
+            (action_id,),
+        )
         row = cur.fetchone()
         if not row:
             return None
@@ -270,19 +289,27 @@ class ScopewatchRepository:
             resolved_by=row["resolved_by"],
             resolution_reason=row["resolution_reason"],
             approval_token_version=row["approval_token_version"],
+            operation=row["operation"] if "operation" in row.keys() else None,
+            resource=row["resource"] if "resource" in row.keys() else None,
+            tool=row["tool"] if "tool" in row.keys() else None,
         )
 
     @staticmethod
     def list_approvals(conn: sqlite3.Connection, status: Optional[ApprovalStatus] = None, run_id: Optional[str] = None) -> list[ApprovalRequest]:
-        query = "SELECT * FROM approval_requests WHERE 1=1"
+        query = """
+            SELECT ar.*, a.operation, a.resource, a.tool
+            FROM approval_requests ar
+            LEFT JOIN action_requests a ON ar.action_request_id = a.id
+            WHERE 1=1
+        """
         params: list[Any] = []
         if status:
-            query += " AND status = ?"
+            query += " AND ar.status = ?"
             params.append(status.value)
         if run_id:
-            query += " AND run_id = ?"
+            query += " AND ar.run_id = ?"
             params.append(run_id)
-        query += " ORDER BY requested_at DESC"
+        query += " ORDER BY ar.requested_at DESC"
         cur = conn.execute(query, params)
         approvals = []
         for row in cur.fetchall():
@@ -299,6 +326,9 @@ class ScopewatchRepository:
                     resolved_by=row["resolved_by"],
                     resolution_reason=row["resolution_reason"],
                     approval_token_version=row["approval_token_version"],
+                    operation=row["operation"] if "operation" in row.keys() else None,
+                    resource=row["resource"] if "resource" in row.keys() else None,
+                    tool=row["tool"] if "tool" in row.keys() else None,
                 )
             )
         return approvals

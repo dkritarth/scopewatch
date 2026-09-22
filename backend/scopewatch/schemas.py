@@ -92,6 +92,9 @@ class ApprovalRequest(BaseModel):
     resolved_by: Optional[str] = None
     resolution_reason: Optional[str] = None
     approval_token_version: int = 1
+    operation: Optional[str] = None
+    resource: Optional[str] = None
+    tool: Optional[str] = None
 
 
 class ExecutionReceipt(BaseModel):
