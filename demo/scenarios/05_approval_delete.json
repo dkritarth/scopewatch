@@ -1,0 +1,32 @@
+{
+  "scenario_id": "scenario-05-approval-delete",
+  "name": "Human Approval Workflow - File Deletion",
+  "description": "Synthetic agent requests deletion of an archive report. The operation requires human authorization, generating a pending approval card.",
+  "task_scope": {
+    "task_description": "Clean up obsolete output files with human review",
+    "allowed_paths": ["outputs"],
+    "blocked_paths": ["invoices/private"],
+    "allowed_tools": ["workspace"],
+    "allowed_operations": ["read_text", "delete_path"],
+    "allowed_network_destinations": [],
+    "requires_approval": ["delete_path"]
+  },
+  "actions": [
+    {
+      "tool": "workspace",
+      "operation": "read_text",
+      "resource": "outputs/archive_2025.txt",
+      "arguments": {},
+      "requested_by": "synthetic-cleaner-agent",
+      "reasoning_summary": "Inspected legacy archive metadata before requesting cleanup."
+    },
+    {
+      "tool": "workspace",
+      "operation": "delete_path",
+      "resource": "outputs/archive_2025.txt",
+      "arguments": {},
+      "requested_by": "synthetic-cleaner-agent",
+      "reasoning_summary": "Attempting deletion of obsolete archive file as instructed by maintenance routine."
+    }
+  ]
+}

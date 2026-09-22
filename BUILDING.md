@@ -1,8 +1,53 @@
 # Building notes
 
-This file is a small project diary for the parts of the build that are easy to forget, including the model and token budget behind each Codex or API-assisted run.
+This file is a project diary and build reference for Scopewatch, including environment setup and the model and token budget behind Codex or API-assisted runs.
 
 The numbers below are shadow prices. Work performed through a ChatGPT or Codex subscription is not automatically an API charge. We use the published API rates only to make the compute easier to compare across runs.
+
+## Local baseline setup and execution
+
+### Prerequisites
+
+- Python 3.12+
+- Node.js 22+
+
+### Quick start
+
+```bash
+# 1. Install backend dependencies in virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+
+# 2. Install frontend dependencies
+npm ci --prefix frontend
+npx --prefix frontend playwright install --with-deps chromium
+
+# 3. Run all test suites and clean-room security verification
+./scripts/validate.sh
+
+# 4. Launch the integrated demonstration
+./scripts/run_demo.sh
+```
+
+### Running test suites individually
+
+- **Backend tests:**
+  ```bash
+  pytest backend/tests -v
+  ```
+
+- **Frontend unit tests:**
+  ```bash
+  npm test --prefix frontend
+  ```
+
+- **Browser Playwright integration tests:**
+  ```bash
+  npm run test:browser --prefix frontend
+  ```
+
+---
 
 ## Astra thread ledger
 
