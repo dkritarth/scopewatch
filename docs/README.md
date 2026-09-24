@@ -10,3 +10,4 @@
 Record accepted product and architecture decisions here when the team makes them. No product stack or feature set has been approved yet.
 
 - [Union Alpha validation notes](ideas/union-alpha-2026-09-16-validation.md) record capture and synthetic auditor results, with proposed follow-up work awaiting team review.
+- [Planning session record, September 23](ideas/claude-opus-5.5-2026-09-23-planning-session.md) records the decisions, rejected options, and caveats behind the milestone backlog (issues #20–#52), awaiting team review through ADR-0001 (#21).
