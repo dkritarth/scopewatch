@@ -125,6 +125,8 @@ Two days of buffer remain before the October 30, 10:00 a.m. Pacific deadline. Th
 
 **Not chosen:** Human merge for every PR (bottleneck for about 30 PRs), or unconditional self-merge (no enforced gate).
 
+**Amended September 24, 2026 (at @dkritarth's request):** the team prefers speed and ambition over caution for this student project. The `review: human-required` label was renamed `review: second-pass`. Those issues now need an approving review from a separate reviewer thread or a human before merge, not a human merge. Everything else in Q9 stands.
+
 ## Backlog created
 
 Milestones 1–5 and issues #20–#52 on GitHub, with native blocking links and the same links written in each issue body. New labels: `agent: ready`, `agent: needs-human`, `review: human-required`, `type: spike`, `type: decision`, `area: agent`, `area: submission`.

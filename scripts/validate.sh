@@ -4,6 +4,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# --quick skips the Playwright browser suite (use while iterating or when Chromium is unavailable).
+QUICK=0
+for arg in "$@"; do
+  case "${arg}" in
+    --quick) QUICK=1 ;;
+    -h|--help)
+      echo "Usage: ./scripts/validate.sh [--quick]"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: ${arg}" >&2
+      exit 2
+      ;;
+  esac
+done
+
 # Python detection
 if [[ -f "${REPO_ROOT}/.venv/bin/python" ]]; then
   PYTHON="${REPO_ROOT}/.venv/bin/python"
@@ -21,31 +37,42 @@ echo "=================================================================="
 echo ""
 
 # 1. Compile backend sources
-echo "[1/5] Compiling backend Python sources..."
-"${PYTHON}" -m compileall -q "${REPO_ROOT}/backend/scopewatch" "${REPO_ROOT}/backend/tests" "${REPO_ROOT}/scripts"
+echo "[1/6] Compiling backend and PoC Python sources..."
+"${PYTHON}" -m compileall -q "${REPO_ROOT}/backend/scopewatch" "${REPO_ROOT}/backend/tests" "${REPO_ROOT}/scripts" \
+  "${REPO_ROOT}/poc/cot-auditing/src" "${REPO_ROOT}/poc/cot-auditing/scripts"
 echo "  ✓ Python compilation clean"
 
 # 2. Run backend pytest suite
 echo ""
-echo "[2/5] Running backend pytest suite..."
+echo "[2/6] Running backend pytest suite..."
 PYTHONPATH="${REPO_ROOT}/backend" "${PYTHON}" -m pytest "${REPO_ROOT}/backend/tests" -q
 echo "  ✓ All backend unit and integration tests passed"
 
-# 3. Run frontend unit tests
+# 3. Run PoC pytest suite
 echo ""
-echo "[3/5] Running frontend unit tests..."
+echo "[3/6] Running reasoning-audit PoC pytest suite..."
+"${PYTHON}" -m pytest "${REPO_ROOT}/poc/cot-auditing" -q
+echo "  ✓ All PoC tests passed"
+
+# 4. Run frontend unit tests
+echo ""
+echo "[4/6] Running frontend unit tests..."
 npm test --prefix "${REPO_ROOT}/frontend"
 echo "  ✓ All frontend unit tests passed"
 
-# 4. Run browser Playwright tests
+# 5. Run browser Playwright tests
 echo ""
-echo "[4/5] Running browser Playwright integration tests..."
-npm run test:browser --prefix "${REPO_ROOT}/frontend"
-echo "  ✓ All browser integration tests passed"
+if [[ "${QUICK}" -eq 1 ]]; then
+  echo "[5/6] Skipping browser Playwright tests (--quick). Browser behaviour NOT verified."
+else
+  echo "[5/6] Running browser Playwright integration tests..."
+  npm run test:browser --prefix "${REPO_ROOT}/frontend"
+  echo "  ✓ All browser integration tests passed"
+fi
 
-# 5. Clean-room scenario seed & security verification
+# 6. Clean-room scenario seed & security verification
 echo ""
-echo "[5/5] Running clean-room demo scenario verification..."
+echo "[6/6] Running clean-room demo scenario verification..."
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/scopewatch-validate-XXXXXX")"
 cleanup() {
   rm -rf "${TMP_DIR}"

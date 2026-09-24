@@ -1,24 +1,16 @@
 # Contributing
 
-We are still deciding what to build. Use an idea issue for proposals and record accepted decisions in `docs/`. Attribute model-authored proposals and keep them distinct from team decisions.
+Humans and agents follow the same workflow. The full guide, including the domain invariants and validation commands, is [AGENTS.md](AGENTS.md). The short version:
 
-## Workflow
+1. Pick an issue (`python3 scripts/agents/next_issues.py`) or open one with a template. Ideas that are not ready for the backlog can go straight into a prototype under `poc/<name>/`.
+2. Claim it with a comment and the `agent: in-progress` label.
+3. Branch from current `main` as `feature/`, `fix/`, `docs/`, `test/`, or `chore/` plus `<issue>-<slug>`. `scripts/agents/worktree.sh` does this in a separate worktree.
+4. Commit in small steps with conventional messages such as `feat: add provider profiles`.
+5. Run `./scripts/validate.sh` and open a PR with the template: problem, change, validation, and what you could not verify.
+6. Squash-merge once CI passes and conversations are resolved. Issues labelled `review: second-pass` need an approving review from someone (or some agent thread) other than the author first.
 
-1. Discuss substantial work in an issue. Pick a narrow scope and an owner.
-2. Branch from current `main`, using `feature/`, `fix/`, `docs/`, or `chore/` followed by a short description.
-3. Make focused commits with messages such as `docs: explain permission boundaries`.
-4. Open a pull request. Explain the problem, changes, validation, and remaining limitations. Link any related issue.
-5. Review the diff and validation results. Any collaborator with write access may merge the PR, including its author; approval from another person is optional.
-6. Resolve review conversations, then squash-merge through GitHub. Delete the merged branch.
+We are a student team with a deadline. Be ambitious, try things, and fix forward. The few hard lines are in AGENTS.md: no secrets or private data, synthetic data only for model providers, never push to `main` directly, report results honestly, and keep reasoning evidence labelled.
 
-Never push directly to `main`, force-push it, delete it, or bypass the pull request workflow. These rules also apply to administrators and automation.
+Model-authored proposals go in `docs/ideas/<model>-<date>-<topic>.md` and name the model. Accepted decisions go in `docs/adr/`.
 
-## Before review
-
-- Read the diff and check that it contains only the intended changes.
-- Verify documentation links and configuration syntax. For executable changes, run relevant tests and report the commands and results.
-- Keep credentials, private workplace data, and raw production traces out of the repository and public issues.
-- Use synthetic data and controlled local targets for demonstrations of unsafe agent behavior.
-- Identify model-authored suggestions by model name. Do not present generated suggestions as team agreement.
-
-The `CoT auditing tests` workflow runs offline Python tests on pull requests and main. `Reviewer UI tests` runs Node unit tests and a local Chromium smoke test. Live API calls remain opt-in and must not run in CI with project credentials. PR authors also record manual validation and model failures. These workflows are not yet required branch-protection checks. See [governance](docs/repository-governance.md) for settings and labels.
+Branch protection details and labels: [docs/repository-governance.md](docs/repository-governance.md).

@@ -75,9 +75,9 @@
     "description": "Needs a human: decision, credentials, billing, settings, or recording"
   },
   {
-    "name": "review: human-required",
+    "name": "review: second-pass",
     "color": "B60205",
-    "description": "Security-critical change; a human must review and merge"
+    "description": "Security-critical; independent review before merge"
   },
   {
     "name": "type: spike",
@@ -98,5 +98,10 @@
     "name": "area: submission",
     "color": "5319E7",
     "description": "Hackathon hosting, demo video, and submission package"
+  },
+  {
+    "name": "agent: in-progress",
+    "color": "C5DEF5",
+    "description": "Claimed; see the claim comment on the issue"
   }
 ]
