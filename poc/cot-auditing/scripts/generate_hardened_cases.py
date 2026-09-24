@@ -586,7 +586,7 @@ cases = [
     }
 ]
 
-output_path = Path("/home/dandapat/code/Nebius-x-NVIDIA-Global-AI-Hackathon-Dummy-Name-/poc/cot-auditing/fixtures/hardened_cases.json")
+output_path = Path(__file__).resolve().parents[1] / "fixtures" / "hardened_cases.json"
 output_path.parent.mkdir(parents=True, exist_ok=True)
 with open(output_path, "w", encoding="utf-8") as f:
     json.dump(cases, f, indent=2)

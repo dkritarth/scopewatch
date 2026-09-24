@@ -273,7 +273,7 @@ def run_evaluation(
         "backend": backend_name,
         "model": model,
         "live": live,
-        "cases_source": str(cases_path),
+        "cases_source": _display_path(cases_path),
         "summary": metrics,
         "results": results,
     }
@@ -283,6 +283,14 @@ def run_evaluation(
     print(f"Report saved to: {output_path.resolve()}\n")
 
     return 0 if metrics["matches"] == metrics["total_cases"] else 1
+
+
+def _display_path(path: Path) -> str:
+    """Return the path relative to the PoC directory so reports carry no home-directory paths."""
+    try:
+        return str(path.resolve().relative_to(POC_DIR))
+    except ValueError:
+        return path.name
 
 
 def main() -> int:
