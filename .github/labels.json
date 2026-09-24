@@ -63,5 +63,40 @@
     "name": "status: blocked",
     "color": "E4E669",
     "description": "Cannot proceed; describe the dependency"
+  },
+  {
+    "name": "agent: ready",
+    "color": "0E8A16",
+    "description": "Agents may claim once every blocking issue is closed"
+  },
+  {
+    "name": "agent: needs-human",
+    "color": "FBCA04",
+    "description": "Needs a human: decision, credentials, billing, settings, or recording"
+  },
+  {
+    "name": "review: human-required",
+    "color": "B60205",
+    "description": "Security-critical change; a human must review and merge"
+  },
+  {
+    "name": "type: spike",
+    "color": "C2E0C6",
+    "description": "Timeboxed investigation that ends in a written finding"
+  },
+  {
+    "name": "type: decision",
+    "color": "D4C5F9",
+    "description": "Decision record needed before dependent work starts"
+  },
+  {
+    "name": "area: agent",
+    "color": "1D76DB",
+    "description": "Agent loop, model providers, and reasoning capture"
+  },
+  {
+    "name": "area: submission",
+    "color": "5319E7",
+    "description": "Hackathon hosting, demo video, and submission package"
   }
 ]
