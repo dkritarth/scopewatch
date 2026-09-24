@@ -1,15 +1,19 @@
+Closes #
+
 ## Problem and change
 
-Explain what this fixes or adds. Link the issue, if any. Mark proposals that still need a team decision.
+What this fixes or adds, and any decision you made that the issue did not specify.
 
 ## Validation
 
-List relevant checks and their results. For documentation, check links and accuracy. Explain anything unverified.
+Commands you ran and their results (for example `./scripts/validate.sh`). List anything you could not verify and why.
 
-## Review notes
+## Notes for review
 
-Describe limitations or decisions reviewers need to assess. Attribute model-authored ideas where applicable.
+Limitations, follow-up issues filed, and anything a reviewer should look at closely.
 
-- [ ] The diff contains no credentials or private workplace data.
-- [ ] Documentation matches the actual implementation status.
-- [ ] I have reviewed the diff and validation results before merging.
+**Written by:** human / tool and model (for example "Claude Code, Opus 5.5, implementer role")
+
+- [ ] No credentials, private data, or home-directory paths in the diff.
+- [ ] Docs match what the code now does.
+- [ ] If the issue has `review: second-pass`: an independent reviewer approved.

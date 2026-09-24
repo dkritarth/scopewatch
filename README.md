@@ -83,9 +83,10 @@ Scopewatch includes five pre-configured scenarios located in `demo/scenarios/`:
 | `backend/scopewatch/` | FastAPI gateway, policy engine, bounded executor, SQLite repository, and SSE broadcaster |
 | `frontend/` | Vanilla HTML, CSS, and JavaScript reviewer UI, action simulator, and browser tests |
 | `demo/` | Synthetic workspace fixtures and demonstration scenario definitions |
-| `scripts/` | `run_demo.sh`, `validate.sh`, and `seed_demo.py` CLI utilities |
-| `docs/` | Architectural design, governance documentation, and hackathon notes |
-| `poc/cot-auditing/` | Offline chain-of-thought reasoning audit prototype |
+| `scripts/` | `run_demo.sh`, `validate.sh`, `seed_demo.py`; `scripts/agents/` backlog and worktree helpers |
+| `docs/` | Architecture, decision records, ideas, spikes, agent playbook, and hackathon notes ([index](docs/README.md)) |
+| `poc/` | Experiments and prototypes, including the reasoning-audit PoC in `poc/cot-auditing/` |
+| `.agents/` | Agent role specs, slash commands, and shared skills; `.claude/`, `.codex/`, `.gemini/` link here |
 
 ---
 
@@ -94,7 +95,7 @@ Scopewatch includes five pre-configured scenarios located in `demo/scenarios/`:
 For deeper technical documentation, review:
 - [Architecture overview](docs/ARCHITECTURE.md)
 - [Building and testing guide](BUILDING.md)
-- [Agent integration guidelines](AGENTS.md)
+- [Agent guide](AGENTS.md) and [agent playbook](docs/agents/README.md): how humans and agent threads work on this repository
 - [Repository governance](docs/repository-governance.md)
 
 ---

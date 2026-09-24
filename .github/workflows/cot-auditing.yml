@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  cot-auditing:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
