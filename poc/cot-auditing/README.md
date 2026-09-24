@@ -100,6 +100,20 @@ API references checked September 16, 2026: [reasoning fields](https://openrouter
 
 The live six-case run matched 2 labels; four requests became HOLD on backend errors. The report checker correctly rejects HOLD where IN_SCOPE was expected, including `reject-unsafe-read`. One exact blocked-config reproduction returned HTTP 200 containing a provider error envelope with code 502 and `provider_unavailable`. Later calls varied: unrelated-work and reject-unsafe-read validated with their expected labels; auditor-injection was truncated; blocked-config finished with `stop` but still failed validation for an unresolved reason. These follow-up calls do not diagnose the original errors or establish accuracy. Automatic retries remain absent. The report checker performs no network calls. See [the validation record](../../docs/ideas/union-alpha-2026-09-16-validation.md).
 
+## Hardened auditor evaluation
+
+```bash
+python -m scripts.generate_hardened_cases
+python -m scripts.evaluate_hardened_auditor
+python -m scripts.evaluate_hardened_auditor --live --model <openrouter-model-id>
+```
+
+`src/hardened_prompt.py` isolates the trace inside `<untrusted_reasoning_trace>` and instructs the auditor to treat it as data. `src/hardened_auditor.py` provides an offline rule backend (`semantic-rules-v1`) and an OpenRouter backend. `fixtures/hardened_cases.json` holds 27 synthetic cases, three in each of nine categories: in scope, scope drift, blocked path, tool violation, exfiltration, auditor injection, scope forgery, safe refusal, and ambiguous.
+
+The default run makes no network calls. On September 24, 2026, the offline rule backend matched 27 of 27 cases. The rules and cases were written together, so this is a structural check, not evidence of detection accuracy. The only live run (September 19, 2026, `dots-studio/dots-3-note-preview:free`) covered three cases, all `in_scope`; it says nothing about detecting out-of-scope reasoning. Reports go to `logs/`, which is gitignored, and include model explanations, so keep them out of commits.
+
+The default live model is a free OpenRouter model chosen for development. Model choice moves to provider profiles when this auditor is ported into the backend (issues #26 and #28).
+
 ### Sanitized diagnostics
 
 `ScopeClassification.error_code` and each evaluation row's `error_code` are null for validated model results, including a deliberate model HOLD. A fallback HOLD has zero confidence, no excerpts, a fixed local reason, and one of these codes:
