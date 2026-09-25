@@ -730,8 +730,9 @@ def test_cli_scenario_01_execution(tmp_path: Path) -> None:
     from scopewatch.agent.__main__ import main
     scenario_path = "demo/scenarios/01_safe_audit.json"
     demo_out = Path("demo/workspace/outputs/audit-summary.txt")
+    test_db = tmp_path / "cli_test.db"
     try:
-        exit_code = main(["--scenario", scenario_path, "--max-turns", "10"])
+        exit_code = main(["--scenario", scenario_path, "--max-turns", "10", "--db-path", str(test_db)])
         assert exit_code == 0
     finally:
         if demo_out.is_file():

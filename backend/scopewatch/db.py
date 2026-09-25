@@ -9,7 +9,10 @@ from typing import Generator
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS schema_version (\n    version INTEGER PRIMARY KEY,\n    applied_at TEXT NOT NULL\n);
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
@@ -140,6 +143,9 @@ CREATE INDEX IF NOT EXISTS idx_audit_run_turn_hash
 
 def get_connection(db_path: Path | str) -> sqlite3.Connection:
     """Open an SQLite connection with WAL mode and foreign keys enabled."""
+    path = Path(db_path)
+    if path != Path(":memory:") and not str(path).startswith("file:"):
+        path.parent.mkdir(parents=True, exist_ok=True)
     path_str = str(db_path)
     conn = sqlite3.connect(path_str, timeout=10.0, isolation_level=None)
     conn.row_factory = sqlite3.Row

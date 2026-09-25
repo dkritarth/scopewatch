@@ -125,6 +125,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=20,
         help="Maximum conversation turns (default: 20)",
     )
+    parser.add_argument(
+        "--db-path",
+        type=str,
+        default=None,
+        help="Custom SQLite database path for in-process gateway (default: runtime-data/scopewatch.db)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -148,7 +154,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         # Gateway server not running on network, spin up in-process app
         from fastapi.testclient import TestClient
         from scopewatch.app import create_app
-        app = create_app()
+        kwargs: dict[str, Any] = {}
+        if args.db_path:
+            kwargs["db_path"] = Path(args.db_path)
+        app = create_app(**kwargs)
         client = TestClient(app, base_url="http://gateway.local")
 
     # 3. Create run on gateway

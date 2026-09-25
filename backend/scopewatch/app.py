@@ -57,6 +57,11 @@ def create_app(
     workspace_root: Path | str = WORKSPACE_ROOT,
     auditor: Optional[ReasoningAuditor] = None,
 ) -> FastAPI:
+    actual_db_path = Path(db_path)
+    actual_workspace_root = Path(workspace_root)
+    init_db(actual_db_path)
+    actual_workspace_root.mkdir(parents=True, exist_ok=True)
+
     app = FastAPI(
         title="Scopewatch Synthetic Gateway",
         description="Controlled baseline demo API for synthetic agent action review.",
