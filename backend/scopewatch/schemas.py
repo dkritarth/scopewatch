@@ -63,6 +63,8 @@ class ActionRequest(BaseModel):
     reasoning_summary: Optional[str] = None
     exposed_reasoning_trace: Optional[str] = None
     reasoning_provenance: ReasoningProvenance = ReasoningProvenance.UNAVAILABLE
+    turn_id: Optional[str] = None
+    reasoning_audit_id: Optional[str] = None
 
 
 class PolicyDecision(BaseModel):
@@ -76,6 +78,7 @@ class PolicyDecision(BaseModel):
     matched_rule: str
     decided_at: str
     deterministic: bool = True
+    reasoning_audit_id: Optional[str] = None
 
 
 class ApprovalRequest(BaseModel):
@@ -126,8 +129,27 @@ class EvidenceEvent(BaseModel):
     policy_decision_id: Optional[str] = None
     approval_request_id: Optional[str] = None
     execution_receipt_id: Optional[str] = None
+    turn_id: Optional[str] = None
     details: dict[str, Any] = Field(default_factory=dict)
     synthetic: bool = True
+
+
+class ReasoningAuditRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    run_id: str
+    turn_id: str
+    trace_hash: str
+    verdict: str
+    concern_type: Optional[str] = None
+    flagged_excerpts: list[str] = Field(default_factory=list)
+    explanation: str
+    model: str
+    profile: str
+    latency_ms: float = 0.0
+    error_code: Optional[str] = None
+    audited_at: str
 
 
 class CreateRunRequest(BaseModel):
@@ -148,6 +170,7 @@ class SubmitActionRequest(BaseModel):
     reasoning_summary: Optional[str] = None
     exposed_reasoning_trace: Optional[str] = None
     reasoning_provenance: Optional[ReasoningProvenance] = None
+    turn_id: Optional[str] = None
 
 
 class ActionResponse(BaseModel):
@@ -158,6 +181,8 @@ class ActionResponse(BaseModel):
     approval_request: Optional[ApprovalRequest] = None
     execution_receipt: Optional[ExecutionReceipt] = None
     events: list[EvidenceEvent] = Field(default_factory=list)
+    reasoning_audit: Optional[ReasoningAuditRecord] = None
+    reasoning_audit_id: Optional[str] = None
 
 
 class ResolveApprovalRequest(BaseModel):

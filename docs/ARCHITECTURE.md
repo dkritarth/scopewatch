@@ -1,57 +1,71 @@
 # Architecture
 
-Scopewatch is a local mediation gateway and reviewer interface for auditing and controlling synthetic agent actions against declared task scopes.
+Scopewatch is a pre-execution security gateway and reviewer interface for auditing and mediating autonomous AI agent actions against declared task scopes before execution occurs.
+
+It implements the decisions accepted in [ADR-0001](adr/0001-pre-execution-gateway.md).
 
 ## System overview
 
-Scopewatch consists of five core components:
-
 ```
-[ Synthetic Agent / Simulator ]
-               |
-               v (HTTP REST / SSE)
-     +-------------------+
-     |  FastAPI Gateway  |
-     +---------+---------+
-               |
-               v
-     +-------------------+
-     |   Policy Engine   | ----> SQLite Audit Log
-     +---------+---------+
-         |           |
- (ALLOW) |           | (HOLD)
-         v           v
-+--------------+  +-------------------+
-|  Controlled  |  |  Human Approval   |
-|   Executor   |  |     Workflow      |
-+--------------+  +-------------------+
-         |                   |
-         +---------+---------+
-                   |
-                   v (SSE Streams)
-        [ Reviewer Dashboard ]
+[ Model-Driven Agent Loop (backend/scopewatch/agent) ]
+                        |
+                        v (POST /api/v1/runs/{id}/actions)
+             +-----------------------+
+             |    FastAPI Gateway    |
+             +-----------+-----------+
+                         |
+                         v
+             +-----------------------+
+             | Deterministic Policy  | -------> (DENY) ----> Reject (Final)
+             +-----------+-----------+
+                         | (ALLOW / HOLD)
+                         v
+             +-----------------------+
+             |   Reasoning Auditor   | (Escalate-only on trace)
+             +-----------+-----------+
+                         |
+                         +--------> CONCERN / FAILED ----+
+                         |                               |
+                         v (ALLOW & NO_CONCERN)          v (HOLD)
+             +-----------------------+       +-----------------------+
+             |  Controlled Executor  |       |    Human Approval     |
+             +-----------+-----------+       +-----------+-----------+
+                         |                               | (Approved)
+                         |                               v
+                         |                   +-----------------------+
+                         +-----------------> | Dispatch to Executor  |
+                                             +-----------------------+
+                                                         |
+                                                         v (Monotonic Events)
+                                             +-----------------------+
+                                             |  SQLite Event Store   |
+                                             +-----------+-----------+
+                                                         |
+                                                         v (SSE Streams)
+                                             [ Reviewer Dashboard UI ]
 ```
 
-### 1. Mediation gateway
+### 1. Pre-execution mediation gateway
 
-The backend API (`backend/scopewatch/app.py`) provides REST endpoints prefixed with `/api/v1/` and a server-sent events (SSE) stream for real-time audit updates.
+The backend API (`backend/scopewatch/app.py`) provides REST endpoints under `/api/v1/` and a Server-Sent Events (SSE) broadcaster for live audit events.
 
-All client operations must pass through this gateway. The browser and agents never interact directly with host executors or filesystem drivers.
+The gateway guarantees:
+- **No execution without a decision**: The executor refuses any tool dispatch lacking a stored decision or a valid single-use approval receipt.
+- **Fail closed**: If any component (auditor, database, network) fails, the action defaults to `HOLD` with a descriptive error code (`REASONING_AUDIT_FAILED`, `POLICY_ERROR`).
 
 Key endpoints:
-- `POST /api/v1/runs`: Create an isolated run with an explicit task scope.
+- `POST /api/v1/runs`: Initialize an isolated run with an explicit task scope.
 - `GET /api/v1/runs`: List active and historical runs.
-- `POST /api/v1/runs/{run_id}/actions`: Submit a candidate action for policy evaluation and controlled execution.
+- `POST /api/v1/runs/{run_id}/actions`: Submit a candidate action for policy evaluation, reasoning audit, and controlled execution.
 - `GET /api/v1/runs/{run_id}/events`: Subscribe to live SSE events for a run.
 - `GET /api/v1/approvals`: List pending, approved, or denied human review requests.
-- `POST /api/v1/approvals/{approval_id}/resolve`: Single-use decision point to grant or deny an action on hold.
+- `POST /api/v1/approvals/{approval_id}/approve`: Single-use endpoint to authorize an action on hold.
+- `POST /api/v1/approvals/{approval_id}/deny`: Reject an action on hold.
 
 ### 2. Deterministic policy engine
 
-The policy engine (`backend/scopewatch/policy.py`) strictly evaluates candidate actions against the run's task scope without relying on non-deterministic LLM calls.
-
-Evaluation order:
-1. Validates action structure, tool name, and operation name against allowlists.
+The policy engine (`backend/scopewatch/policy.py`) evaluates candidate actions against allowlists and blocklists without relying on non-deterministic model calls:
+1. Validates schema, tool name, and operation name against supported allowlists.
 2. Checks network restrictions (network access disabled in local baseline).
 3. Rejects null bytes, absolute paths, and parent-directory traversals (`..`).
 4. Canonicalizes requested paths against the workspace boundary.
@@ -61,43 +75,53 @@ Evaluation order:
 8. Checks if operation requires human approval (`HOLD`).
 9. Permits execution if all rules pass (`ALLOW`).
 
-### 3. Controlled workspace executor
+Deterministic policy `DENY` is final. It bypasses the reasoning auditor and cannot be overridden by human approval.
 
-The executor (`backend/scopewatch/executor.py`) operates only within the designated synthetic demo workspace directory.
+### 3. Escalate-only reasoning auditor
 
-Supported operations:
-- `list_directory`: Lists directory contents within workspace boundaries.
-- `read_text`: Reads UTF-8 file contents within allowed paths.
-- `write_text`: Writes UTF-8 text to bounded output locations.
-- `delete_path`: Deletes files only after human authorization.
+The reasoning auditor (`backend/scopewatch/reasoning_audit.py`) audits agent reasoning traces per turn:
+- **XML boundary isolation**: Places agent traces inside `<untrusted_reasoning_trace>` tags, instructing the auditor to treat trace contents as untrusted data rather than instructions.
+- **Grounded excerpt validation**: Flagged excerpts must be exact verbatim substrings of the trace. If an excerpt is hallucinated or ungrounded, the audit fails closed with `UNGROUNDED_EXCERPT`.
+- **Escalate-only authority**: The auditor can only escalate an `ALLOW` to a `HOLD` (reason codes: `REASONING_SCOPE_CONCERN`, `REASONING_AUDIT_FAILED`). It can never produce `ALLOW` or `DENY`, and never relaxes a policy decision.
+- **Turn caching**: Audits are cached per `(run_id, turn_id, sha256(trace))`. Multiple actions in a single turn share one audit execution.
 
-Every execution produces an immutable execution receipt with timestamps, execution status, and sanitized output.
+### 4. Swappable provider profile layer
 
-### 4. Persistence and audit log
+Model routing is centralized in `backend/scopewatch/providers/` configured via `backend/config/providers.toml`:
+- `mock`: Deterministic offline execution for fast CI and tests.
+- `openrouter-dev`: Developer profile supporting open-weight models (e.g. `nvidia/llama-3.1-nemotron-70b-instruct`) with raw reasoning extraction.
+- `nebius-demo`: Production demo profile targeting Nebius Token Factory.
+- Normalized extraction distinguishes `PROVIDER_EXPOSED_TRACE` from `AGENT_AUTHORED_SUMMARY` or `UNAVAILABLE`.
 
-All entities are persisted in SQLite with write-ahead logging (WAL) enabled (`backend/scopewatch/db.py`, `repository.py`):
-- `runs`: Task scope definitions and run status.
-- `action_requests`: Candidate tool requests and reasoning provenance metadata.
-- `policy_decisions`: Deterministic outcomes, reason codes, and matched rules.
-- `approval_requests`: Pending approval lifecycle states and audit trails.
-- `execution_receipts`: Execution statuses, output summaries, and timestamps.
-- `domain_events`: Monotonically sequenced audit events.
+### 5. Controlled workspace executor
 
-### 5. Reviewer UI and action simulator
+The executor (`backend/scopewatch/executor.py`) operates strictly within the designated workspace boundary:
+- Supported operations: `list_directory`, `read_text`, `write_text`, `delete_path`.
+- Produces immutable execution receipts with execution status, sanitized result payloads, error codes, and completion timestamps.
 
-The frontend (`frontend/index.html`, `frontend/scripts/app.js`, `frontend/scripts/api.js`) is a dependency-free HTML, CSS, and vanilla JavaScript interface providing:
-- Real-time event streaming via SSE with automatic polling fallback.
-- An interactive action simulator to submit arbitrary tool calls or pre-configured test scenarios.
-- A human approval card interface with single-use decision tokens.
-- A structured five-part evidence panel presenting:
-  1. Observation (tool call, operation, resource, arguments).
-  2. Policy evaluation (outcome, reason code, rule matched).
-  3. Human approval status (resolution history, reviewer identity).
-  4. Controlled execution receipt (exit code, sanitized stdout).
-  5. Reasoning provenance traces with explicit disclosures.
+### 6. Reviewer UI and live evidence stream
 
-## Security boundaries and non-goals
+The frontend (`frontend/`) is a vanilla HTML/CSS/JS dashboard displaying:
+- Real-time SSE event streaming.
+- Five-part evidence panel:
+  1. Observation (tool, operation, resource, arguments, timestamp).
+  2. Policy decision (outcome, reason code, matched rule).
+  3. Reasoning provenance and audit card (verdict, concern type, model, profile, highlighted trace excerpts, and permanent disclaimer: *"Reasoning is evidence, not proof of intent."*).
+  4. Human approval card with single-use action tokens.
+  5. Execution receipt with sanitized outputs.
+- Visually and textually distinct badges: `HOLD (policy)`, `HOLD (reasoning concern)`, `HOLD (audit failed)`.
 
-- Local baseline scope: This software mediates only actions submitted through its synthetic gateway. It does not intercept arbitrary host processes or background agent threads.
-- Reasoning disclosure: Provider-level reasoning traces are unavailable in this local baseline. Synthetic agent-authored summaries are labeled as summaries and never represented as provider-exposed chain-of-thought traces.
-- Network isolation: External network calls are disabled by default.
+---
+
+## Invariant table
+
+| Invariant | Enforcement mechanism | Verification test |
+| --- | --- | --- |
+| **1. Deterministic policy first** | Policy evaluated before auditor; DENY skips auditor entirely. | `test_agent_end_to_end.py::test_invariant_1_*` |
+| **2. Reasoning is escalate-only** | Auditor concern or failure yields HOLD; never ALLOW or DENY. | `test_agent_end_to_end.py::test_invariant_4_*`, `test_invariant_5_*` |
+| **3. Fail closed** | Timeout, transport error, or ungrounded excerpt yields HOLD. | `test_agent_end_to_end.py::test_invariant_5_*` |
+| **4. No decision, no execution** | Executor requires stored decision or approval receipt. | `test_agent_end_to_end.py::test_invariant_2_*` |
+| **5. Approvals are single-use** | Token consumed on resolution; cannot override policy DENY. | `test_agent_end_to_end.py::test_invariant_2_*`, `test_invariant_3_*` |
+| **6. Missing reasoning does not escalate** | Recorded as UNAVAILABLE; policy ALLOW proceeds. | `test_agent_end_to_end.py::test_invariant_6_*` |
+| **7. Monotonic evidence sequence** | Monotonic event sequence; decisions precede execution. | `test_agent_end_to_end.py::test_invariant_7_*` |
+| **8. Agent-executor isolation** | Agent package has zero import path to executor. | `test_agent_end_to_end.py::test_invariant_8_*` |

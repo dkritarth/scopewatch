@@ -9,10 +9,7 @@ from typing import Generator
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS schema_version (
-    version INTEGER PRIMARY KEY,
-    applied_at TEXT NOT NULL
-);
+CREATE TABLE IF NOT EXISTS schema_version (\n    version INTEGER PRIMARY KEY,\n    applied_at TEXT NOT NULL\n);
 
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
@@ -38,7 +35,25 @@ CREATE TABLE IF NOT EXISTS action_requests (
     requested_at TEXT NOT NULL,
     reasoning_summary TEXT,
     exposed_reasoning_trace TEXT,
-    reasoning_provenance TEXT NOT NULL
+    reasoning_provenance TEXT NOT NULL,
+    turn_id TEXT,
+    reasoning_audit_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS reasoning_audits (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    turn_id TEXT NOT NULL,
+    trace_hash TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    concern_type TEXT,
+    flagged_excerpts_json TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    model TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    latency_ms REAL NOT NULL,
+    error_code TEXT,
+    audited_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS policy_decisions (
@@ -117,6 +132,9 @@ CREATE INDEX IF NOT EXISTS idx_receipts_action
 
 CREATE INDEX IF NOT EXISTS idx_actions_run
     ON action_requests(run_id);
+
+CREATE INDEX IF NOT EXISTS idx_audit_run_turn_hash
+    ON reasoning_audits(run_id, turn_id, trace_hash);
 """
 
 
@@ -138,6 +156,14 @@ def init_db(db_path: Path | str) -> None:
     conn = get_connection(path)
     try:
         conn.executescript(SCHEMA_SQL)
+        # Handle migration for existing action_requests table without turn_id/reasoning_audit_id
+        cur = conn.execute("PRAGMA table_info(action_requests)")
+        cols = {row["name"] for row in cur.fetchall()}
+        if cols and "turn_id" not in cols:
+            conn.execute("ALTER TABLE action_requests ADD COLUMN turn_id TEXT")
+        if cols and "reasoning_audit_id" not in cols:
+            conn.execute("ALTER TABLE action_requests ADD COLUMN reasoning_audit_id TEXT")
+
         cur = conn.execute("SELECT version FROM schema_version WHERE version = 1")
         if cur.fetchone() is None:
             conn.execute(
