@@ -20,6 +20,7 @@ from scopewatch.schemas import (
     EvidenceEvent,
     ExecutionReceipt,
     PolicyDecision,
+    ReasoningAuditRecord,
     Run,
     TaskScope,
 )
@@ -54,9 +55,9 @@ class ScopewatchRepository:
                 run.status.value,
                 run.created_at,
                 run.updated_at,
-                1 if run.synthetic else 0,
+                int(run.synthetic),
                 run.interception_coverage,
-                run.reason_availability if hasattr(run, "reason_availability") else run.reasoning_availability,
+                run.reasoning_availability,
             ),
         )
         return run
@@ -119,8 +120,9 @@ class ScopewatchRepository:
             INSERT INTO action_requests (
                 id, run_id, tool, operation, resource, arguments_json,
                 requested_by, requested_at, reasoning_summary,
-                exposed_reasoning_trace, reasoning_provenance
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                exposed_reasoning_trace, reasoning_provenance,
+                turn_id, reasoning_audit_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 action.id,
@@ -134,6 +136,8 @@ class ScopewatchRepository:
                 action.reasoning_summary,
                 action.exposed_reasoning_trace,
                 action.reasoning_provenance.value,
+                action.turn_id,
+                action.reasoning_audit_id,
             ),
         )
         return action
@@ -156,18 +160,136 @@ class ScopewatchRepository:
             reasoning_summary=row["reasoning_summary"],
             exposed_reasoning_trace=row["exposed_reasoning_trace"],
             reasoning_provenance=ReasoningProvenance(row["reasoning_provenance"]),
+            turn_id=row["turn_id"] if "turn_id" in row.keys() else None,
+            reasoning_audit_id=row["reasoning_audit_id"] if "reasoning_audit_id" in row.keys() else None,
         )
 
-    # ---------------- Policy Decisions ----------------
+    @staticmethod
+    def list_actions_for_run(conn: sqlite3.Connection, run_id: str) -> list[ActionRequest]:
+        cur = conn.execute(
+            "SELECT * FROM action_requests WHERE run_id = ? ORDER BY requested_at ASC",
+            (run_id,),
+        )
+        actions = []
+        for row in cur.fetchall():
+            actions.append(
+                ActionRequest(
+                    id=row["id"],
+                    run_id=row["run_id"],
+                    tool=row["tool"],
+                    operation=row["operation"],
+                    resource=row["resource"],
+                    arguments=json.loads(row["arguments_json"]),
+                    requested_by=row["requested_by"],
+                    requested_at=row["requested_at"],
+                    reasoning_summary=row["reasoning_summary"],
+                    exposed_reasoning_trace=row["exposed_reasoning_trace"],
+                    reasoning_provenance=ReasoningProvenance(row["reasoning_provenance"]),
+                    turn_id=row["turn_id"] if "turn_id" in row.keys() else None,
+                    reasoning_audit_id=row["reasoning_audit_id"] if "reasoning_audit_id" in row.keys() else None,
+                )
+            )
+        return actions
+
+    # ---------------- Reasoning Audits ----------------
 
     @staticmethod
-    def create_policy_decision(conn: sqlite3.Connection, decision: PolicyDecision) -> PolicyDecision:
+    def create_reasoning_audit(
+        conn: sqlite3.Connection, audit: ReasoningAuditRecord
+    ) -> ReasoningAuditRecord:
+        conn.execute(
+            """
+            INSERT INTO reasoning_audits (
+                id, run_id, turn_id, trace_hash, verdict, concern_type,
+                flagged_excerpts_json, explanation, model, profile,
+                latency_ms, error_code, audited_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                audit.id,
+                audit.run_id,
+                audit.turn_id,
+                audit.trace_hash,
+                audit.verdict,
+                audit.concern_type,
+                json.dumps(audit.flagged_excerpts),
+                audit.explanation,
+                audit.model,
+                audit.profile,
+                audit.latency_ms,
+                audit.error_code,
+                audit.audited_at,
+            ),
+        )
+        return audit
+
+    @staticmethod
+    def get_reasoning_audit(
+        conn: sqlite3.Connection, audit_id: str
+    ) -> Optional[ReasoningAuditRecord]:
+        cur = conn.execute("SELECT * FROM reasoning_audits WHERE id = ?", (audit_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return ReasoningAuditRecord(
+            id=row["id"],
+            run_id=row["run_id"],
+            turn_id=row["turn_id"],
+            trace_hash=row["trace_hash"],
+            verdict=row["verdict"],
+            concern_type=row["concern_type"],
+            flagged_excerpts=json.loads(row["flagged_excerpts_json"]),
+            explanation=row["explanation"],
+            model=row["model"],
+            profile=row["profile"],
+            latency_ms=row["latency_ms"],
+            error_code=row["error_code"],
+            audited_at=row["audited_at"],
+        )
+
+    @staticmethod
+    def get_reasoning_audit_by_turn(
+        conn: sqlite3.Connection, run_id: str, turn_id: str, trace_hash: str
+    ) -> Optional[ReasoningAuditRecord]:
+        cur = conn.execute(
+            """
+            SELECT * FROM reasoning_audits
+            WHERE run_id = ? AND turn_id = ? AND trace_hash = ?
+            ORDER BY audited_at DESC LIMIT 1
+            """,
+            (run_id, turn_id, trace_hash),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return ReasoningAuditRecord(
+            id=row["id"],
+            run_id=row["run_id"],
+            turn_id=row["turn_id"],
+            trace_hash=row["trace_hash"],
+            verdict=row["verdict"],
+            concern_type=row["concern_type"],
+            flagged_excerpts=json.loads(row["flagged_excerpts_json"]),
+            explanation=row["explanation"],
+            model=row["model"],
+            profile=row["profile"],
+            latency_ms=row["latency_ms"],
+            error_code=row["error_code"],
+            audited_at=row["audited_at"],
+        )
+
+    # ---------------- Decisions ----------------
+
+    @staticmethod
+    def create_policy_decision(
+        conn: sqlite3.Connection, decision: PolicyDecision
+    ) -> PolicyDecision:
         conn.execute(
             """
             INSERT INTO policy_decisions (
                 id, action_request_id, outcome, reason_code, explanation,
                 matched_rule, decided_at, deterministic
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 decision.id,
@@ -177,13 +299,18 @@ class ScopewatchRepository:
                 decision.explanation,
                 decision.matched_rule,
                 decision.decided_at,
+                int(decision.deterministic),
             ),
         )
         return decision
 
     @staticmethod
-    def get_policy_decision_by_action(conn: sqlite3.Connection, action_id: str) -> Optional[PolicyDecision]:
-        cur = conn.execute("SELECT * FROM policy_decisions WHERE action_request_id = ?", (action_id,))
+    def get_policy_decision_by_action(
+        conn: sqlite3.Connection, action_id: str
+    ) -> Optional[PolicyDecision]:
+        cur = conn.execute(
+            "SELECT * FROM policy_decisions WHERE action_request_id = ?", (action_id,)
+        )
         row = cur.fetchone()
         if not row:
             return None
@@ -201,43 +328,52 @@ class ScopewatchRepository:
     # ---------------- Approvals ----------------
 
     @staticmethod
-    def create_approval_request(conn: sqlite3.Connection, approval: ApprovalRequest) -> ApprovalRequest:
-        try:
-            conn.execute(
-                """
-                INSERT INTO approval_requests (
-                    id, run_id, action_request_id, policy_decision_id,
-                    status, requested_at, expires_at, resolved_at, resolved_by,
-                    resolution_reason, approval_token_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    approval.id,
-                    approval.run_id,
-                    approval.action_request_id,
-                    approval.policy_decision_id,
-                    approval.status.value,
-                    approval.requested_at,
-                    approval.expires_at,
-                    approval.resolved_at,
-                    approval.resolved_by,
-                    approval.resolution_reason,
-                    approval.approval_token_version,
-                ),
-            )
-        except sqlite3.IntegrityError as exc:
+    def create_approval_request(
+        conn: sqlite3.Connection, approval: ApprovalRequest
+    ) -> ApprovalRequest:
+        # Check active pending approval constraint
+        cur = conn.execute(
+            "SELECT id FROM approval_requests WHERE action_request_id = ? AND status = 'PENDING'",
+            (approval.action_request_id,),
+        )
+        if cur.fetchone() is not None:
             raise RepositoryConflictError(
                 f"An active approval already exists for action {approval.action_request_id}"
-            ) from exc
+            )
+
+        conn.execute(
+            """
+            INSERT INTO approval_requests (
+                id, run_id, action_request_id, policy_decision_id, status,
+                requested_at, expires_at, resolved_at, resolved_by,
+                resolution_reason, approval_token_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                approval.id,
+                approval.run_id,
+                approval.action_request_id,
+                approval.policy_decision_id,
+                approval.status.value,
+                approval.requested_at,
+                approval.expires_at,
+                approval.resolved_at,
+                approval.resolved_by,
+                approval.resolution_reason,
+                approval.approval_token_version,
+            ),
+        )
         return approval
 
     @staticmethod
-    def get_approval_request(conn: sqlite3.Connection, approval_id: str) -> Optional[ApprovalRequest]:
+    def get_approval_request(
+        conn: sqlite3.Connection, approval_id: str
+    ) -> Optional[ApprovalRequest]:
         cur = conn.execute(
             """
             SELECT ar.*, a.operation, a.resource, a.tool
             FROM approval_requests ar
-            LEFT JOIN action_requests a ON ar.action_request_id = a.id
+            JOIN action_requests a ON ar.action_request_id = a.id
             WHERE ar.id = ?
             """,
             (approval_id,),
@@ -263,12 +399,14 @@ class ScopewatchRepository:
         )
 
     @staticmethod
-    def get_approval_by_action(conn: sqlite3.Connection, action_id: str) -> Optional[ApprovalRequest]:
+    def get_approval_by_action(
+        conn: sqlite3.Connection, action_id: str
+    ) -> Optional[ApprovalRequest]:
         cur = conn.execute(
             """
             SELECT ar.*, a.operation, a.resource, a.tool
             FROM approval_requests ar
-            LEFT JOIN action_requests a ON ar.action_request_id = a.id
+            JOIN action_requests a ON ar.action_request_id = a.id
             WHERE ar.action_request_id = ?
             ORDER BY ar.requested_at DESC LIMIT 1
             """,
@@ -295,18 +433,24 @@ class ScopewatchRepository:
         )
 
     @staticmethod
-    def list_approvals(conn: sqlite3.Connection, status: Optional[ApprovalStatus] = None, run_id: Optional[str] = None) -> list[ApprovalRequest]:
+    def list_approvals(
+        conn: sqlite3.Connection,
+        status: Optional[ApprovalStatus] = None,
+        run_id: Optional[str] = None,
+        status_filter: Optional[ApprovalStatus] = None,
+    ) -> list[ApprovalRequest]:
         query = """
             SELECT ar.*, a.operation, a.resource, a.tool
             FROM approval_requests ar
             LEFT JOIN action_requests a ON ar.action_request_id = a.id
             WHERE 1=1
         """
+        eff_status = status_filter if status_filter is not None else status
         params: list[Any] = []
-        if status:
+        if eff_status is not None:
             query += " AND ar.status = ?"
-            params.append(status.value)
-        if run_id:
+            params.append(eff_status.value)
+        if run_id is not None:
             query += " AND ar.run_id = ?"
             params.append(run_id)
         query += " ORDER BY ar.requested_at DESC"
@@ -375,8 +519,7 @@ class ScopewatchRepository:
     def create_execution_receipt(conn: sqlite3.Connection, receipt: ExecutionReceipt) -> ExecutionReceipt:
         conn.execute(
             """
-            INSERT INTO execution_receipts (
-                id, action_request_id, status, started_at, completed_at,
+            INSERT INTO execution_receipts (\n                id, action_request_id, status, started_at, completed_at,
                 executor, sanitized_result_json, error_code, resource, operation
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -429,6 +572,7 @@ class ScopewatchRepository:
         policy_decision_id: Optional[str] = None,
         approval_request_id: Optional[str] = None,
         execution_receipt_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
     ) -> EvidenceEvent:
         # Monotonic sequential ordering per run
         cur = conn.execute(
@@ -437,6 +581,10 @@ class ScopewatchRepository:
         )
         next_seq = cur.fetchone()["next_seq"]
         event_id = str(uuid.uuid4())
+
+        eff_turn_id = turn_id or details.get("turn_id")
+        if eff_turn_id and "turn_id" not in details:
+            details["turn_id"] = eff_turn_id
 
         conn.execute(
             """
@@ -474,6 +622,7 @@ class ScopewatchRepository:
             policy_decision_id=policy_decision_id,
             approval_request_id=approval_request_id,
             execution_receipt_id=execution_receipt_id,
+            turn_id=eff_turn_id,
             details=details,
             synthetic=True,
         )
@@ -498,6 +647,7 @@ class ScopewatchRepository:
         cur = conn.execute(query, params)
         events = []
         for row in cur.fetchall():
+            dt = json.loads(row["details_json"])
             events.append(
                 EvidenceEvent(
                     sequence=row["sequence"],
@@ -511,7 +661,8 @@ class ScopewatchRepository:
                     policy_decision_id=row["policy_decision_id"],
                     approval_request_id=row["approval_request_id"],
                     execution_receipt_id=row["execution_receipt_id"],
-                    details=json.loads(row["details_json"]),
+                    turn_id=row["turn_id"] if "turn_id" in row.keys() else dt.get("turn_id"),
+                    details=dt,
                     synthetic=bool(row["synthetic"]),
                 )
             )

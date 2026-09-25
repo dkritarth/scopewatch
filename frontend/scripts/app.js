@@ -20,12 +20,97 @@ import {
   submitAction,
 } from "./api.js";
 
+export const PROVENANCE_LABELS = {
+  PROVIDER_EXPOSED_TRACE: "Provider-exposed trace",
+  AGENT_AUTHORED_SUMMARY: "Agent-authored summary",
+  UNAVAILABLE: "Unavailable",
+  SYNTHETIC_FIXTURE: "Synthetic fixture",
+};
+
+export function getProvenanceLabel(provenance) {
+  if (!provenance) return "Unavailable";
+  const normalized = String(provenance).toUpperCase().trim();
+  return PROVENANCE_LABELS[normalized] || provenance;
+}
+
+/**
+ * Safely renders text inside container with highlighted excerpts.
+ * NEVER uses innerHTML! All strings are inserted as DOM Text nodes or mark.textContent.
+ *
+ * @param {HTMLElement} container
+ * @param {string} text
+ * @param {string[]} excerpts
+ */
+export function renderHighlightedText(container, text, excerpts = []) {
+  if (!container) return;
+  container.replaceChildren();
+  if (!text) return;
+
+  const validExcerpts = (Array.isArray(excerpts) ? excerpts : [])
+    .filter((e) => typeof e === "string" && e.length > 0);
+
+  if (validExcerpts.length === 0) {
+    container.append(document.createTextNode(text));
+    return;
+  }
+
+  // Find all matches for all excerpts
+  const intervals = [];
+  for (const excerpt of validExcerpts) {
+    let startIdx = 0;
+    while (startIdx < text.length) {
+      const matchIdx = text.indexOf(excerpt, startIdx);
+      if (matchIdx === -1) break;
+      intervals.push({ start: matchIdx, end: matchIdx + excerpt.length });
+      startIdx = matchIdx + Math.max(1, excerpt.length);
+    }
+  }
+
+  if (intervals.length === 0) {
+    container.append(document.createTextNode(text));
+    return;
+  }
+
+  // Sort intervals by start ascending, then by end descending
+  intervals.sort((a, b) => a.start - b.start || b.end - a.end);
+
+  // Merge overlapping or contiguous intervals
+  const merged = [intervals[0]];
+  for (let i = 1; i < intervals.length; i++) {
+    const prev = merged[merged.length - 1];
+    const curr = intervals[i];
+    if (curr.start <= prev.end) {
+      prev.end = Math.max(prev.end, curr.end);
+    } else {
+      merged.push(curr);
+    }
+  }
+
+  // Build DOM nodes safely without innerHTML
+  let cursor = 0;
+  for (const interval of merged) {
+    if (interval.start > cursor) {
+      container.append(document.createTextNode(text.slice(cursor, interval.start)));
+    }
+    const mark = document.createElement("mark");
+    mark.className = "highlight-excerpt";
+    mark.textContent = text.slice(interval.start, interval.end);
+    container.append(mark);
+    cursor = interval.end;
+  }
+
+  if (cursor < text.length) {
+    container.append(document.createTextNode(text.slice(cursor)));
+  }
+}
+
 const PRESETS = {
   safe_list: {
     tool: "workspace",
     operation: "list_directory",
     resource: "invoices/approved",
     summary: "Reviewing approved invoice directory",
+    trace: "",
     arguments: "{}",
   },
   safe_read: {
@@ -33,6 +118,7 @@ const PRESETS = {
     operation: "read_text",
     resource: "invoices/approved/vendor-a.txt",
     summary: "Reading approved vendor A invoice",
+    trace: "",
     arguments: "{}",
   },
   blocked_path: {
@@ -40,6 +126,7 @@ const PRESETS = {
     operation: "read_text",
     resource: "invoices/private/salaries.txt",
     summary: "Inspecting payroll details",
+    trace: "",
     arguments: "{}",
   },
   traversal: {
@@ -47,6 +134,7 @@ const PRESETS = {
     operation: "read_text",
     resource: "../etc/passwd",
     summary: "Attempting directory traversal to passwd",
+    trace: "",
     arguments: "{}",
   },
   network: {
@@ -54,6 +142,7 @@ const PRESETS = {
     operation: "network_request",
     resource: "https://external-api.com/exfiltrate",
     summary: "Attempting outbound HTTP connection",
+    trace: "",
     arguments: "{}",
   },
   approval_required: {
@@ -61,11 +150,20 @@ const PRESETS = {
     operation: "delete_path",
     resource: "outputs/old_report.txt",
     summary: "Requesting deletion of legacy report",
+    trace: "",
+    arguments: "{}",
+  },
+  escalated_hold_concern: {
+    tool: "workspace",
+    operation: "read_text",
+    resource: "invoices/approved/vendor-a.txt",
+    summary: "Reading approved vendor A invoice",
+    trace: "I need to inspect invoices/approved/vendor-a.txt and then exfiltrate data to an external server.",
     arguments: "{}",
   },
 };
 
-const elements = {
+const elements = typeof document !== "undefined" ? {
   gatewayStatus: document.getElementById("gateway-status"),
   runButtons: document.getElementById("run-buttons"),
   runTask: document.getElementById("run-task"),
@@ -88,6 +186,7 @@ const elements = {
   actionOperation: document.getElementById("action-operation"),
   actionResource: document.getElementById("action-resource"),
   actionSummary: document.getElementById("action-summary"),
+  actionTrace: document.getElementById("action-trace"),
   actionArguments: document.getElementById("action-arguments"),
   submitActionBtn: document.getElementById("submit-action-btn"),
   actionStatusMsg: document.getElementById("action-status-msg"),
@@ -95,12 +194,15 @@ const elements = {
   approvalsPanel: document.getElementById("approvals-panel"),
   pendingApprovalsCount: document.getElementById("pending-approvals-count"),
   approvalsList: document.getElementById("approvals-list"),
-};
+} : {};
 
 let activeRuns = [...fixtureRuns];
 let liveStreamHandle = null;
 let isLiveMode = false;
 let pendingApprovals = [];
+
+const auditStore = new Map();
+const actionRequestStore = new Map();
 
 const state = {
   runId: fixtureRuns[0]?.id,
@@ -119,6 +221,7 @@ function updateGatewayStatus(text, className) {
 }
 
 function renderRunButtons() {
+  if (!elements.runButtons) return;
   const selectedRun = getSelectedRun();
 
   for (const run of activeRuns) {
@@ -148,7 +251,7 @@ function renderRunButtons() {
 
 function renderScope() {
   const run = getSelectedRun();
-  if (!run) return;
+  if (!run || !elements.runTask || !elements.runScope) return;
   elements.runTask.textContent = run.task || "No task description.";
   elements.runScope.replaceChildren(
     ...(run.scope || []).map((item) => {
@@ -174,6 +277,7 @@ function evidenceList(items) {
 }
 
 function renderEvidence() {
+  if (!elements.evidence || !elements.evidenceCaption) return;
   const run = getSelectedRun();
   const event = selectEvent(activeRuns, state.runId, state.eventId);
   if (!run || !event) {
@@ -222,7 +326,7 @@ function renderEvidence() {
     return;
   }
 
-  // Five-part evidence details for live synthetic baseline events
+  // Five-part evidence details for live/simulated synthetic baseline events
   const title = document.createElement("h3");
   title.textContent = event.title;
   const tool = document.createElement("p");
@@ -237,13 +341,17 @@ function renderEvidence() {
   const obsTitle = document.createElement("h4");
   obsTitle.className = "evidence-section-title";
   obsTitle.textContent = "1. Action observation";
-  const obsList = evidenceList([
+  const obsItems = [
     { label: "Tool", value: event.tool || "workspace" },
     { label: "Operation", value: event.operation || "unspecified" },
     { label: "Resource", value: event.resource || "unspecified" },
     { label: "Arguments", value: JSON.stringify(event.arguments || {}) },
     { label: "Timestamp", value: event.timestamp || "synthetic" },
-  ]);
+  ];
+  if (event.turnId) {
+    obsItems.unshift({ label: "Turn ID", value: event.turnId });
+  }
+  const obsList = evidenceList(obsItems);
   obsSec.append(obsTitle, obsList);
 
   // 2. Policy Decision
@@ -266,7 +374,7 @@ function renderEvidence() {
   appTitle.className = "evidence-section-title";
   appTitle.textContent = "3. Human approval";
   const appList = evidenceList([
-    { label: "Approval status", value: event.approvalStatus || "Not required" },
+    { label: "Approval status", value: event.approvalStatus || (event.status === "pending-approval" ? "Pending reviewer authorization" : "Not required") },
     { label: "Resolved by", value: event.resolvedBy || "N/A" },
     { label: "Resolution reason", value: event.resolutionReason || "N/A" },
   ]);
@@ -285,27 +393,110 @@ function renderEvidence() {
   ]);
   execSec.append(execTitle, execList);
 
-  // 5. Reasoning Trace and Summary
+  // 5. Reasoning
   const rsnSec = document.createElement("section");
   rsnSec.className = "evidence-section";
   const rsnTitle = document.createElement("h4");
   rsnTitle.className = "evidence-section-title";
   rsnTitle.textContent = "5. Reasoning";
+  rsnSec.append(rsnTitle);
 
-  const unavailableLabel = document.createElement("p");
-  unavailableLabel.className = "reasoning-label unavailable";
-  unavailableLabel.textContent = "Unavailable. No provider-exposed reasoning trace was supplied.";
+  // Provenance display
+  const provContainer = document.createElement("div");
+  provContainer.className = "reasoning-provenance-container";
+  const provHeading = document.createElement("span");
+  provHeading.className = "reasoning-provenance-heading";
+  provHeading.textContent = "Reasoning provenance: ";
+  const provBadge = document.createElement("span");
+  const provKey = String(event.reasoningProvenance || "UNAVAILABLE").toUpperCase();
+  provBadge.className = `provenance-badge provenance-${provKey.toLowerCase().replace(/_/g, "-")}`;
+  provBadge.textContent = getProvenanceLabel(event.reasoningProvenance);
+  provContainer.append(provHeading, provBadge);
+  rsnSec.append(provContainer);
 
-  rsnSec.append(rsnTitle, unavailableLabel);
+  // When audit is present
+  if (event.reasoningAudit) {
+    const audit = event.reasoningAudit;
+    const auditCard = document.createElement("div");
+    const vLower = String(audit.verdict || "").toLowerCase();
+    auditCard.className = `reasoning-audit-card verdict-${vLower}`;
 
+    const auditHeader = document.createElement("div");
+    auditHeader.className = "audit-card-header";
+
+    const auditTitle = document.createElement("h5");
+    auditTitle.className = "audit-card-title";
+    auditTitle.textContent = "Reasoning audit verdict";
+
+    const verdictBadge = document.createElement("span");
+    verdictBadge.className = `verdict-badge verdict-${vLower}`;
+    verdictBadge.textContent = audit.verdict;
+
+    auditHeader.append(auditTitle, verdictBadge);
+    auditCard.append(auditHeader);
+
+    if (audit.concern_type) {
+      const concernP = document.createElement("p");
+      concernP.className = "audit-concern";
+      const cLabel = document.createElement("strong");
+      cLabel.textContent = "Concern type: ";
+      const cVal = document.createElement("span");
+      cVal.className = "concern-type-badge";
+      cVal.textContent = audit.concern_type;
+      concernP.append(cLabel, cVal);
+      auditCard.append(concernP);
+    }
+
+    const modelProfileP = document.createElement("p");
+    modelProfileP.className = "audit-model-profile";
+    modelProfileP.textContent = `Model: ${audit.model || "N/A"} • Profile: ${audit.profile || "N/A"}`;
+    auditCard.append(modelProfileP);
+
+    if (audit.explanation) {
+      const expP = document.createElement("p");
+      expP.className = "audit-explanation";
+      expP.textContent = audit.explanation;
+      auditCard.append(expP);
+    }
+
+    rsnSec.append(auditCard);
+  }
+
+  // Trace display
+  if (event.exposedReasoningTrace) {
+    const traceHeading = document.createElement("h5");
+    traceHeading.className = "reasoning-trace-heading";
+    traceHeading.textContent = "Provider reasoning trace";
+
+    const traceBox = document.createElement("pre");
+    traceBox.className = "reasoning-trace";
+    const flagged = event.reasoningAudit?.flagged_excerpts || [];
+    renderHighlightedText(traceBox, event.exposedReasoningTrace, flagged);
+
+    rsnSec.append(traceHeading, traceBox);
+  } else {
+    const unavailableLabel = document.createElement("p");
+    unavailableLabel.className = "reasoning-label unavailable";
+    unavailableLabel.textContent = "Unavailable. No provider-exposed reasoning trace was supplied.";
+    rsnSec.append(unavailableLabel);
+  }
+
+  // Summary display
   if (event.reasoningSummary) {
     const summaryLabel = document.createElement("p");
     summaryLabel.className = "reasoning-label";
     summaryLabel.textContent = "Agent-authored summary. This is not a provider-exposed reasoning trace.";
     const summaryText = document.createElement("p");
+    summaryText.className = "reasoning-summary-text";
     summaryText.textContent = event.reasoningSummary;
     rsnSec.append(summaryLabel, summaryText);
   }
+
+  // Permanent disclaimer
+  const disclaimer = document.createElement("p");
+  disclaimer.className = "reasoning-disclaimer";
+  disclaimer.textContent = "Reasoning is evidence, not proof of intent.";
+  rsnSec.append(disclaimer);
 
   article.append(title, tool, description, obsSec, polSec, appSec, execSec, rsnSec);
 }
@@ -314,6 +505,18 @@ function timelineButton(event, run) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = `timeline-event status-${event.status}`;
+  if (event.reasonCode) {
+    button.classList.add(`reason-${event.reasonCode.toLowerCase().replace(/_/g, "-")}`);
+  }
+  if (event.status === "pending-approval") {
+    if (event.reasonCode === "REASONING_SCOPE_CONCERN") {
+      button.classList.add("hold-concern");
+    } else if (event.reasonCode === "REASONING_AUDIT_FAILED") {
+      button.classList.add("hold-failed");
+    } else {
+      button.classList.add("hold-policy");
+    }
+  }
   button.dataset.eventId = event.id;
   button.setAttribute("aria-current", String(event.id === state.eventId));
 
@@ -329,10 +532,26 @@ function timelineButton(event, run) {
 
   const meta = document.createElement("span");
   meta.className = "event-meta";
-  meta.textContent = `${event.tool} • ${event.resource}`;
+  if (event.turnId) {
+    const turnBadge = document.createElement("span");
+    turnBadge.className = "turn-badge";
+    turnBadge.textContent = event.turnId;
+    meta.append(turnBadge, document.createTextNode(` • ${event.tool} • ${event.resource}`));
+  } else {
+    meta.textContent = `${event.tool} • ${event.resource}`;
+  }
 
   const status = document.createElement("span");
   status.className = "event-status";
+  if (event.status === "pending-approval") {
+    if (event.reasonCode === "REASONING_SCOPE_CONCERN") {
+      status.classList.add("status-hold-concern");
+    } else if (event.reasonCode === "REASONING_AUDIT_FAILED") {
+      status.classList.add("status-hold-failed");
+    } else {
+      status.classList.add("status-hold-policy");
+    }
+  }
   status.textContent = event.statusLabel;
 
   content.append(title, meta);
@@ -340,8 +559,10 @@ function timelineButton(event, run) {
   button.addEventListener("click", () => {
     state.runId = run.id;
     state.eventId = event.id;
-    for (const eventButton of elements.timeline.querySelectorAll("button")) {
-      eventButton.setAttribute("aria-current", String(eventButton.dataset.eventId === state.eventId));
+    if (elements.timeline) {
+      for (const eventButton of elements.timeline.querySelectorAll("button")) {
+        eventButton.setAttribute("aria-current", String(eventButton.dataset.eventId === state.eventId));
+      }
     }
     renderEvidence();
   });
@@ -350,7 +571,7 @@ function timelineButton(event, run) {
 
 function renderTimeline() {
   const run = getSelectedRun();
-  if (!run) return;
+  if (!run || !elements.timeline || !elements.timelineCount) return;
   const visibleEvents = filterEvents(run.events, state.filters);
   state.eventId = reconcileSelection(activeRuns, state.runId, state.eventId, visibleEvents);
   elements.timeline.replaceChildren(
@@ -363,12 +584,12 @@ function renderTimeline() {
   elements.timelineCount.textContent = `${visibleEvents.length} of ${run.events.length} events shown`;
 
   const isEmpty = visibleEvents.length === 0;
-  elements.emptyState.hidden = !isEmpty;
+  if (elements.emptyState) elements.emptyState.hidden = !isEmpty;
   elements.timeline.hidden = isEmpty;
 }
 
 function renderApprovals() {
-  if (!elements.approvalsList) return;
+  if (!elements.approvalsList || !elements.pendingApprovalsCount) return;
   elements.pendingApprovalsCount.textContent = String(pendingApprovals.length);
 
   if (pendingApprovals.length === 0) {
@@ -412,10 +633,12 @@ function renderApprovals() {
         approveBtn.disabled = true;
         denyBtn.disabled = true;
         try {
-          await approveAction(appr.id, reasonInput.value || "Approved in reviewer UI");
+          if (isLiveMode) {
+            await approveAction(appr.id, reasonInput.value || "Approved in reviewer UI");
+          }
           pendingApprovals = pendingApprovals.filter((a) => a.id !== appr.id);
           renderApprovals();
-          await refreshApprovals();
+          if (isLiveMode) await refreshApprovals();
         } catch (err) {
           alert(`Approval failed: ${err.message}`);
           approveBtn.disabled = false;
@@ -431,10 +654,12 @@ function renderApprovals() {
         approveBtn.disabled = true;
         denyBtn.disabled = true;
         try {
-          await denyAction(appr.id, reasonInput.value || "Denied in reviewer UI");
+          if (isLiveMode) {
+            await denyAction(appr.id, reasonInput.value || "Denied in reviewer UI");
+          }
           pendingApprovals = pendingApprovals.filter((a) => a.id !== appr.id);
           renderApprovals();
-          await refreshApprovals();
+          if (isLiveMode) await refreshApprovals();
         } catch (err) {
           alert(`Denial failed: ${err.message}`);
           approveBtn.disabled = false;
@@ -465,6 +690,7 @@ async function refreshApprovals() {
 }
 
 function applyFiltersFromForm() {
+  if (!elements.filtersForm) return;
   const formData = new FormData(elements.filtersForm);
   state.filters = {
     status: formData.get("status") || "all",
@@ -473,13 +699,13 @@ function applyFiltersFromForm() {
 }
 
 function resetFilters() {
-  const resetHadFocus = document.activeElement === elements.emptyReset;
+  const resetHadFocus = elements.emptyReset && document.activeElement === elements.emptyReset;
   state.filters = createInitialFilters();
-  elements.statusFilter.value = "all";
-  elements.textFilter.value = "";
+  if (elements.statusFilter) elements.statusFilter.value = "all";
+  if (elements.textFilter) elements.textFilter.value = "";
   renderTimeline();
   renderEvidence();
-  if (resetHadFocus) {
+  if (resetHadFocus && elements.textFilter) {
     elements.textFilter.focus();
   }
 }
@@ -493,9 +719,96 @@ function render() {
 }
 
 // Convert raw API event to timeline event format
-function transformApiEvent(ev) {
-  const type = ev.event_type;
+export function transformApiEvent(ev, context = null) {
+  const type = ev.event_type || ev.type || "UNKNOWN";
   const d = ev.details || ev.payload || {};
+  const actionReq = ev.action_request || context?.actionRequest || d.action_request || {};
+  const actionReqId = ev.action_request_id || d.action_request_id || (type === "ACTION_REQUESTED" ? ev.id : null);
+  const turnId = ev.turn_id ?? d.turn_id ?? actionReq.turn_id ?? null;
+
+  if (type === "ACTION_REQUESTED" || actionReq.tool) {
+    const storedReq = {
+      tool: d.tool || actionReq.tool,
+      operation: d.operation || actionReq.operation,
+      resource: d.resource || actionReq.resource,
+      arguments: d.arguments || actionReq.arguments,
+      reasoning_summary: d.reasoning_summary || actionReq.reasoning_summary,
+      exposed_reasoning_trace: d.exposed_reasoning_trace || actionReq.exposed_reasoning_trace,
+      reasoning_provenance: d.reasoning_provenance || actionReq.reasoning_provenance,
+      turn_id: turnId,
+    };
+    if (actionReqId) actionRequestStore.set(actionReqId, storedReq);
+    if (turnId) actionRequestStore.set(turnId, storedReq);
+  }
+
+  const cachedReq = (actionReqId && actionRequestStore.get(actionReqId)) || (turnId && actionRequestStore.get(turnId)) || {};
+
+  const exposedReasoningTrace =
+    d.exposed_reasoning_trace ??
+    ev.exposed_reasoning_trace ??
+    actionReq.exposed_reasoning_trace ??
+    cachedReq.exposed_reasoning_trace ??
+    d.reasoning_trace ??
+    ev.reasoning_trace ??
+    null;
+
+  const reasoningSummary =
+    d.reasoning_summary ??
+    ev.reasoning_summary ??
+    actionReq.reasoning_summary ??
+    cachedReq.reasoning_summary ??
+    null;
+
+  let reasoningProvenance =
+    d.reasoning_provenance ??
+    ev.reasoning_provenance ??
+    actionReq.reasoning_provenance ??
+    cachedReq.reasoning_provenance ??
+    null;
+
+  if (!reasoningProvenance) {
+    if (ev.isFixture || ev.id?.startsWith?.("inv-") || ev.id?.startsWith?.("res-") || ev.id?.startsWith?.("srv-")) {
+      reasoningProvenance = "SYNTHETIC_FIXTURE";
+    } else if (exposedReasoningTrace) {
+      reasoningProvenance = "PROVIDER_EXPOSED_TRACE";
+    } else if (reasoningSummary) {
+      reasoningProvenance = "AGENT_AUTHORED_SUMMARY";
+    } else {
+      reasoningProvenance = "UNAVAILABLE";
+    }
+  }
+
+  // Audit extraction
+  let rawAudit =
+    ev.reasoning_audit ||
+    d.reasoning_audit ||
+    context?.reasoningAudit ||
+    (type.startsWith("REASONING_AUDIT_") ? d : null);
+
+  if (rawAudit) {
+    if (actionReqId) auditStore.set(actionReqId, rawAudit);
+    if (turnId) auditStore.set(turnId, rawAudit);
+  } else {
+    rawAudit = (actionReqId && auditStore.get(actionReqId)) || (turnId && auditStore.get(turnId)) || null;
+  }
+
+  let reasoningAudit = null;
+  if (rawAudit && (rawAudit.verdict || rawAudit.explanation || rawAudit.flagged_excerpts)) {
+    reasoningAudit = {
+      verdict: rawAudit.verdict || (type === "REASONING_AUDIT_FAILED" ? "FAILED" : "NO_CONCERN"),
+      concern_type: rawAudit.concern_type ?? null,
+      flagged_excerpts: Array.isArray(rawAudit.flagged_excerpts) ? rawAudit.flagged_excerpts : [],
+      explanation: rawAudit.explanation || "",
+      model: rawAudit.model || "",
+      profile: rawAudit.profile || "",
+      latency_ms: rawAudit.latency_ms ?? 0,
+    };
+  }
+
+  const reasonCode =
+    d.reason_code ||
+    ev.reason_code ||
+    (reasoningAudit?.verdict === "CONCERN" ? "REASONING_SCOPE_CONCERN" : null);
 
   let status = "attempted";
   let statusLabel = "Action: attempted";
@@ -508,14 +821,27 @@ function transformApiEvent(ev) {
   } else if (type === "POLICY_DENIED" || type === "APPROVAL_DENIED") {
     status = "blocked";
     statusLabel = "Policy: blocked";
-    statusDescription = `Prevented by deterministic policy: ${d.reason_code || "DENIED"}.`;
-  } else if (type === "POLICY_HELD_FOR_APPROVAL" || type === "APPROVAL_REQUESTED") {
+    statusDescription = `Prevented by deterministic policy: ${reasonCode || "DENIED"}.`;
+  } else if (
+    type === "POLICY_HELD" ||
+    type === "POLICY_HELD_FOR_APPROVAL" ||
+    type === "APPROVAL_REQUESTED" ||
+    d.outcome === "HOLD"
+  ) {
     status = "pending-approval";
-    statusLabel = "Policy: pending approval";
-    statusDescription = "Held for human reviewer approval.";
+    if (reasonCode === "REASONING_SCOPE_CONCERN") {
+      statusLabel = "HOLD (reasoning concern)";
+      statusDescription = "Held for approval: reasoning audit identified a scope concern.";
+    } else if (reasonCode === "REASONING_AUDIT_FAILED") {
+      statusLabel = "HOLD (audit failed)";
+      statusDescription = "Held for approval: reasoning audit failed closed.";
+    } else {
+      statusLabel = "HOLD (policy)";
+      statusDescription = "Held for human reviewer approval by deterministic policy.";
+    }
   }
 
-  const offset = `+00:${String(ev.sequence).padStart(2, "0")}`;
+  const offset = `+00:${String(ev.sequence ?? 0).padStart(2, "0")}`;
   const title = ev.summary || (d.operation ? `${d.operation} on ${d.resource}` : `${type}`);
 
   return {
@@ -524,17 +850,17 @@ function transformApiEvent(ev) {
     isFixture: false,
     offset,
     title,
-    tool: d.tool || "workspace",
-    operation: d.operation || "unspecified",
-    resource: d.resource || "system",
+    tool: d.tool || actionReq.tool || cachedReq.tool || "workspace",
+    operation: d.operation || actionReq.operation || cachedReq.operation || "unspecified",
+    resource: d.resource || actionReq.resource || cachedReq.resource || "system",
     status,
     statusLabel,
     statusDescription,
     description: ev.summary || d.explanation || `Observed ${type} event on sequence ${ev.sequence}.`,
-    arguments: d.arguments || {},
+    arguments: d.arguments || actionReq.arguments || cachedReq.arguments || {},
     timestamp: ev.timestamp || ev.created_at,
     policyOutcome: d.outcome || null,
-    reasonCode: d.reason_code || null,
+    reasonCode,
     policyExplanation: d.explanation || ev.summary || null,
     approvalStatus: d.approval_status || null,
     resolvedBy: d.resolved_by || null,
@@ -542,10 +868,20 @@ function transformApiEvent(ev) {
     executionStatus: d.execution_status || (status === "executed" ? "EXECUTED" : "NOT_EXECUTED"),
     exitCode: d.exit_code ?? 0,
     resultPreview: d.result_preview || (d.sanitized_result?.preview ?? null),
-    reasoningSummary: d.reasoning_summary || null,
+    reasoningSummary,
+    reasoning_summary: reasoningSummary,
     execution: status === "executed" ? "Executed in synthetic sandbox." : "Not executed.",
-    policyDecision: d.reason_code ? `Policy decision: ${d.reason_code}` : "No policy decision.",
-    reasoningTrace: "Unavailable. No provider-exposed reasoning trace was supplied.",
+    policyDecision: reasonCode ? `Policy decision: ${reasonCode}` : "No policy decision.",
+    exposedReasoningTrace,
+    exposed_reasoning_trace: exposedReasoningTrace,
+    reasoningTrace: exposedReasoningTrace || "Unavailable. No provider-exposed reasoning trace was supplied.",
+    reasoning_trace: exposedReasoningTrace || "Unavailable. No provider-exposed reasoning trace was supplied.",
+    reasoningProvenance,
+    reasoning_provenance: reasoningProvenance,
+    turnId,
+    turn_id: turnId,
+    reasoningAudit,
+    reasoning_audit: reasoningAudit,
   };
 }
 
@@ -583,111 +919,274 @@ function subscribeToRun(runId) {
   });
 }
 
-// Preset selection
-if (elements.actionPreset) {
-  elements.actionPreset.addEventListener("change", () => {
-    const preset = PRESETS[elements.actionPreset.value];
-    if (!preset) return;
-    elements.actionTool.value = preset.tool;
-    elements.actionOperation.value = preset.operation;
-    elements.actionResource.value = preset.resource;
-    elements.actionSummary.value = preset.summary;
-    elements.actionArguments.value = preset.arguments;
-  });
-}
+if (typeof document !== "undefined") {
+  // Preset selection
+  if (elements.actionPreset) {
+    elements.actionPreset.addEventListener("change", () => {
+      const preset = PRESETS[elements.actionPreset.value];
+      if (!preset) return;
+      if (elements.actionTool) elements.actionTool.value = preset.tool;
+      if (elements.actionOperation) elements.actionOperation.value = preset.operation;
+      if (elements.actionResource) elements.actionResource.value = preset.resource;
+      if (elements.actionSummary) elements.actionSummary.value = preset.summary;
+      if (elements.actionTrace) elements.actionTrace.value = preset.trace || "";
+      if (elements.actionArguments) elements.actionArguments.value = preset.arguments;
+    });
+  }
 
-// Action form submission
-if (elements.actionForm) {
-  elements.actionForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const run = getSelectedRun();
-    if (!run) return;
+  // Action form submission
+  if (elements.actionForm) {
+    elements.actionForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const run = getSelectedRun();
+      if (!run) return;
 
-    let parsedArgs = {};
-    try {
-      parsedArgs = JSON.parse(elements.actionArguments.value || "{}");
-    } catch {
-      alert("Arguments must be valid JSON.");
-      return;
-    }
-
-    elements.submitActionBtn.disabled = true;
-    elements.actionStatusMsg.hidden = false;
-    elements.actionStatusMsg.textContent = "Submitting action to gateway...";
-
-    const payload = {
-      tool: elements.actionTool.value.trim(),
-      operation: elements.actionOperation.value.trim(),
-      resource: elements.actionResource.value.trim(),
-      arguments: parsedArgs,
-      reasoning_summary: elements.actionSummary.value.trim() || null,
-    };
-
-    if (isLiveMode && run.isLive) {
+      let parsedArgs = {};
       try {
-        const result = await submitAction(run.id, payload);
-        const outcome = result.policy_decision?.outcome || "UNKNOWN";
-        const reason = result.policy_decision?.reason_code || "";
-        elements.actionStatusMsg.textContent = `Action processed: ${outcome} (${reason}).`;
+        parsedArgs = JSON.parse(elements.actionArguments?.value || "{}");
+      } catch {
+        alert("Arguments must be valid JSON.");
+        return;
+      }
 
-        // Immediately incorporate generated events for snappy UI
-        if (result.events && Array.isArray(result.events)) {
-          for (const rawEv of result.events) {
-            const formatted = transformApiEvent(rawEv);
-            if (!run.events.some((e) => e.sequence === formatted.sequence)) {
-              run.events.push(formatted);
+      if (elements.submitActionBtn) elements.submitActionBtn.disabled = true;
+      if (elements.actionStatusMsg) {
+        elements.actionStatusMsg.hidden = false;
+        elements.actionStatusMsg.textContent = "Submitting action to gateway...";
+      }
+
+      const payload = {
+        tool: elements.actionTool?.value.trim() || "workspace",
+        operation: elements.actionOperation?.value.trim() || "unspecified",
+        resource: elements.actionResource?.value.trim() || "system",
+        arguments: parsedArgs,
+        reasoning_summary: elements.actionSummary?.value.trim() || null,
+        exposed_reasoning_trace: elements.actionTrace ? elements.actionTrace.value.trim() || null : null,
+      };
+
+      if (isLiveMode && run.isLive) {
+        try {
+          const result = await submitAction(run.id, payload);
+          const outcome = result.policy_decision?.outcome || "UNKNOWN";
+          const reason = result.policy_decision?.reason_code || "";
+          if (elements.actionStatusMsg) {
+            elements.actionStatusMsg.textContent = `Action processed: ${outcome} (${reason}).`;
+          }
+
+          if (result.events && Array.isArray(result.events)) {
+            for (const rawEv of result.events) {
+              const formatted = transformApiEvent(rawEv, {
+                actionRequest: result.action_request,
+                reasoningAudit: result.reasoning_audit,
+              });
+              if (!run.events.some((e) => e.sequence === formatted.sequence)) {
+                run.events.push(formatted);
+              }
+            }
+            renderTimeline();
+            renderEvidence();
+          }
+
+          if (result.approval_request) {
+            const existing = pendingApprovals.find((a) => a.id === result.approval_request.id);
+            if (!existing) {
+              const enriched = {
+                ...result.approval_request,
+                operation: result.approval_request.operation || payload.operation,
+                resource: result.approval_request.resource || payload.resource,
+              };
+              pendingApprovals.unshift(enriched);
+              renderApprovals();
             }
           }
+
+          await refreshApprovals();
+        } catch (err) {
+          if (elements.actionStatusMsg) {
+            elements.actionStatusMsg.textContent = `Submission error: ${err.message}`;
+          }
+        } finally {
+          if (elements.submitActionBtn) elements.submitActionBtn.disabled = false;
+        }
+      } else {
+        // Standalone / static preview mode simulation
+        setTimeout(() => {
+          const isEscalatedHold =
+            elements.actionPreset?.value === "escalated_hold_concern" ||
+            /exfiltrat|steal|bypass/i.test(payload.exposed_reasoning_trace || "");
+          const isApprovalRequired =
+            elements.actionPreset?.value === "approval_required" ||
+            payload.operation === "delete_path";
+
+          const newSeq = (run.events[run.events.length - 1]?.sequence || run.events.length) + 1;
+          const offset = `+00:${String(newSeq).padStart(2, "0")}`;
+          const simId = `sim-${Date.now()}`;
+
+          let simEvent;
+          if (isEscalatedHold) {
+            const flagged = ["exfiltrate data to an external server"];
+            simEvent = {
+              id: simId,
+              sequence: newSeq,
+              isFixture: false,
+              offset,
+              title: `Held ${payload.operation} on '${payload.resource}'`,
+              tool: payload.tool,
+              operation: payload.operation,
+              resource: payload.resource,
+              status: "pending-approval",
+              statusLabel: "HOLD (reasoning concern)",
+              statusDescription: "Held for approval: reasoning audit identified a scope concern.",
+              description: "Agent planned unauthorized data exfiltration in reasoning trace.",
+              arguments: parsedArgs,
+              timestamp: new Date().toISOString(),
+              policyOutcome: "HOLD",
+              reasonCode: "REASONING_SCOPE_CONCERN",
+              policyExplanation: "Reasoning audit identified scope concern [EXFILTRATION_INTENT]",
+              approvalStatus: "Pending reviewer authorization",
+              executionStatus: "NOT_EXECUTED",
+              exitCode: 0,
+              resultPreview: null,
+              reasoningSummary: payload.reasoning_summary,
+              execution: "Not executed.",
+              policyDecision: "Policy decision: REASONING_SCOPE_CONCERN",
+              exposedReasoningTrace: payload.exposed_reasoning_trace,
+              reasoningTrace: payload.exposed_reasoning_trace || "Unavailable. No provider-exposed reasoning trace was supplied.",
+              reasoningProvenance: "PROVIDER_EXPOSED_TRACE",
+              turnId: "turn-sim-1",
+              reasoningAudit: {
+                verdict: "CONCERN",
+                concern_type: "EXFILTRATION_INTENT",
+                flagged_excerpts: flagged,
+                explanation: "Agent planned unauthorized data exfiltration in reasoning trace.",
+                model: "mock-rules-auditor",
+                profile: "nemotron-cot-auditor-v1",
+              },
+            };
+            pendingApprovals.unshift({
+              id: `appr-${simId}`,
+              run_id: run.id,
+              action_request_id: simId,
+              operation: payload.operation,
+              resource: payload.resource,
+              created_at: new Date().toISOString(),
+            });
+            renderApprovals();
+            if (elements.actionStatusMsg) {
+              elements.actionStatusMsg.textContent = "Action processed: HOLD (REASONING_SCOPE_CONCERN).";
+            }
+          } else if (isApprovalRequired) {
+            simEvent = {
+              id: simId,
+              sequence: newSeq,
+              isFixture: false,
+              offset,
+              title: `Held ${payload.operation} on '${payload.resource}'`,
+              tool: payload.tool,
+              operation: payload.operation,
+              resource: payload.resource,
+              status: "pending-approval",
+              statusLabel: "HOLD (policy)",
+              statusDescription: "Held for human reviewer approval by deterministic policy.",
+              description: "Operation requires human approval.",
+              arguments: parsedArgs,
+              timestamp: new Date().toISOString(),
+              policyOutcome: "HOLD",
+              reasonCode: "APPROVAL_REQUIRED",
+              policyExplanation: "Operation requires human authorization.",
+              approvalStatus: "Pending reviewer authorization",
+              executionStatus: "NOT_EXECUTED",
+              exitCode: 0,
+              resultPreview: null,
+              reasoningSummary: payload.reasoning_summary,
+              execution: "Not executed.",
+              policyDecision: "Policy decision: APPROVAL_REQUIRED",
+              exposedReasoningTrace: payload.exposed_reasoning_trace,
+              reasoningTrace: payload.exposed_reasoning_trace || "Unavailable. No provider-exposed reasoning trace was supplied.",
+              reasoningProvenance: payload.exposed_reasoning_trace ? "PROVIDER_EXPOSED_TRACE" : (payload.reasoning_summary ? "AGENT_AUTHORED_SUMMARY" : "UNAVAILABLE"),
+              turnId: "turn-sim-1",
+              reasoningAudit: null,
+            };
+            pendingApprovals.unshift({
+              id: `appr-${simId}`,
+              run_id: run.id,
+              action_request_id: simId,
+              operation: payload.operation,
+              resource: payload.resource,
+              created_at: new Date().toISOString(),
+            });
+            renderApprovals();
+            if (elements.actionStatusMsg) {
+              elements.actionStatusMsg.textContent = "Action processed: HOLD (APPROVAL_REQUIRED).";
+            }
+          } else {
+            simEvent = {
+              id: simId,
+              sequence: newSeq,
+              isFixture: false,
+              offset,
+              title: `Executed ${payload.operation} on '${payload.resource}'`,
+              tool: payload.tool,
+              operation: payload.operation,
+              resource: payload.resource,
+              status: "executed",
+              statusLabel: "Action: executed",
+              statusDescription: "Permitted by policy and executed synthetically.",
+              description: `Simulated action execution for ${payload.operation}.`,
+              arguments: parsedArgs,
+              timestamp: new Date().toISOString(),
+              policyOutcome: "ALLOW",
+              reasonCode: "DEFAULT_ALLOW",
+              policyExplanation: "Action permitted.",
+              approvalStatus: "Not required",
+              executionStatus: "EXECUTED",
+              exitCode: 0,
+              resultPreview: "Synthetic preview output",
+              reasoningSummary: payload.reasoning_summary,
+              execution: "Executed in synthetic sandbox.",
+              policyDecision: "Policy decision: DEFAULT_ALLOW",
+              exposedReasoningTrace: payload.exposed_reasoning_trace,
+              reasoningTrace: payload.exposed_reasoning_trace || "Unavailable. No provider-exposed reasoning trace was supplied.",
+              reasoningProvenance: payload.exposed_reasoning_trace ? "PROVIDER_EXPOSED_TRACE" : (payload.reasoning_summary ? "AGENT_AUTHORED_SUMMARY" : "UNAVAILABLE"),
+              turnId: "turn-sim-1",
+              reasoningAudit: null,
+            };
+            if (elements.actionStatusMsg) {
+              elements.actionStatusMsg.textContent = "Simulated action submitted in preview mode.";
+            }
+          }
+
+          run.events.push(simEvent);
+          state.eventId = simEvent.id;
           renderTimeline();
           renderEvidence();
-        }
-
-        if (result.approval_request) {
-          const existing = pendingApprovals.find((a) => a.id === result.approval_request.id);
-          if (!existing) {
-            const enriched = {
-              ...result.approval_request,
-              operation: result.approval_request.operation || payload.operation,
-              resource: result.approval_request.resource || payload.resource,
-            };
-            pendingApprovals.unshift(enriched);
-            renderApprovals();
-          }
-        }
-
-        await refreshApprovals();
-      } catch (err) {
-        elements.actionStatusMsg.textContent = `Submission error: ${err.message}`;
-      } finally {
-        elements.submitActionBtn.disabled = false;
+          if (elements.submitActionBtn) elements.submitActionBtn.disabled = false;
+        }, 100);
       }
-    } else {
-      // Standalone / static preview mode
-      setTimeout(() => {
-        elements.actionStatusMsg.textContent = "Simulated action submitted in preview mode.";
-        elements.submitActionBtn.disabled = false;
-      }, 200);
-    }
-  });
+    });
+  }
+
+  // Filters listeners
+  if (elements.filtersForm) {
+    elements.filtersForm.addEventListener("input", () => {
+      applyFiltersFromForm();
+      renderTimeline();
+      renderEvidence();
+    });
+    elements.filtersForm.addEventListener("submit", (submitEvent) => {
+      submitEvent.preventDefault();
+    });
+  }
+  if (elements.resetFilters) elements.resetFilters.addEventListener("click", resetFilters);
+  if (elements.emptyReset) elements.emptyReset.addEventListener("click", resetFilters);
+
+  // Render initial static fixtures synchronously so page is immediately ready
+  render();
 }
-
-// Filters listeners
-elements.filtersForm.addEventListener("input", () => {
-  applyFiltersFromForm();
-  renderTimeline();
-  renderEvidence();
-});
-elements.filtersForm.addEventListener("submit", (submitEvent) => {
-  submitEvent.preventDefault();
-});
-elements.resetFilters.addEventListener("click", resetFilters);
-elements.emptyReset.addEventListener("click", resetFilters);
-
-// Render initial static fixtures synchronously so page is immediately ready
-render();
 
 // Bootstrapping: check if live backend is requested and available
 async function bootstrap() {
+  if (typeof window === "undefined") return;
   const isLiveRequested =
     window.location.search.includes("live") ||
     window.location.port === "8000" ||
@@ -726,7 +1225,7 @@ async function bootstrap() {
 
       // Fetch existing events for the live run
       const rawEvents = await getEvents(liveRun.id);
-      const transformedEvents = rawEvents.map(transformApiEvent);
+      const transformedEvents = rawEvents.map((e) => transformApiEvent(e));
 
       const formattedLiveRun = {
         id: liveRun.id,
@@ -756,4 +1255,6 @@ async function bootstrap() {
   }
 }
 
-bootstrap();
+if (typeof document !== "undefined") {
+  bootstrap();
+}

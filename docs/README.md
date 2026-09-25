@@ -10,7 +10,7 @@
 
 - [Architecture overview](ARCHITECTURE.md): what the code does today.
 - [Proposed architecture](architecture/proposed-scopewatch-architecture.md): the target design, amended by ADR-0001.
-- [Architecture decision records](adr/README.md): accepted decisions.
+- [Architecture decision records](adr/README.md): accepted decisions, including [ADR-0001: Pre-execution gateway with an open-weight reasoning agent](adr/0001-pre-execution-gateway.md).
 - [Planning session record, September 23](ideas/claude-opus-5.5-2026-09-23-planning-session.md): decisions, rejected options, and caveats behind the milestone backlog (issues #20–#52).
 
 ## Findings
@@ -21,7 +21,7 @@
 
 ## Ideas and history (model-authored, awaiting team review)
 
-- [GPT-5 gap audit, September 19](ideas/gpt-5-2026-09-19-gap-audit.md): partly outdated by PRs #16–#19; refresh tracked in #24.
+- [GPT-5 gap audit, September 19](ideas/gpt-5-2026-09-19-gap-audit.md): refreshed against main and backlog in issue #24.
 - [Union Alpha validation notes](ideas/union-alpha-2026-09-16-validation.md): capture and synthetic auditor results.
 - [GPT-6 discussion notes](ideas/gpt-6-notes.md).
 - [Gemini 3.8 Flash discussion notes](ideas/gemini-3.8-flash-notes.md): active gateway, taint tracking, two-tier monitor.

@@ -9,6 +9,42 @@ PORT="${PORT:-8000}"
 HOST="${HOST:-127.0.0.1}"
 DB_PATH="${REPO_ROOT}/runtime-data/scopewatch.db"
 WORKSPACE_ROOT="${REPO_ROOT}/demo/workspace"
+MODE="scripted"
+PROFILE=""
+AUTO_APPROVE=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --agent)
+      MODE="agent"
+      shift
+      ;;
+    --mode)
+      MODE="$2"
+      shift 2
+      ;;
+    --profile)
+      PROFILE="$2"
+      shift 2
+      ;;
+    --auto-approve)
+      AUTO_APPROVE=1
+      shift
+      ;;
+    --port)
+      PORT="$2"
+      shift 2
+      ;;
+    --host)
+      HOST="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
 
 # Python detection
 if [[ -f "${REPO_ROOT}/.venv/bin/python" ]]; then
@@ -22,7 +58,7 @@ fi
 
 echo "=================================================================="
 echo "Scopewatch Local Demonstration"
-echo "Synthetic mediation gateway baseline"
+echo "Synthetic mediation gateway baseline (mode: ${MODE})"
 echo "=================================================================="
 echo "Safety statement:"
 echo "This local baseline mediates only actions submitted through its"
@@ -34,9 +70,20 @@ echo ""
 # 1. Seed workspace fixtures and scenarios
 echo "[1/2] Seeding synthetic workspace and demonstration scenarios..."
 mkdir -p "${REPO_ROOT}/runtime-data"
-"${PYTHON}" "${REPO_ROOT}/scripts/seed_demo.py" \
-  --db-path "${DB_PATH}" \
+
+SEED_ARGS=(
+  --db-path "${DB_PATH}"
   --workspace-root "${WORKSPACE_ROOT}"
+  --mode "${MODE}"
+)
+if [[ -n "${PROFILE}" ]]; then
+  SEED_ARGS+=(--profile "${PROFILE}")
+fi
+if [[ "${AUTO_APPROVE}" -eq 1 ]]; then
+  SEED_ARGS+=(--auto-approve)
+fi
+
+"${PYTHON}" "${REPO_ROOT}/scripts/seed_demo.py" "${SEED_ARGS[@]}"
 
 # 2. Start server
 echo ""

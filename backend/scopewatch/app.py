@@ -24,6 +24,7 @@ from scopewatch.errors import (
 )
 from scopewatch.events import broadcaster
 from scopewatch.models import ApprovalStatus
+from scopewatch.reasoning_audit import ReasoningAuditor
 from scopewatch.schemas import (
     ActionResponse,
     ApprovalRequest,
@@ -51,7 +52,16 @@ async def lifespan(app: FastAPI):
     # Shutdown
 
 
-def create_app(db_path: Path | str = DB_PATH, workspace_root: Path | str = WORKSPACE_ROOT) -> FastAPI:
+def create_app(
+    db_path: Path | str = DB_PATH,
+    workspace_root: Path | str = WORKSPACE_ROOT,
+    auditor: Optional[ReasoningAuditor] = None,
+) -> FastAPI:
+    actual_db_path = Path(db_path)
+    actual_workspace_root = Path(workspace_root)
+    init_db(actual_db_path)
+    actual_workspace_root.mkdir(parents=True, exist_ok=True)
+
     app = FastAPI(
         title="Scopewatch Synthetic Gateway",
         description="Controlled baseline demo API for synthetic agent action review.",
@@ -72,7 +82,8 @@ def create_app(db_path: Path | str = DB_PATH, workspace_root: Path | str = WORKS
     app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore
     app.add_exception_handler(Exception, generic_error_handler)
 
-    service = ScopewatchService(db_path=db_path, workspace_root=workspace_root)
+    service = ScopewatchService(db_path=db_path, workspace_root=workspace_root, auditor=auditor)
+    app.state.service = service
 
     def get_service() -> ScopewatchService:
         return service
@@ -127,6 +138,15 @@ def create_app(db_path: Path | str = DB_PATH, workspace_root: Path | str = WORKS
         run, _ = svc.complete_run(run_id)
         return run
 
+    @app.post("/api/v1/runs/{run_id}/fail", response_model=Run)
+    def fail_run(
+        run_id: str,
+        reason: Optional[str] = Query(None),
+        svc: ScopewatchService = Depends(get_service),
+    ) -> Run:
+        run, _ = svc.fail_run(run_id, reason=reason or "Agent execution failed.")
+        return run
+
     # ---------------- Actions ----------------
 
     @app.post(
@@ -157,6 +177,15 @@ def create_app(db_path: Path | str = DB_PATH, workspace_root: Path | str = WORKS
         run_id: Optional[str] = Query(None),
         svc: ScopewatchService = Depends(get_service),
     ) -> list[ApprovalRequest]:
+        return svc.list_approvals(status_filter=status, run_id=run_id)
+
+    @app.get("/api/v1/runs/{run_id}/approvals", response_model=list[ApprovalRequest])
+    def list_run_approvals(
+        run_id: str,
+        status: Optional[ApprovalStatus] = Query(None),
+        svc: ScopewatchService = Depends(get_service),
+    ) -> list[ApprovalRequest]:
+        svc.get_run(run_id)
         return svc.list_approvals(status_filter=status, run_id=run_id)
 
     @app.post("/api/v1/approvals/{approval_id}/approve", response_model=ApprovalResolutionResponse)

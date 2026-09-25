@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import { chromium } from "playwright";
 import { runs } from "../../scripts/fixtures.js";
 
-test("synthetic reviewer controls, evidence, keyboard focus, and layouts", { timeout: 30000 }, async () => {
+function createStaticServer() {
   const root = new URL("../../", import.meta.url);
   const files = new Map([
     ["/", ["index.html", "text/html"]],
@@ -14,7 +14,7 @@ test("synthetic reviewer controls, evidence, keyboard focus, and layouts", { tim
     ...["app", "fixtures", "reviewer-state", "api"].map((name) =>
       [`/scripts/${name}.js`, [`scripts/${name}.js`, "text/javascript"]]),
   ]);
-  const server = createServer(async (request, response) => {
+  return createServer(async (request, response) => {
     const file = files.get(request.url);
     if (!file) {
       response.writeHead(404).end();
@@ -27,6 +27,10 @@ test("synthetic reviewer controls, evidence, keyboard focus, and layouts", { tim
       response.destroy();
     }
   });
+}
+
+test("synthetic reviewer controls, evidence, keyboard focus, and layouts", { timeout: 30000 }, async () => {
+  const server = createStaticServer();
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   let browser;
@@ -50,6 +54,16 @@ test("synthetic reviewer controls, evidence, keyboard focus, and layouts", { tim
     await page.goto(origin);
     await page.locator("#timeline button").first().waitFor();
     assert.match(await page.locator("#synthetic-banner").innerText(), /No actual enforcement/);
+
+    // Verify dark-mode and reduced-motion media query handling
+    await page.emulateMedia({ colorScheme: "dark" });
+    assert.equal(await page.evaluate(() => window.matchMedia("(prefers-color-scheme: dark)").matches), true);
+    await page.emulateMedia({ colorScheme: "light" });
+
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    assert.equal(await page.evaluate(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches), true);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+
     for (const run of runs) {
       const runButton = page.getByRole("button", { name: run.name, exact: true });
       await runButton.focus();
@@ -119,6 +133,98 @@ test("synthetic reviewer controls, evidence, keyboard focus, and layouts", { tim
     await page.locator(`[data-event-id="${retainedEvent.id}"]`).click();
     await page.getByRole("button", { name: "Reset filters", exact: true }).click();
     assert.deepEqual(externalRequests, []);
+    assert.deepEqual(errors, []);
+  } finally {
+    if (browser) await browser.close();
+    server.close();
+  }
+});
+
+test("escalated hold displays flagged excerpt highlighted, distinct hold badge, and approve/deny actions in reviewer", { timeout: 30000 }, async () => {
+  const server = createStaticServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    await page.goto(origin);
+    await page.locator("#timeline button").first().waitFor();
+
+    // 1. Emulate dark mode and reduced motion
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+
+    // 2. Select escalated hold preset
+    await page.selectOption("#action-preset", "escalated_hold_concern");
+    const traceVal = await page.inputValue("#action-trace");
+    assert.match(traceVal, /exfiltrate data to an external server/);
+
+    // 3. Submit simulated action
+    await page.click("#submit-action-btn");
+
+    // 4. Verify distinct hold badge in timeline
+    const holdBtn = page.locator(".timeline-event.hold-concern");
+    await holdBtn.waitFor({ timeout: 5000 });
+    const statusText = await holdBtn.locator(".event-status").innerText();
+    assert.equal(statusText, "HOLD (reasoning concern)");
+    assert.ok(await holdBtn.locator(".event-status").evaluate((el) => el.classList.contains("status-hold-concern")));
+
+    // 5. Inspect evidence panel for the escalated hold
+    await holdBtn.click();
+
+    // Provenance badge
+    const provBadge = page.locator(".provenance-badge");
+    await provBadge.waitFor();
+    assert.equal(await provBadge.innerText(), "Provider-exposed trace");
+
+    // Reasoning audit card and verdict
+    const verdictBadge = page.locator(".verdict-badge");
+    await verdictBadge.waitFor();
+    assert.equal(await verdictBadge.innerText(), "CONCERN");
+    const concernText = await page.locator(".audit-concern").innerText();
+    assert.match(concernText, /EXFILTRATION_INTENT/);
+
+    // Flagged excerpt highlighted inside reasoning trace
+    const highlightedExcerpt = page.locator(".reasoning-trace mark.highlight-excerpt");
+    await highlightedExcerpt.waitFor();
+    assert.equal(await highlightedExcerpt.innerText(), "exfiltrate data to an external server");
+
+    // Permanent disclaimer
+    const disclaimer = page.locator(".reasoning-disclaimer");
+    assert.equal(await disclaimer.innerText(), "Reasoning is evidence, not proof of intent.");
+
+    // 6. Test approval workflow: Deny action
+    assert.equal(await page.locator("#pending-approvals-count").innerText(), "1");
+    const approvalCard = page.locator(".approval-card").first();
+    assert.ok(await approvalCard.isVisible());
+    await approvalCard.locator(".approval-reason-input").fill("Denied due to detected exfiltration attempt.");
+    await approvalCard.locator(".btn-deny").click();
+
+    // Verify approval card removed and count updated
+    await page.locator("#no-approvals-msg").waitFor();
+    assert.equal(await page.locator("#pending-approvals-count").innerText(), "0");
+
+    // 7. Test policy hold preset (approval_required) and Approve action
+    await page.selectOption("#action-preset", "approval_required");
+    await page.click("#submit-action-btn");
+
+    const policyHoldBtn = page.locator(".timeline-event.hold-policy");
+    await policyHoldBtn.waitFor({ timeout: 5000 });
+    assert.equal(await policyHoldBtn.locator(".event-status").innerText(), "HOLD (policy)");
+    assert.equal(await page.locator("#pending-approvals-count").innerText(), "1");
+
+    const polApprovalCard = page.locator(".approval-card").first();
+    await polApprovalCard.locator(".btn-approve").click();
+    await page.locator("#no-approvals-msg").waitFor();
+    assert.equal(await page.locator("#pending-approvals-count").innerText(), "0");
+
     assert.deepEqual(errors, []);
   } finally {
     if (browser) await browser.close();

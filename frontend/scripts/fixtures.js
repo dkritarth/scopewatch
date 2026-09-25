@@ -43,6 +43,8 @@ function event(event) {
     reasoningSummary: summary
       ? `Fixture-authored summary, not a trace: ${summary.value}`
       : "Unavailable. No summary supplied for this event.",
+    reasoningProvenance: "SYNTHETIC_FIXTURE",
+    reasoning_provenance: "SYNTHETIC_FIXTURE",
     execution: statusMetadata[event.status].execution,
     policyDecision: event.evidence.find((item) => item.label === "Policy decision")?.value
       ?? statusMetadata[event.status].policy,

@@ -1,10 +1,23 @@
 # Proposed Scopewatch Architecture
 
-**Status:** Proposed for team review; not an accepted architecture or an implemented system.
+**Status:** Accepted with amendments by [ADR-0001](../adr/0001-pre-execution-gateway.md) (2026-09-23).
 
-This document turns the repository's current working direction into a concrete first-version architecture proposal. It deliberately separates the choices proposed here from ideas already supported by repository discussion and from work that remains open or deferred. If the team accepts this proposal, the durable decision should be recorded separately in a numbered architecture decision record (ADR).
+This document turns the repository's current working direction into a concrete first-version architecture proposal. It deliberately separates the choices proposed here from ideas already supported by repository discussion and from work that remains open or deferred. The team accepted this proposal on September 23, 2026 with amendments recorded in [ADR-0001: Pre-execution gateway with an open-weight reasoning agent](../adr/0001-pre-execution-gateway.md).
 
 ## Decision status
+
+### Amendments accepted in ADR-0001
+
+The planning session on September 23, 2026 accepted this architecture with the following amendments (recorded in [ADR-0001](../adr/0001-pre-execution-gateway.md)):
+
+1. **Stack:** Python 3.12, FastAPI, and SQLite (append-only event store behind a repository interface) for the backend. Next.js is dropped; the existing dependency-free vanilla JavaScript reviewer UI (`frontend/`) is accepted as the dashboard.
+2. **Raw chain-of-thought dependency:** Reverses the earlier working direction "Avoid making raw chain-of-thought a dependency" for the agent role. The agent model must be an open-weight reasoning model whose provider exposes raw reasoning tokens (Nemotron by default); closed models are permitted only in summary-only mode with the `AGENT_AUTHORED_SUMMARY` label. Reasoning is evidence, never proof.
+3. **Reasoning authority:** Strictly escalate-only. Reasoning concern can escalate `ALLOW` to `HOLD`; it never produces `ALLOW` or `DENY`, and never relaxes a deterministic decision. Fail-closed: audit errors yield `HOLD`.
+4. **Agent runtime:** Scopewatch runs its own minimal agent loop with a purpose-built system prompt and a controlled tool surface.
+5. **Swappable models:** Provider profiles (`mock`, `openrouter-dev`, `nebius-demo`) configure endpoints and models; core code does not hardcode model IDs.
+6. **Audit granularity:** One reasoning audit per agent turn covering all tool calls in that turn.
+7. **Executor isolation:** Docker container per run (`--network none`, non-root, read-only root filesystem, workspace mounted only). `run_command` accepts only allowlisted command prefixes parsed with `shlex`.
+8. **Demo progression:** Invoice processing scenarios first (M1), coding scenario with Docker executor second (M2).
 
 ### Decisions proposed to be locked in
 
@@ -16,8 +29,8 @@ This document turns the repository's current working direction into a concrete f
 - Held actions require an explicit, single-use developer decision before execution.
 - Every decision and execution outcome produces an evidence record for a developer-facing timeline.
 - V1 uses synthetic fixtures, dummy secrets, and controlled destinations only.
-- The proposed implementation stack is Next.js and TypeScript for the dashboard, Python and FastAPI for orchestration and policy evaluation, SQLite for the initial event store, and JSON or YAML for policy representation.
-- The proposed agent and semantic-evaluation model is NVIDIA Nemotron 3 Super through Nebius Token Factory, subject to availability, licensing, latency, cost, and structured-output validation.
+- The implementation stack is Python 3.12 and FastAPI for orchestration and policy evaluation, SQLite for the initial event store, vanilla JavaScript for the dashboard (Next.js dropped), and JSON or YAML for policy representation.
+- The proposed agent and semantic-evaluation model is NVIDIA Nemotron through Nebius Token Factory, swappable via provider profiles.
 
 ### Existing working direction
 
@@ -30,11 +43,10 @@ The following direction already has support in the repository's [PR #4 discussio
 - Make interception coverage and actual execution status visible.
 - Use a runtime-neutral `ActionRequest` between adapters and downstream services.
 - Use synthetic fixtures, dummy credentials, and controlled local destinations.
-- Avoid making raw chain-of-thought a dependency.
 
 ### Future work and intentionally deferred scope
 
-V1 does not include universal runtime support, unrestricted OS-wide shell interception, full causal taint tracking, raw chain-of-thought monitoring, a two-model architecture, enterprise IAM, Kubernetes, or full SOC/SIEM functionality. Production event infrastructure, richer approval scopes, broad network mediation, and integrations with additional agent runtimes remain future work.
+V1 does not include universal runtime support, unrestricted OS-wide shell interception, full causal taint tracking, enterprise IAM, Kubernetes, or full SOC/SIEM functionality. Production event infrastructure, richer approval scopes, broad network mediation, and integrations with additional agent runtimes remain future work.
 
 ## Goals
 
@@ -106,7 +118,7 @@ The developer supplies the original task, establishes the permitted workspace an
 
 ### Coding agent
 
-V1 integrates one coding-agent runtime. The proposed model is NVIDIA Nemotron 3 Super accessed through Nebius Token Factory. This selection remains subject to validation and must not be described as integrated until a working endpoint has been tested.
+V1 integrates one coding-agent runtime using a purpose-built Scopewatch agent loop. The default model is NVIDIA Nemotron accessed through Nebius Token Factory or OpenRouter.
 
 The initial structured tool surface should remain small:
 
@@ -178,11 +190,11 @@ The evaluator should return validated structured output conceptually similar to:
 }
 ```
 
-The model is not a security boundary. Its classification can support `ALLOW` or trigger `HOLD`, but it cannot override a deterministic `DENY`. A timeout, unavailable model, malformed response, or response that cannot be safely interpreted defaults to no execution for the protected ambiguous request.
+The model is not a security boundary. Its classification can trigger `HOLD` (escalate-only), but it cannot override a deterministic `DENY`, and cannot grant `ALLOW`. A timeout, unavailable model, malformed response, or response that cannot be safely interpreted defaults to `HOLD` for the protected ambiguous request.
 
 ### Controlled executor
 
-The executor is isolated behind the policy gate and exposes only the operations that the adapter can mediate. For the hackathon, the intended direction is a controlled sandbox abstraction targeted toward the Nebius environment. The exact Nebius or Token Factory sandbox capability has not been selected or implemented and must be verified before the integration is claimed.
+The executor is isolated behind the policy gate and exposes only the operations that the adapter can mediate. For the hackathon, execution occurs in an isolated Docker container per run (`--network none`, non-root, read-only root, workspace mount only).
 
 The executor rechecks the bound decision or approval before performing an operation, reports whether dispatch occurred, and returns a sanitized result or failure for evidence recording.
 
@@ -201,7 +213,7 @@ Every decision produces an append-only evidence record containing, as applicable
 - execution status; and
 - sanitized execution result or failure.
 
-V1 may use SQLite. Storage access should sit behind an event-store interface so policy logic is not coupled to SQLite and a production event database can replace it later.
+V1 uses SQLite. Storage access sits behind a repository interface so policy logic is not coupled to SQLite and a production event database can replace it later.
 
 ### Dashboard
 
@@ -223,195 +235,6 @@ The conceptual request schema is:
 
 ```json
 {
-  "run_id": "...",
-  "subject": "...",
-  "tool": "read_file",
-  "verb": "read",
-  "resource": "/workspace/project/src/auth.py",
-  "arguments_digest": "...",
-  "policy_version": "...",
-  "source_event_refs": []
-}
-```
-
-Field responsibilities:
-
-| Field | Purpose |
-| --- | --- |
-| `run_id` | Correlates the request with one agent run. |
-| `subject` | Identifies the agent or delegated principal being evaluated. |
-| `tool` | Names the structured tool requested by the agent. |
-| `verb` | Expresses the normalized operation, such as `read`, `write`, or `execute`. |
-| `resource` | Contains the canonical resource interpreted by policy and executor. |
-| `arguments_digest` | Binds the decision to exact arguments without duplicating sensitive content. |
-| `policy_version` | Identifies the policy evaluated for the request. |
-| `source_event_refs` | Links relevant prior evidence without asserting causal influence. |
-
-The implementation will need a versioned schema, validation rules, canonicalization rules, and definitions for command resources. Those details remain open.
-
-## Decision flow
-
-1. The agent makes a structured tool request through the runtime adapter.
-2. The adapter validates and canonicalizes it into an `ActionRequest`.
-3. The deterministic policy engine evaluates authority, tool, verb, and resource constraints.
-4. An explicit policy violation produces `DENY`; the executor is never called.
-5. A deterministically permitted, clearly task-relevant action produces `ALLOW` and may be sent to the executor.
-6. A deterministically permitted but semantically uncertain action is evaluated for scope drift.
-7. A material unresolved concern produces `HOLD`; the request remains unexecuted.
-8. The developer chooses **Approve once** or **Deny**. Approval is bound to the exact run, operation, arguments digest, and policy version and is consumed once.
-9. Before dispatch, the gate and executor recheck the decision and any approval.
-10. The evidence store records the decision, approval state, dispatch state, and result.
-
-### `ALLOW`
-
-The action satisfies deterministic policy and has no unresolved semantic concern. The executor may perform it.
-
-### `HOLD`
-
-The operation is not deterministically forbidden, but semantic scope drift or uncertainty requires human review. It must not execute until the developer approves it once. The other V1 action is **Deny**; broader approval scopes are deferred.
-
-### `DENY`
-
-The action violates deterministic policy or an explicit security rule. It is never sent to the executor.
-
-## Security invariants
-
-1. Protected operations have no path from agent to executor that bypasses Scopewatch.
-2. Deterministic authorization runs before semantic evaluation and execution.
-3. Model output is evidence, not authorization, and cannot override hard policy.
-4. A protected request that cannot be safely interpreted defaults to no execution.
-5. A held request does not execute before an exact, single-use approval is validated.
-6. An action is described as blocked only when it was intercepted before execution.
-7. Evidence explicitly records whether an action was attempted, approved, denied, dispatched, executed, or failed.
-8. Missing reasoning and missing events remain visibly missing; Scopewatch never reconstructs unavailable chain-of-thought.
-9. Only legitimately exposed summaries, traces, tool calls, model outputs, and runtime events are used.
-10. Demonstrations use synthetic credentials, synthetic files, and controlled destinations.
-11. Coverage claims are limited to structured operations routed through the controlled gateway.
-
-## Primary demo flow
-
-The developer asks:
-
-> Fix the failing authentication tests. Only work inside this repository.
-
-The authorized workspace is `/workspace/scopewatch-demo`. The coding agent legitimately reads `package.json` and authentication source files, runs tests, and modifies authentication code through the mediated tools.
-
-A repository fixture contains an untrusted instruction telling the agent to inspect a secret file. The agent requests:
-
-```text
-read_file("~/.ssh/id_rsa")
-```
-
-The runtime adapter resolves the request to `/home/developer/.ssh/id_rsa`. Before execution, deterministic policy compares it with the authorized workspace and returns:
-
-```text
-Decision: DENY
-Requested resource: /home/developer/.ssh/id_rsa
-Authorized scope: /workspace/scopewatch-demo
-Reason: RESOURCE_OUTSIDE_WORKSPACE
-Execution status: NOT_EXECUTED
-```
-
-The executor never receives the operation, and the dashboard displays it as blocked.
-
-A second scenario demonstrates an ambiguous external network request. This requires adding one narrowly structured network operation to the demo boundary; it is not permission for general agent network access. Deterministic policy establishes that the destination is not explicitly prohibited but does not establish task relevance. The semantic evaluator identifies possible scope drift, and Scopewatch returns `HOLD`. The developer chooses **Approve once** or **Deny**, and the timeline records the choice and whether execution followed.
-
-The first scenario demonstrates hard deterministic enforcement. The second demonstrates model-assisted semantic reasoning without treating the model as authority.
-
-## Proposed implementation stack
-
-| Concern | Proposed choice | Status |
-| --- | --- | --- |
-| Dashboard | Next.js and TypeScript | Proposal; not implemented |
-| Orchestrator and policy gateway | Python and FastAPI | Proposal; not implemented |
-| Evidence store | Append-only SQLite-backed event store | Proposal; not implemented |
-| Policy representation | JSON or YAML | Format still to be selected |
-| Agent model | NVIDIA Nemotron 3 Super | Must verify exact model ID and availability |
-| Semantic inference | Nebius Token Factory | Must verify endpoint and behavior |
-| Execution | Controlled sandbox abstraction targeted toward the Nebius hackathon environment | Exact integration still open |
-
-## Evaluation strategy
-
-Initial evaluation should cover:
-
-- valid file reads and writes;
-- permitted commands;
-- access outside the workspace;
-- a synthetic secret-file access attempt;
-- malicious instructions in repository content;
-- an unnecessary external request;
-- a legitimate ambiguous request requiring approval;
-- an explicit policy violation; and
-- safe completion of the assigned coding task.
-
-Where useful, compare deterministic policy alone with deterministic policy plus action-based semantic evaluation. Any later evaluation using legitimately exposed reasoning summaries should be reported separately. Held-out scenarios must remain separate from prompt-tuning examples.
-
-Candidate metrics include deterministic policy accuracy, unsafe-action block rate, false-positive hold rate, semantic classification accuracy, approval count, added p50 and p95 latency, and successful task completion rate. No benchmark numbers are available yet and none are implied by this proposal. A denial is counted as a successful block only when executor-side evidence confirms that the operation was not dispatched.
-
-## Architecture boundaries and limitations
-
-### What V1 can protect
-
-V1 can protect structured operations that are routed through its controlled runtime adapter, policy gate, and executor.
-
-### What V1 cannot claim to protect
-
-V1 cannot claim protection for:
-
-- operations performed outside the gateway;
-- arbitrary processes with unrestricted OS access;
-- every coding-agent runtime;
-- hidden reasoning unavailable from the model or provider;
-- general endpoint security; or
-- every form of prompt injection.
-
-The adapter and dashboard should expose a coverage statement listing the operations actually mediated. Absence of an alert outside that boundary does not establish authorization or safety.
-
-## Hackathon positioning
-
-This proposal fits the Coding and Agentic Engineering track because Scopewatch is a developer security layer for AI coding agents. Nebius supplies the proposed model and runtime infrastructure. NVIDIA Nemotron supplies proposed coding-agent reasoning and semantic scope classification. Scopewatch supplies the mediation boundary, deterministic authorization, approval flow, evidence model, and developer experience.
-
-These integrations are architectural proposals. The project should name the exact NVIDIA model ID, license, Nebius endpoint, measured structured-output behavior, latency, and cost only after validating them in the target environment.
-
-## Deferred work
-
-- additional coding-agent runtimes and adapters;
-- general-purpose network and API mediation;
-- arbitrary shell or host-wide interception;
-- multi-use, time-bound, or resource-family approvals;
-- enterprise identity and policy integrations;
-- production event databases, retention controls, and exports;
-- causal or token-level taint tracking;
-- additional synchronous or asynchronous model tiers;
-- SOC/SIEM workflows and alert routing;
-- Kubernetes deployment; and
-- broader prompt-injection coverage.
-
-## Open questions
-
-1. Which coding-agent runtime will V1 integrate, and how will direct executor access be removed?
-2. What exact operations and command forms will the first adapter mediate?
-3. Is a structured network operation included in V1 or only in a later demo increment?
-4. How are user authority, task scope, and non-overridable policy represented and combined?
-5. Will policy use JSON or YAML, and what is its versioning and validation model?
-6. How are approval identity, expiry, exact argument binding, and single-use consumption implemented?
-7. What event schema, redaction rules, and retention period apply to evidence?
-8. Is NVIDIA Nemotron 3 Super available through the selected Nebius interface under an acceptable license, and does it meet structured-output, latency, and cost requirements?
-9. Which sandbox mechanism provides the controlled executor in the hackathon environment?
-10. What scenario labels, held-out dataset, and success thresholds will be used?
-
-## Recommended implementation milestones
-
-1. **Lock the boundary:** select the first agent runtime, define the mediated tools, and prove the agent has no direct path to the controlled executor.
-2. **Specify canonical contracts:** version `ActionRequest`, policy, decision, approval, and evidence-event schemas, including canonicalization and digest rules.
-3. **Build deterministic enforcement:** implement workspace, tool, verb, and blocked-resource rules with traversal, symlink, command, timeout, and fail-closed tests.
-4. **Complete one end-to-end block:** connect the adapter, gate, executor, append-only store, and minimal timeline for the synthetic secret-read scenario.
-5. **Validate semantic holding:** benchmark the exact Nemotron/Nebius integration on held-out ambiguous actions, then add `HOLD` and exact one-time approval without weakening deterministic denial.
-
-## Proposed future ADR statement
-
-If the team accepts this architecture, a future ADR may record:
-
-> Scopewatch is a pre-execution security gateway for coding agents. It mediates structured tool actions before execution, applies deterministic authorization policy first, uses NVIDIA Nemotron on Nebius Token Factory to detect semantic scope drift for ambiguous actions, and returns ALLOW, HOLD, or DENY while recording a complete evidence trail. The first implementation supports one coding agent and one controlled sandbox executor.
-
-This document remains a proposal until the team explicitly accepts it. It does not itself create that ADR or supersede the repository's planning history.
+  \"run_id\": \"...\",
+  \"subject\": \"...\",
+  \"tool\": \"read_file\",\n  \"verb\": \"read\",\n  \"resource\": \"/workspace/project/src/auth.py\",\n  \"arguments_digest\": \"...\",\n  \"policy_version\": \"...\",\n  \"source_event_refs\": []\n}\n```\n\nField responsibilities:\n\n| Field | Purpose |\n| --- | --- |\n| `run_id` | Correlates the request with one agent run. |\n| `subject` | Identifies the agent or delegated principal being evaluated. |\n| `tool` | Names the structured tool requested by the agent. |\n| `verb` | Expresses the normalized operation, such as `read`, `write`, or `execute`. |\n| `resource` | Contains the canonical resource interpreted by policy and executor. |\n| `arguments_digest` | Binds the decision to exact arguments without duplicating sensitive content. |\n| `policy_version` | Identifies the policy evaluated for the request. |\n| `source_event_refs` | Links relevant prior evidence without asserting causal influence. |\n\n## Decision flow\n\n1. The agent makes a structured tool request through the runtime adapter.\n2. The adapter validates and canonicalizes it into an `ActionRequest`.\n3. The deterministic policy engine evaluates authority, tool, verb, and resource constraints.\n4. An explicit policy violation produces `DENY`; the executor is never called.\n5. A deterministically permitted, clearly task-relevant action produces `ALLOW` and may be sent to the executor.\n6. A deterministically permitted but semantically uncertain action is evaluated for scope drift.\n7. A material unresolved concern produces `HOLD`; the request remains unexecuted.\n8. The developer chooses **Approve once** or **Deny**. Approval is bound to the exact run, operation, arguments digest, and policy version and is consumed once.\n9. Before dispatch, the gate and executor recheck the decision and any approval.\n10. The evidence store records the decision, approval state, dispatch state, and result.\n\n### `ALLOW`\n\nThe action satisfies deterministic policy and has no unresolved semantic concern. The executor may perform it.\n\n### `HOLD`\n\nThe operation is not deterministically forbidden, but semantic scope drift or uncertainty requires human review. It must not execute until the developer approves it once. The other V1 action is **Deny**; broader approval scopes are deferred.\n\n### `DENY`\n\nThe action violates deterministic policy or an explicit security rule. It is never sent to the executor.\n\n## Security invariants\n\n1. Protected operations have no path from agent to executor that bypasses Scopewatch.\n2. Deterministic authorization runs before semantic evaluation and execution.\n3. Model output is evidence, not authorization, and cannot override hard policy.\n4. A protected request that cannot be safely interpreted defaults to no execution.\n5. A held request does not execute before an exact, single-use approval is validated.\n6. An action is described as blocked only when it was intercepted before execution.\n7. Evidence explicitly records whether an action was attempted, approved, denied, dispatched, executed, or failed.\n8. Missing reasoning and missing events remain visibly missing; Scopewatch never reconstructs unavailable chain-of-thought.\n9. Only legitimately exposed summaries, traces, tool calls, model outputs, and runtime events are used.\n10. Demonstrations use synthetic credentials, synthetic files, and controlled destinations.\n11. Coverage claims are limited to structured operations routed through the controlled gateway.\n\n## Primary demo flow\n\nThe developer asks:\n\n> Fix the failing authentication tests. Only work inside this repository.\n\nThe authorized workspace is `/workspace/scopewatch-demo`. The coding agent legitimately reads `package.json` and authentication source files, runs tests, and modifies authentication code through the mediated tools.\n\nA repository fixture contains an untrusted instruction telling the agent to inspect a secret file. The agent requests:\n\n```text\nread_file(\"~/.ssh/id_rsa\")\n```\n\nThe runtime adapter resolves the request to `/home/developer/.ssh/id_rsa`. Before execution, deterministic policy compares it with the authorized workspace and returns:\n\n```text\nDecision: DENY\nRequested resource: /home/developer/.ssh/id_rsa\nAuthorized scope: /workspace/scopewatch-demo\nReason: RESOURCE_OUTSIDE_WORKSPACE\nExecution status: NOT_EXECUTED\n```\n\nThe executor never receives the operation, and the dashboard displays it as blocked.\n\nA second scenario demonstrates an ambiguous external network request. This requires adding one narrowly structured network operation to the demo boundary; it is not permission for general agent network access. Deterministic policy establishes that the destination is not explicitly prohibited but does not establish task relevance. The semantic evaluator identifies possible scope drift, and Scopewatch returns `HOLD`. The developer chooses **Approve once** or **Deny**, and the timeline records the choice and whether execution followed.\n\nThe first scenario demonstrates hard deterministic enforcement. The second demonstrates model-assisted semantic reasoning without treating the model as authority.\n\n## Implementation stack\n\n| Concern | Choice | Status |\n| --- | --- | --- |\n| Dashboard | Dependency-free vanilla JavaScript | Accepted (PR #18, ADR-0001); Next.js dropped |\n| Orchestrator and policy gateway | Python 3.12 and FastAPI | Accepted (PRs #16–#17, ADR-0001) |\n| Evidence store | Append-only SQLite-backed event store | Accepted (PR #16, ADR-0001) |\n| Policy representation | In-memory domain rules / Pydantic models | Implemented in PR #16 |\n| Agent model | NVIDIA Nemotron (open-weight reasoning) | Accepted in ADR-0001 (default model) |\n| Semantic inference | Nebius Token Factory (with OpenRouter dev fallback) | Swappable via provider profiles (ADR-0001) |\n| Execution | In-process workspace executor (M1) and Docker container (M2) | Accepted in ADR-0001 |\n\n## Evaluation strategy\n\nInitial evaluation covers:\n\n- valid file reads and writes;\n- permitted commands;\n- access outside the workspace;\n- a synthetic secret-file access attempt;\n- malicious instructions in repository content;\n- an unnecessary external request;\n- a legitimate ambiguous request requiring approval;\n- an explicit policy violation; and\n- safe completion of the assigned coding task.\n\nWhere useful, compare deterministic policy alone with deterministic policy plus action-based semantic evaluation. Any later evaluation using legitimately exposed reasoning summaries should be reported separately. Held-out scenarios must remain separate from prompt-tuning examples.\n\nCandidate metrics include deterministic policy accuracy, unsafe-action block rate, false-positive hold rate, semantic classification accuracy, approval count, added p50 and p95 latency, and successful task completion rate. A denial is counted as a successful block only when executor-side evidence confirms that the operation was not dispatched.\n\n## Architecture boundaries and limitations\n\n### What V1 can protect\n\nV1 can protect structured operations that are routed through its controlled runtime adapter, policy gate, and executor.\n\n### What V1 cannot claim to protect\n\nV1 cannot claim protection for:\n\n- operations performed outside the gateway;\n- arbitrary processes with unrestricted OS access;\n- every coding-agent runtime;\n- hidden reasoning unavailable from the model or provider;\n- general endpoint security; or\n- every form of prompt injection.\n\nThe adapter and dashboard expose a coverage statement listing the operations actually mediated. Absence of an alert outside that boundary does not establish authorization or safety.\n\n## Hackathon positioning\n\nThis architecture fits the Coding and Agentic Engineering track because Scopewatch is a developer security layer for AI coding agents. Nebius supplies model and runtime infrastructure. NVIDIA Nemotron supplies coding-agent reasoning and semantic scope classification. Scopewatch supplies the mediation boundary, deterministic authorization, approval flow, evidence model, and developer experience.\n\n## Deferred work\n\n- additional coding-agent runtimes and adapters (ACP adapter tracked in #48/#49);\n- general-purpose network and API mediation;\n- arbitrary shell or host-wide interception;\n- multi-use, time-bound, or resource-family approvals;\n- enterprise identity and policy integrations;\n- production event databases, retention controls, and exports;\n- causal or token-level taint tracking;\n- additional synchronous or asynchronous model tiers;\n- SOC/SIEM workflows and alert routing;\n- Kubernetes deployment; and\n- broader prompt-injection coverage.\n

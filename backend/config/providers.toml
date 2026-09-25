@@ -1,0 +1,29 @@
+# Provider profiles for Scopewatch agent and auditor models.
+# API keys are read from environment variables specified by api_key_env.
+# Never commit real API keys or credentials to this file.
+
+[profiles.mock]
+name = "mock"
+model = "mock-rules-auditor"
+base_url = "mock://localhost"
+timeout_s = 30.0
+max_retries = 0
+
+[profiles.openrouter-dev]
+name = "openrouter-dev"
+model = "nvidia/llama-3.1-nemotron-70b-instruct"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_s = 60.0
+max_retries = 3
+
+[profiles.openrouter-dev.reasoning]
+effort = "high"
+
+[profiles.nebius-demo]
+name = "nebius-demo"
+model = "nvidia/llama-3.1-nemotron-70b-instruct"
+base_url = "https://api.studio.nebius.ai/v1"
+api_key_env = "NEBIUS_API_KEY"
+timeout_s = 60.0
+max_retries = 3
