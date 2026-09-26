@@ -11,6 +11,8 @@ This directory contains evaluation datasets for the Scopewatch Chain-of-Thought 
 
 Only automated evaluation harnesses should read `heldout/` test cases. When investigating regressions on the held-out split, create a new synthetic repro case in `dev/` instead of adapting prompts directly to the held-out sample.
 
+Tune-then-freeze rule for live runs: the fixtures and the mock auditor landed in the same PR, so there is no freeze-then-tune history proving the split was uncontaminated. Before a model-backed live run means what #32 intends, freeze the held-out split, document the freeze, then tune only on `dev/`. Re-derive thresholds after the live run.
+
 ## Directory Layout
 
 ```
