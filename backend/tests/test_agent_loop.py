@@ -143,9 +143,9 @@ def test_prompt_version_and_cleanliness() -> None:
 def test_tool_definitions_and_schema_conversion() -> None:
     """Verify OpenAI tool schema structure and request conversion."""
     tools = get_gateway_tools()
-    assert len(tools) == 4
+    assert len(tools) == 5
     tool_names = {t["function"]["name"] for t in tools}
-    assert tool_names == {"list_directory", "read_text", "write_text", "delete_path"}
+    assert tool_names == {"list_directory", "read_text", "write_text", "delete_path", "run_command"}
 
     # Convert read_text tool call
     submit_req = convert_tool_call_to_submit_request(
