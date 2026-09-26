@@ -26,10 +26,16 @@ jobs:
           cmp -s backend/requirements.lock /tmp/backend-requirements.lock || (echo "backend/requirements.lock is out of date. Regenerate it (see BUILDING.md) and commit the result."; exit 1)
       - run: python -m pip install --require-hashes -r backend/requirements.lock
       - name: Pre-pull pinned executor image
+        env:
+          PYTHONPATH: backend
         run: |
           python -c "from scopewatch.executor_docker import DOCKER_IMAGE; print(DOCKER_IMAGE)" > /tmp/executor-image.txt
           cat /tmp/executor-image.txt
           docker pull "$(cat /tmp/executor-image.txt)"
+      - name: Build executor image with test runner
+        run: docker build -f backend/executor/Dockerfile -t scopewatch-executor:ci .
       - name: Run Docker executor tests
+        env:
+          SCOPEWATCH_EXECUTOR_IMAGE: scopewatch-executor:ci
         run: SCOPEWATCH_EXECUTOR=docker python -m pytest backend/tests -k docker -q
       - run: python -m compileall -q backend/scopewatch backend/tests scripts

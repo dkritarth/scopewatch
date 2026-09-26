@@ -1076,7 +1076,14 @@ def test_bypass_container_cannot_see_docker_socket(
         action, cmd_workspace, policy_decision=decision
     )
     assert receipt.status == ExecutionStatus.FAILED
-    assert "docker.sock" not in str(receipt.sanitized_result)
+    result = receipt.sanitized_result
+    # The socket is invisible: the read fails, nothing is returned. The
+    # interpreter traceback names the attempted path, so assert on the
+    # failure shape (empty stdout, FileNotFoundError) rather than on the
+    # absence of the path string.
+    assert result["exit_code"] != 0
+    assert result["stdout"] == ""
+    assert "FileNotFoundError" in result["stderr"]
 
 
 def test_bypass_forkbomb_contained_by_pids_limit(
