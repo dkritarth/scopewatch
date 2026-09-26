@@ -12,11 +12,16 @@ WORKSPACE_ROOT="${REPO_ROOT}/demo/workspace"
 MODE="scripted"
 PROFILE=""
 AUTO_APPROVE=0
+CODING=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --agent)
       MODE="agent"
+      shift
+      ;;
+    --coding)
+      CODING=1
       shift
       ;;
     --mode)
@@ -56,9 +61,23 @@ else
   exit 1
 fi
 
+# The coding sequence (issue #38) runs against an isolated runtime workspace
+# seeded from the synthetic demo/coding-workspace fixture, never the fixture
+# directory itself, so the agent's fix cannot dirty the repository.
+if [[ "${CODING}" -eq 1 ]]; then
+  if [[ "${WORKSPACE_ROOT}" == "${REPO_ROOT}/demo/workspace" ]]; then
+    WORKSPACE_ROOT="${REPO_ROOT}/runtime-data/coding-workspace"
+  fi
+  DB_PATH="${REPO_ROOT}/runtime-data/scopewatch-coding.db"
+fi
+
 echo "=================================================================="
 echo "Scopewatch Local Demonstration"
-echo "Synthetic mediation gateway baseline (mode: ${MODE})"
+if [[ "${CODING}" -eq 1 ]]; then
+  echo "Synthetic coding-scenario sequence 10-13 (mode: ${MODE})"
+else
+  echo "Synthetic mediation gateway baseline (mode: ${MODE})"
+fi
 echo "=================================================================="
 echo "Safety statement:"
 echo "This local baseline mediates only actions submitted through its"
@@ -81,6 +100,9 @@ if [[ -n "${PROFILE}" ]]; then
 fi
 if [[ "${AUTO_APPROVE}" -eq 1 ]]; then
   SEED_ARGS+=(--auto-approve)
+fi
+if [[ "${CODING}" -eq 1 ]]; then
+  SEED_ARGS+=(--coding)
 fi
 
 "${PYTHON}" "${REPO_ROOT}/scripts/seed_demo.py" "${SEED_ARGS[@]}"
