@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Scopewatch — Agent Run Dashboard</title>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --border:#e3e5e9; --text:#16181d; --sub:#6b7280;
+  --allow:#16a34a; --hold:#d97706; --deny:#dc2626;
+  --accent:#4f46e5; --mono:'SF Mono',Consolas,monospace;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0d0f14; --panel:#151821; --border:#262b38; --text:#e7e9ee; --sub:#9099ab;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0d0f14; --panel:#151821; --border:#262b38; --text:#e7e9ee; --sub:#9099ab;
+}
+html{scroll-padding-top:env(safe-area-inset-top,0px); height:100%;}
+*{box-sizing:border-box;}
+body{
+  margin:0; height:100%; background:var(--bg); color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  display:flex; flex-direction:column;
+}
+.sr-only{
+  position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+  overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;
+}
+header{
+  padding:14px 18px; padding-top:calc(14px + env(safe-area-inset-top,0px));
+  border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px;
+  background:var(--panel); flex-shrink:0;
+}
+header .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);}
+header h1{font-size:15px; margin:0; font-weight:600;}
+header span{font-size:12px; color:var(--sub);}
+.wrap{display:flex; flex:1; min-height:0;}
+.sidebar{
+  width:230px; flex-shrink:0; border-right:1px solid var(--border);
+  overflow-y:auto; background:var(--panel);
+}
+.run{
+  display:block; width:100%; border:none; margin:0; font:inherit; color:inherit; text-align:left;
+  padding:12px 16px; border-bottom:1px solid var(--border); cursor:pointer; font-size:13px;
+  background:none; border-bottom:1px solid var(--border);
+}
+.run:hover{background:var(--bg);}
+.run.active{background:var(--bg); border-left:3px solid var(--accent);}
+.run:focus-visible, .tool:focus-visible{outline:2px solid var(--accent); outline-offset:-2px;}
+.run .name{font-weight:600; margin-bottom:4px;}
+.run .meta{color:var(--sub); font-size:11px;}
+.badge{
+  display:inline-block; padding:1px 7px; border-radius:20px; font-size:10px;
+  font-weight:700; text-transform:uppercase; letter-spacing:.03em; margin-top:5px;
+}
+.badge.allow{color:var(--allow); background:color-mix(in srgb, var(--allow) 15%, transparent);}
+.badge.hold{color:var(--hold); background:color-mix(in srgb, var(--hold) 15%, transparent);}
+.badge.deny{color:var(--deny); background:color-mix(in srgb, var(--deny) 15%, transparent);}
+main{flex:1; overflow-y:auto; padding:20px; min-width:0;}
+.scope-box{
+  background:var(--panel); border:1px solid var(--border); border-radius:10px;
+  padding:14px 16px; margin-bottom:18px; font-size:13px; color:var(--sub);
+}
+.scope-box b{color:var(--text);}
+.timeline{list-style:none; margin:0; padding:0;}
+.event{
+  display:flex; gap:12px; padding:12px 0; border-bottom:1px solid var(--border);
+}
+.event:last-child{border-bottom:none;}
+.event .time{width:70px; flex-shrink:0; font-family:var(--mono); font-size:11px; color:var(--sub); padding-top:2px;}
+.event .body{flex:1; min-width:0;}
+.event .tool{
+  display:block; width:100%; border:none; margin:0; padding:0; background:none; color:inherit;
+  text-align:left; cursor:pointer; font-family:var(--mono); font-size:12.5px; word-break:break-all;
+}
+.event .desc{font-size:12.5px; color:var(--sub); margin-top:3px;}
+.evidence{
+  margin-top:6px; padding:8px 10px; border-radius:6px; font-size:11.5px;
+  background:var(--bg); border:1px solid var(--border); font-family:var(--mono); display:none;
+}
+.event.open .evidence{display:block;}
+footer{
+  padding:8px 18px; font-size:11px; color:var(--sub); border-top:1px solid var(--border);
+  background:var(--panel);
+}
+@media (max-width:640px){
+  .wrap{flex-direction:column;}
+  .sidebar{width:100%; max-height:150px; border-right:none; border-bottom:1px solid var(--border);}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="dot"></div>
+  <h1>Scopewatch</h1>
+  <span>agent run monitor · synthetic demo data</span>
+</header>
+
+<div class="wrap">
+  <div class="sidebar" id="runList" role="navigation" aria-label="Agent runs"></div>
+  <main id="main" aria-live="polite" aria-atomic="true" aria-label="Run details"></main>
+</div>
+
+<div id="statusAnnouncer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+<footer id="connectionFooter">Demo data only — not connected to a live agent yet.</footer>
+
+<script>
+// ---- Live data store: your agent/backend writes here, the UI just renders it ----
+// This array starts with ONE seed run so the screen isn't empty before you wire
+// anything up. Everything else comes in through the Scopewatch API below.
+const runs = [
+  {
+    id: "run-00", name: "Waiting for agent run…", agent: "—", status: "hold",
+    started: "--:--", scope: "No live run received yet. Call Scopewatch.startRun(...) from your agent/backend to populate this dashboard.",
+    events: []
+  }
+];
+
+const STATUSES = ["allow", "hold", "deny"];
+let active = runs[0].id;
+
+// "idle" = still showing the placeholder · "manual" = receiving pushed events
+// via startRun/addEvent · "live" = polling a real backend via connect()
+let connectionState = "idle";
+
+function safeStatus(s){ return STATUSES.includes(s) ? s : "hold"; }
+
+function normalizeEvent(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const status = safeStatus(raw.status);
+  const tool = typeof raw.tool === 'string' && raw.tool.trim() ? raw.tool.trim() : 'unknown_tool';
+  const target = typeof raw.target === 'string' ? raw.target : String(raw.target ?? 'unknown_target');
+  const desc = typeof raw.desc === 'string' ? raw.desc : String(raw.desc ?? '');
+  const evidence = typeof raw.ev === 'string' ? raw.ev : (typeof raw.evidence === 'string' ? raw.evidence : '');
+  return {
+    t: typeof raw.t === 'string' && raw.t ? raw.t : nowTime(),
+    tool,
+    target,
+    status,
+    desc,
+    ev: evidence
+  };
+}
+
+function normalizeRun(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : null;
+  if (!id) return null;
+
+  const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : 'Unnamed run';
+  const agent = typeof raw.agent === 'string' && raw.agent.trim() ? raw.agent.trim() : 'unknown agent';
+  const scope = typeof raw.scope === 'string' && raw.scope.trim() ? raw.scope.trim() : 'No scope details provided.';
+  const started = typeof raw.started === 'string' && raw.started.trim() ? raw.started.trim() : nowTime();
+  const status = safeStatus(raw.status);
+  const events = Array.isArray(raw.events) ? raw.events.map(normalizeEvent).filter(Boolean) : [];
+
+  return {
+    id,
+    name,
+    agent,
+    status,
+    started,
+    scope,
+    events
+  };
+}
+
+// ---- Integration API: call these from your agent's event stream / backend ----
+// This is the part you actually wire into the real Scopewatch pipeline.
+// A published Claude artifact can't make outbound network calls to your server,
+// so in your own deployment you'd call these directly from a WebSocket/SSE
+// handler, or from window.postMessage if the agent runs in another frame/process.
+window.Scopewatch = {
+  // Start tracking a new agent run. Replaces the placeholder run on first call.
+  // Rejects the call (logs a console error) rather than silently corrupting state
+  // if the caller passes a malformed id/name — this can be a backend, so don't trust it blindly.
+  startRun({ id, name, agent, scope, status = "allow" } = {}) {
+    if (typeof id !== "string" || !id || typeof name !== "string" || !name) {
+      console.error("Scopewatch.startRun: 'id' and 'name' are required strings");
+      return;
+    }
+    if (runs.length === 1 && runs[0].id === "run-00") runs.length = 0;
+    runs.unshift({
+      id, name,
+      agent: typeof agent === "string" ? agent : "unknown",
+      scope: typeof scope === "string" ? scope : "",
+      status: safeStatus(status),
+      started: nowTime(),
+      events: []
+    });
+    active = id;
+    if (connectionState === "idle") connectionState = "manual";
+    render();
+  },
+  // Record one intercepted action for a run. status: "allow" | "hold" | "deny"
+  addEvent(runId, { tool, target, status, desc, evidence } = {}) {
+    if (typeof runId !== "string" || typeof tool !== "string" || typeof target !== "string") {
+      console.error("Scopewatch.addEvent: 'runId', 'tool', and 'target' are required strings");
+      return;
+    }
+    const run = runs.find(r => r.id === runId);
+    if (!run) return;
+    const safeStat = safeStatus(status);
+    run.events.push({
+      t: nowTime(), tool, target, status: safeStat,
+      desc: typeof desc === "string" ? desc : "",
+      ev: typeof evidence === "string" ? evidence : undefined
+    });
+    if (safeStat === "deny" || (safeStat === "hold" && run.status !== "deny")) run.status = safeStat;
+    if (connectionState === "idle") connectionState = "manual";
+    render();
+  },
+  setRunStatus(runId, status) {
+    const run = runs.find(r => r.id === runId);
+    if (run) { run.status = safeStatus(status); render(); }
+  },
+  // ---- Go-live mode: poll your own backend for state instead of pushing manually ----
+  // Call this once, after hosting this file yourself (NOT from claude.ai — the
+  // published artifact sandbox blocks outbound calls to your server).
+  // Your backend just needs one GET endpoint that returns the full current
+  // state as JSON: { "runs": [ {id, name, agent, status, started, scope, events: [...] } ] }
+  //
+  // The fetched payload is treated as UNTRUSTED input: every field is validated
+  // and coerced through validateRunsPayload() before it ever reaches app state,
+  // since a compromised or misconfigured backend shouldn't be able to inject
+  // arbitrary shapes into the UI.
+  connect(endpointUrl, intervalMs = 1500) {
+    connectionState = "live";
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    const poll = async () => {
+      try {
+        const res = await fetch(endpointUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const validated = validateRunsPayload(data);
+        if (validated) {
+          runs.length = 0;
+          runs.push(...validated);
+          if (!runs.find(r => r.id === active)) active = runs[0].id;
+          render();
+        } else {
+          console.warn("Scopewatch: received payload with no valid runs, ignoring", data);
+        }
+      } catch (err) {
+        console.error("Scopewatch: couldn't reach or parse", endpointUrl, err);
+      }
+    };
+    poll();
+    pollTimer = setInterval(poll, intervalMs);
+  }
+};
+
+// ---- Payload validation for connect() — never trust the network blindly ----
+function validateRunsPayload(data) {
+  if (!data || !Array.isArray(data.runs)) return null;
+  const validRuns = [];
+  for (const r of data.runs) {
+    if (!r || typeof r.id !== "string" || !r.id || typeof r.name !== "string" || !r.name) continue;
+    const events = Array.isArray(r.events)
+      ? r.events.filter(e => e && typeof e.tool === "string" && typeof e.target === "string").map(e => ({
+          t: typeof e.t === "string" ? e.t : nowTime(),
+          tool: e.tool,
+          target: e.target,
+          status: safeStatus(e.status),
+          desc: typeof e.desc === "string" ? e.desc : "",
+          ev: typeof e.ev === "string" ? e.ev : (typeof e.evidence === "string" ? e.evidence : undefined)
+        }))
+      : [];
+    validRuns.push({
+      id: r.id,
+      name: r.name,
+      agent: typeof r.agent === "string" ? r.agent : "unknown",
+      status: safeStatus(r.status),
+      started: typeof r.started === "string" ? r.started : "--:--",
+      scope: typeof r.scope === "string" ? r.scope : "",
+      events
+    });
+  }
+  return validRuns.length ? validRuns : null;
+}
+
+function nowTime() {
+  const d = new Date();
+  return d.toTimeString().slice(0, 5);
+}
+
+// ---- Example of how your backend would call this (remove once wired for real) ----
+// window.Scopewatch.startRun({ id: "run-01", name: "Fix failing test", agent: "coding-agent v0.1", scope: "Allowed: read/write ./src/**" });
+// window.Scopewatch.addEvent("run-01", { tool: "file_read", target: "./src/tax.py", status: "allow", desc: "Reading source" });
+
+// ---- To go live once you host this file yourself, uncomment: ----
+// window.Scopewatch.connect("http://localhost:8000/api/scopewatch/state");
+
+// Every value below can originate from an untrusted backend/agent, so it's
+// always inserted via textContent/createTextNode, never innerHTML with
+// interpolated data — the one exception is static markup we author ourselves.
+function makeBadge(status){
+  const span = document.createElement('span');
+  const s = safeStatus(status);
+  span.className = "badge " + s;
+  span.textContent = s;
+  return span;
+}
+
+function renderList(){
+  const el = document.getElementById('runList');
+  el.replaceChildren();
+  runs.forEach(r => {
+    const btn = document.createElement('button');
+    btn.type = "button";
+    btn.className = "run" + (r.id === active ? " active" : "");
+    btn.setAttribute("aria-pressed", r.id === active ? "true" : "false");
+
+    const name = document.createElement('div');
+    name.className = "name";
+    name.textContent = r.name;
+
+    const meta = document.createElement('div');
+    meta.className = "meta";
+    meta.textContent = `${r.agent} · started ${r.started}`;
+
+    btn.append(name, meta, makeBadge(r.status));
+    btn.addEventListener('click', () => { active = r.id; render(); });
+    el.appendChild(btn);
+  });
+}
+
+function render(){
+  renderList();
+  // Fall back to the first run if 'active' points at an id that no longer
+  // exists (e.g. a live payload replaced the run list) rather than throwing.
+  const run = runs.find(r => r.id === active) || runs[0];
+  const main = document.getElementById('main');
+  const announcer = document.getElementById('statusAnnouncer');
+  main.replaceChildren();
+
+  if (!run) {
+    const empty = document.createElement('div');
+    empty.className = "scope-box";
+    empty.textContent = "No run data available.";
+    main.appendChild(empty);
+    if (announcer) announcer.textContent = 'No run data available.';
+    updateFooter();
+    return;
+  }
+  active = run.id;
+
+  const scopeBox = document.createElement('div');
+  scopeBox.className = "scope-box";
+  const b = document.createElement('b');
+  b.textContent = "Scope: ";
+  scopeBox.append(b, document.createTextNode(run.scope));
+  main.appendChild(scopeBox);
+
+  const list = document.createElement('ul');
+  list.className = "timeline";
+
+  run.events.forEach((e, idx) => {
+    const li = document.createElement('li');
+    li.className = "event";
+
+    const time = document.createElement('div');
+    time.className = "time";
+    time.textContent = e.t;
+
+    const body = document.createElement('div');
+    body.className = "body";
+
+    const toolBtn = document.createElement('button');
+    toolBtn.type = "button";
+    toolBtn.className = "tool";
+    toolBtn.append(makeBadge(e.status), document.createTextNode(` \u00A0${e.tool} → ${e.target}`));
+
+    const desc = document.createElement('div');
+    desc.className = "desc";
+    desc.textContent = e.desc;
+
+    body.append(toolBtn, desc);
+
+    if (e.ev) {
+      const evidenceId = `evidence-${run.id}-${idx}`;
+      const evidence = document.createElement('div');
+      evidence.className = "evidence";
+      evidence.id = evidenceId;
+      evidence.setAttribute("role", "region");
+      evidence.setAttribute("aria-label", "Evidence detail");
+      evidence.textContent = e.ev;
+      body.appendChild(evidence);
+      toolBtn.setAttribute("aria-expanded", "false");
+      toolBtn.setAttribute("aria-controls", evidenceId);
+      toolBtn.addEventListener('click', () => {
+        const open = li.classList.toggle('open');
+        toolBtn.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+    }
+
+    li.append(time, body);
+    list.appendChild(li);
+  });
+
+  main.appendChild(list);
+  if (announcer) announcer.textContent = `Showing run ${run.name}.`;
+  updateFooter();
+}
+
+function updateFooter(){
+  const footer = document.getElementById('connectionFooter');
+  if (connectionState === "live") {
+    footer.textContent = "Live — connected to backend.";
+  } else if (connectionState === "manual") {
+    footer.textContent = "Receiving live events (via Scopewatch API) — not polling a backend endpoint.";
+  } else {
+    footer.textContent = "Demo data only — not connected to a live agent yet.";
+  }
+}
+
+render();
+</script>
+</body>
+</html>
