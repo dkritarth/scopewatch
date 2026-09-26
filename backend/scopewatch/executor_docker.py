@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 import uuid
@@ -44,6 +46,18 @@ DOCKER_MEMORY = "256m"
 DOCKER_CPUS = "1.0"
 DOCKER_PIDS_LIMIT = "64"
 DOCKER_TIMEOUT_S = 60
+
+# Optional image override (used by CI, which builds backend/executor/Dockerfile:
+# pinned base + hashed lock so `python -m pytest` exists in the container).
+# Explicit constructor/image arguments always win over this variable.
+EXECUTOR_IMAGE_ENV_VAR = "SCOPEWATCH_EXECUTOR_IMAGE"
+
+
+def resolve_executor_image(image: Optional[str] = None) -> str:
+    """Return the container image to run: explicit arg, env override, or pin."""
+    if image:
+        return image
+    return os.environ.get(EXECUTOR_IMAGE_ENV_VAR, DOCKER_IMAGE)
 
 EXECUTOR_NAME = "docker-executor"
 
@@ -335,15 +349,58 @@ def _sync_copy_back(workspace_copy: Path, workspace_root: Path) -> None:
     shutil.copytree(workspace_copy, workspace_root, symlinks=True, dirs_exist_ok=True)
 
 
+def _make_world_accessible(root: Path) -> None:
+    """Grant other-read/write (dirs: +x) across a staged workspace copy.
+
+    The container runs as non-root nobody (65534), while the staged copy is
+    owned by the host user. Without world bits, container writes fail with
+    permission errors even though the mount is read-write. Only the staging
+    copy is touched; the real workspace keeps its own permissions. Symlinks
+    are skipped so chmod never follows a link onto a host target.
+    """
+    os.chmod(root, os.stat(root).st_mode | stat.S_IRWXO)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in dirnames:
+            entry = Path(dirpath) / name
+            if entry.is_symlink():
+                continue
+            os.chmod(entry, os.stat(entry).st_mode | stat.S_IRWXO)
+        for name in filenames:
+            entry = Path(dirpath) / name
+            if entry.is_symlink():
+                continue
+            os.chmod(
+                entry,
+                os.stat(entry).st_mode | stat.S_IROTH | stat.S_IWOTH,
+            )
+
+
+def _stage_workspace_copy(workspace_root: Path) -> tuple[Path, Path]:
+    """Copy the workspace to a temp staging dir and open it to the container.
+
+    Returns (staging_root, workspace_copy). The caller owns cleanup of
+    staging_root. Cleans up after itself and raises on copy/chmod failure.
+    """
+    staging_root = Path(tempfile.mkdtemp(prefix="scopewatch-run-"))
+    try:
+        workspace_copy = staging_root / "workspace"
+        shutil.copytree(workspace_root, workspace_copy, symlinks=True)
+        _make_world_accessible(workspace_copy)
+    except Exception:
+        shutil.rmtree(staging_root, ignore_errors=True)
+        raise
+    return staging_root, workspace_copy
+
+
 class DockerExecutor:
     """Execute actions inside a per-run hardened container."""
 
     def __init__(
         self,
-        image: str = DOCKER_IMAGE,
+        image: Optional[str] = None,
         timeout_s: float = DOCKER_TIMEOUT_S,
     ) -> None:
-        self.image = image
+        self.image = resolve_executor_image(image)
         self.timeout_s = timeout_s
 
     def execute(
@@ -420,9 +477,12 @@ class DockerExecutor:
             resolved_workspace = workspace_root.resolve()
             if not resolved_workspace.exists():
                 return _failed("EXECUTION_FAILED", "Workspace root not found.")
-            staging_root = Path(tempfile.mkdtemp(prefix="scopewatch-run-"))
-            workspace_copy = staging_root / "workspace"
-            shutil.copytree(resolved_workspace, workspace_copy, symlinks=True)
+            try:
+                staging_root, workspace_copy = _stage_workspace_copy(
+                    resolved_workspace
+                )
+            except OSError:
+                return _failed("EXECUTION_FAILED", "Workspace staging failed.")
             # run_command (issue #36): normalize argv + timeout on the host so
             # the container always receives the argv list form with no shell.
             # The policy already allowlisted the command; a failure to
@@ -529,7 +589,7 @@ def execute_action_docker(
     workspace_root: Path,
     policy_decision: Optional[PolicyDecision] = None,
     approval_request: Optional[ApprovalRequest] = None,
-    image: str = DOCKER_IMAGE,
+    image: Optional[str] = None,
 ) -> ExecutionReceipt:
     """Convenience wrapper used by the gateway entry point and tests."""
     return DockerExecutor(image=image).execute(

@@ -32,4 +32,8 @@ jobs:
       - run: npm test --prefix frontend
       - run: npx --prefix frontend playwright install --with-deps chromium
       - run: npm run test:browser --prefix frontend
+      - name: Build executor image with test runner
+        run: docker build -f backend/executor/Dockerfile -t scopewatch-executor:ci .
       - run: ./scripts/validate.sh
+        env:
+          SCOPEWATCH_EXECUTOR_IMAGE: scopewatch-executor:ci

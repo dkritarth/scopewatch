@@ -15,9 +15,14 @@ import pytest
 from scopewatch.executor import ExecutionSecurityError, execute_action
 from scopewatch.executor_docker import (
     DOCKER_IMAGE,
+    EXECUTOR_IMAGE_ENV_VAR,
+    DockerExecutor,
+    _make_world_accessible,
+    _stage_workspace_copy,
     build_docker_command,
     docker_available,
     is_docker_available,
+    resolve_executor_image,
 )
 from scopewatch.models import ApprovalStatus, ExecutionStatus, PolicyOutcome, ReasonCode
 from scopewatch.schemas import ActionRequest, ApprovalRequest, PolicyDecision
@@ -393,3 +398,63 @@ def test_docker_approved_hold_executes(
 
 def test_docker_available_helper_returns_bool() -> None:
     assert isinstance(docker_available(), bool)
+
+
+def test_resolve_executor_image_defaults_to_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(EXECUTOR_IMAGE_ENV_VAR, raising=False)
+    assert resolve_executor_image() == DOCKER_IMAGE
+    assert DockerExecutor().image == DOCKER_IMAGE
+
+
+def test_resolve_executor_image_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(EXECUTOR_IMAGE_ENV_VAR, "scopewatch-executor:ci")
+    assert resolve_executor_image() == "scopewatch-executor:ci"
+    assert DockerExecutor().image == "scopewatch-executor:ci"
+    assert (
+        DockerExecutor(image="explicit:tag").image == "explicit:tag"
+    )
+
+
+def test_stage_workspace_copy_is_world_accessible(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    (src / "nested").mkdir(parents=True)
+    locked = src / "nested" / "secret.txt"
+    locked.write_text("synthetic", encoding="utf-8")
+    locked.chmod(0o600)
+    (src / "nested").chmod(0o700)
+    (src / "run.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (src / "run.sh").chmod(0o700)
+    (src / "link.txt").symlink_to("nested/secret.txt")
+
+    staging_root, copy = _stage_workspace_copy(src)
+    try:
+        assert (copy / "nested" / "secret.txt").read_text(
+            encoding="utf-8"
+        ) == "synthetic"
+        assert (copy / "nested" / "secret.txt").stat().st_mode & 0o077
+        assert (copy / "nested").stat().st_mode & 0o007
+        assert (copy / "link.txt").is_symlink()
+        # The source tree keeps its restrictive permissions.
+        assert locked.stat().st_mode & 0o077 == 0
+    finally:
+        import shutil as _shutil
+
+        _shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def test_make_world_accessible_skips_symlink_target(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("synthetic", encoding="utf-8")
+    outside.chmod(0o600)
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "evil").symlink_to(outside)
+
+    _make_world_accessible(root)
+
+    assert (root / "evil").is_symlink()
+    assert outside.stat().st_mode & 0o077 == 0
