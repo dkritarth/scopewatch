@@ -249,7 +249,7 @@ class ScopewatchService:
                         else ReasoningProvenance.UNAVAILABLE
                     )
                 ),
-                turn_id=request.turn_id,
+                turn_id=effective_turn_id,
                 reasoning_audit_id=None,
             )
 

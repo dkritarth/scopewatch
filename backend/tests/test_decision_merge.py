@@ -556,6 +556,41 @@ def test_approval_cannot_override_policy_deny(test_env: dict[str, Any]):
 # 8. Test: feature flag SCOPEWATCH_REASONING_AUDIT=off bypasses audit
 # =====================================================================
 
+def test_effective_turn_id_persisted_on_action_row(test_env: dict[str, Any]):
+    """Defect 15: the generated effective turn_id must persist on the action row.
+
+    Previously the audit record carried the turn but the action row stored the
+    raw (often None) request turn_id, leaving seeded timelines turn-less.
+    """
+    service: ScopewatchService = test_env["service"]
+    run = test_env["run"]
+
+    req = SubmitActionRequest(
+        tool="workspace",
+        operation="read_text",
+        resource="invoices/approved/vendor-a.txt",
+        exposed_reasoning_trace="Reading vendor invoice for verification.",
+    )
+    assert req.turn_id is None
+    res = asyncio.run(service.submit_action(run.id, req))
+
+    assert res.action_request.turn_id, "effective turn_id must be generated"
+    assert res.reasoning_audit is not None
+    assert res.reasoning_audit.turn_id == res.action_request.turn_id
+
+    conn = get_connection(test_env["db_file"])
+    try:
+        row = conn.execute(
+            "SELECT turn_id, reasoning_audit_id FROM action_requests WHERE id = ?",
+            (res.action_request.id,),
+        ).fetchone()
+        assert row is not None
+        assert row["turn_id"] == res.action_request.turn_id
+        assert row["turn_id"] is not None
+    finally:
+        conn.close()
+
+
 def test_feature_flag_disabled_bypasses_audit(test_env: dict[str, Any], monkeypatch):
     monkeypatch.setenv("SCOPEWATCH_REASONING_AUDIT", "off")
 
