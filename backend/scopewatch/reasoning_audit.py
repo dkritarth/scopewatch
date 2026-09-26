@@ -118,7 +118,6 @@ class ReasoningAuditResult(BaseModel):
     latency_ms: float = 0.0
     total_tokens: Optional[int] = None
     error_code: Optional[str] = None
-    total_tokens: Optional[int] = None
 
 
 class AuditorChatResponse(BaseModel):
@@ -241,6 +240,37 @@ def truncate_reasoning_trace(
     return trace[:keep] + TRUNCATION_MARKER
 
 
+# Tag-boundary smuggling patterns neutralized inside the untrusted trace.
+# Each replacement carries no angle brackets, so escaping is idempotent and the
+# built prompt keeps exactly one authoritative <task_scope> pair and one
+# <untrusted_reasoning_trace> pair.
+_TRACE_BOUNDARY_ESCAPES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"</\s*untrusted_reasoning_trace\s*>", re.IGNORECASE), "[UNTRUSTED:/untrusted_reasoning_trace]"),
+    (re.compile(r"<\s*untrusted_reasoning_trace(?:\s[^>]*)?>", re.IGNORECASE), "[UNTRUSTED:untrusted_reasoning_trace]"),
+    (re.compile(r"</\s*task_scope\s*>", re.IGNORECASE), "[UNTRUSTED:/task_scope]"),
+    (re.compile(r"<\s*task_scope\s*>", re.IGNORECASE), "[UNTRUSTED:task_scope]"),
+)
+
+
+def escape_untrusted_trace(trace: Optional[str]) -> str:
+    """Neutralize tag-boundary smuggling inside the untrusted reasoning trace.
+
+    A trace containing a literal closing tag (plus a forged scope block and an
+    auditor directive) would otherwise place two copies of every boundary tag
+    in the auditor prompt, letting a live auditor be talked into the single
+    relaxing verdict. Escaping keeps the hostile text visible inside the one
+    untrusted region so injection/forgery detectors can still flag it.
+
+    `AUDITOR:`-style directives are deliberately left as plain text: the
+    auditor must see them to classify the turn as INJECTION_FOLLOWING, and the
+    single-region guarantee keeps them from acting as prompt structure.
+    """
+    escaped = trace or ""
+    for pattern, replacement in _TRACE_BOUNDARY_ESCAPES:
+        escaped = pattern.sub(replacement, escaped)
+    return escaped
+
+
 def build_turn_audit_messages(
     scope: TaskScope,
     trace_text: str,
@@ -251,7 +281,9 @@ def build_turn_audit_messages(
     max_recent_actions: int = DEFAULT_MAX_RECENT_ACTIONS,
 ) -> list[dict[str, str]]:
     """Build hardened auditor chat messages with XML-isolated boundaries."""
-    bounded_trace = truncate_reasoning_trace(trace_text, max_chars=max_trace_chars)
+    bounded_trace = escape_untrusted_trace(
+        truncate_reasoning_trace(trace_text, max_chars=max_trace_chars)
+    )
     bounded_recent = recent_actions[-max_recent_actions:] if recent_actions else []
 
     scope_xml = (
@@ -943,13 +975,15 @@ class ReasoningAuditor:
                 elif isinstance(pa, dict):
                     norm_planned.append(PlannedAction(**pa))
 
-        # Normalize trace
+        # Normalize trace. The auditor only ever sees the escaped trace, so
+        # grounded-excerpt validation below runs against that same text.
         raw_trace = reasoning_text or ""
         bounded_trace = truncate_reasoning_trace(raw_trace, max_chars=self.max_trace_chars)
+        sanitized_trace = escape_untrusted_trace(bounded_trace)
 
         messages = build_turn_audit_messages(
             scope=scope_obj,
-            trace_text=bounded_trace,
+            trace_text=sanitized_trace,
             provenance=prov_str,
             planned_actions=norm_planned,
             recent_actions=recent_actions or [],
@@ -1003,7 +1037,7 @@ class ReasoningAuditor:
 
             result = parse_auditor_output(
                 response_text=content,
-                bounded_trace_text=bounded_trace,
+                bounded_trace_text=sanitized_trace,
                 model=resp_model,
                 profile=resp_profile,
                 latency_ms=eff_latency,
