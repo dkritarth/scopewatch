@@ -4,7 +4,8 @@
     "contexts": [
       "backend",
       "cot-auditing",
-      "reviewer-ui"
+      "reviewer-ui",
+      "docker-executor"
     ]
   },
   "enforce_admins": true,
