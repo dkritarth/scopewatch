@@ -1,0 +1,35 @@
+name: Docker executor tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  docker-executor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+      - name: Check backend lock file is up to date
+        run: |
+          python -m pip install "uv==0.12.18"
+          uv pip compile backend/requirements.txt --generate-hashes --python-version 3.12 -o /tmp/backend-requirements.lock --custom-compile-command "uv pip compile backend/requirements.txt --generate-hashes --python-version 3.12 -o backend/requirements.lock"
+          cmp -s backend/requirements.lock /tmp/backend-requirements.lock || (echo "backend/requirements.lock is out of date. Regenerate it (see BUILDING.md) and commit the result."; exit 1)
+      - run: python -m pip install --require-hashes -r backend/requirements.lock
+      - name: Pre-pull pinned executor image
+        run: |
+          python -c "from scopewatch.executor_docker import DOCKER_IMAGE; print(DOCKER_IMAGE)" > /tmp/executor-image.txt
+          cat /tmp/executor-image.txt
+          docker pull "$(cat /tmp/executor-image.txt)"
+      - name: Run Docker executor tests
+        run: SCOPEWATCH_EXECUTOR=docker python -m pytest backend/tests -k docker -q
+      - run: python -m compileall -q backend/scopewatch backend/tests scripts
