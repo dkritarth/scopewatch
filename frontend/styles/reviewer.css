@@ -1709,3 +1709,60 @@ mark.highlight-excerpt,
   font-style: italic;
   color: var(--text-muted);
 }
+
+/* Persistent mediation boundary (#61): quiet, non-dismissible, monochrome */
+.mediation-boundary {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--border-strong);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* Per-run gateway tools line (#61) */
+.scope-gateway-tools {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
+/* Turn grouping headers (#30): text label, never colour alone */
+.turn-group-header {
+  list-style: none;
+  margin: 12px 0 4px;
+  padding: 4px 0;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+/* Hold icons (#30): glyph reinforces the text label, monochrome-safe */
+.hold-icon {
+  display: inline-block;
+  font-size: 0.68rem;
+  line-height: 1;
+  margin-right: 5px;
+  font-weight: 900;
+}
+.hold-icon:empty {
+  display: none;
+}
+.status-hold-policy .hold-icon,
+.hold-policy .hold-icon {
+  color: var(--status-pending-text);
+}
+.status-hold-concern .hold-icon,
+.hold-concern .hold-icon {
+  color: var(--status-blocked-text);
+}
+.status-hold-failed .hold-icon,
+.hold-failed .hold-icon {
+  color: var(--status-attempted-text);
+}

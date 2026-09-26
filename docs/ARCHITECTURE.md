@@ -111,6 +111,10 @@ The frontend (`frontend/`) is a vanilla HTML/CSS/JS dashboard displaying:
   5. Execution receipt with sanitized outputs.
 - Visually and textually distinct badges: `HOLD (policy)`, `HOLD (reasoning concern)`, `HOLD (audit failed)`.
 
+### Mediation boundary
+
+All tool actions go through the gateway API; actions that bypass the API are not observed, blocked, or recorded. The reviewer UI states this boundary persistently and lists per run the gateway-mediated tools (see README “Interception coverage statement”).
+
 ---
 
 ## Invariant table
