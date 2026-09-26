@@ -2,7 +2,9 @@
 
 **Date:** 2026-09-25
 **Author:** Subagent 1 (Issue #25 Spike)
-**Status:** Completed finding; guides Milestone M1 provider profile implementation (#26).
+**Status:** Provisional / unverified — no live probe has been run; guides Milestone M1 provider profile implementation (#26) once verified.
+
+> **Honesty note (2026-09-26, defect 12):** This spike is unverified. The recommended `nebius-demo` base URL below (`https://api.tokenfactory.nebius.com/v1`) does not match the shipped `backend/config/providers.toml:26` (`https://api.studio.nebius.ai/v1`). The only cited measurement artifact, `poc/cot-auditing/logs/union_alpha_live_probe.json`, is gitignored (`.gitignore:22`) and absent from the repository. Latency, token, and cost figures in §3 Q6 are literature/estimate placeholders, not live measurements. Do not treat them as observed until the probe harness runs with a provider key.
 
 ## 1. Question and stakes
 
@@ -75,8 +77,8 @@ If Nebius Token Factory does not return raw reasoning traces (in `message.reason
   - `flagged_excerpts`: list of exact substring quotes from the untrusted trace
 - JSON mode successfully prevents markdown formatting errors and ensures direct parseability.
 
-### Question 6: Latency, token usage, and cost
-- **Observed / Measured baseline:**
+### Question 6: Latency, token usage, and cost (unverified placeholders — no live run)
+- **Observed / Measured baseline (provisional, not yet reproduced in this repo):**
   - 70B reasoning requests have an observed latency of ~6–8 seconds (p50) and ~12–15 seconds (p95), depending on output length.
   - Audit PoC baseline measured ~7.6 seconds per audit call.
   - Turn-level audit granularity (ADR-0001, Decision 8) amortizes this latency to once per agent turn rather than once per tool call.

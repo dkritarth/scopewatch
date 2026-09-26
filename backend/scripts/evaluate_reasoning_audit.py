@@ -95,6 +95,8 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
 
     latencies: list[float] = []
     total_tokens = 0
+    prompt_tokens = 0
+    completion_tokens = 0
 
     # Group by category
     by_category: dict[str, list[dict[str, Any]]] = {}
@@ -107,6 +109,10 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         actual = r.get("actual_verdict")
         latencies.append(r.get("latency_ms", 0.0))
         total_tokens += r.get("total_tokens") or 0
+        # Real provider usage when present; mock/offline backends report none
+        # and honestly sum to 0. Never hard-code when usage exists.
+        prompt_tokens += r.get("prompt_tokens") or 0
+        completion_tokens += r.get("completion_tokens") or 0
 
         if actual == ReasoningAuditVerdict.FAILED.value:
             failures += 1
@@ -168,7 +174,7 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         "failure_rate": round(fail_rate, 4),
         "accuracy": round(acc, 4),
         "latency_ms": calculate_percentiles(latencies),
-        "tokens": {"total": total_tokens, "prompt": 0, "completion": 0},
+        "tokens": {"total": total_tokens, "prompt": prompt_tokens, "completion": completion_tokens},
         "category_metrics": cat_metrics,
     }
 
@@ -176,16 +182,18 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
 def load_dataset_cases(
     cases_dir: Path, split: str
 ) -> tuple[list[dict[str, Any]], str, Path]:
-    """Load test cases from dataset directory and return cases, sha256 hash, and path."""
+    """Load test cases from dataset directory and return cases, sha256 hash, and path.
+
+    Only the subdirectory copies are read (`dev/cases.json`, `heldout/cases.json`);
+    the old top-level `dev.json`/`heldout.json` duplicates were removed (defect 22).
+    """
     if split == "heldout":
         candidates = [
             cases_dir / "heldout" / "cases.json",
-            cases_dir / "heldout.json",
         ]
     elif split == "dev":
         candidates = [
             cases_dir / "dev" / "cases.json",
-            cases_dir / "dev.json",
         ]
     elif split == "all":
         # Load both dev and heldout
@@ -237,6 +245,50 @@ def evaluate_reasoning_auditor(
     auditor = ReasoningAuditor(profile=profile)
     actual_model = auditor.model
 
+    # Capture real provider token usage without touching core. The auditor
+    # only surfaces total_tokens; prompt/completion live in the provider
+    # ChatResult.usage dict (mock backends report none and honestly sum to 0).
+    last_usage: dict[str, Any] = {}
+
+    def _capture_usage(resp: Any) -> None:
+        usage = getattr(resp, "usage", None)
+        if isinstance(usage, dict) and usage:
+            last_usage.clear()
+            last_usage.update(usage)
+
+    provider = getattr(auditor, "provider", None)
+    if provider is not None:
+        orig_complete = getattr(provider, "complete", None)
+        if callable(orig_complete):
+            def _wrapped_complete(messages: Any, **kwargs: Any) -> Any:  # type: ignore[no-redef]
+                resp = orig_complete(messages, **kwargs)
+                try:
+                    _capture_usage(resp)
+                except Exception:
+                    pass
+                return resp
+
+            try:
+                provider.complete = _wrapped_complete  # type: ignore[method-assign]
+            except Exception:
+                pass
+        orig_audit_chat = getattr(provider, "audit_chat", None)
+        if callable(orig_audit_chat):
+            def _wrapped_audit_chat(messages: Any, **kwargs: Any) -> Any:  # type: ignore[no-redef]
+                resp = orig_audit_chat(messages, **kwargs)
+                try:
+                    _capture_usage(resp)
+                    # AuditorChatResponse carries no usage; total_tokens if present
+                    # is still captured via audit_res.total_tokens below.
+                except Exception:
+                    pass
+                return resp
+
+            try:
+                provider.audit_chat = _wrapped_audit_chat  # type: ignore[method-assign]
+            except Exception:
+                pass
+
     case_results: list[dict[str, Any]] = []
 
     for c in shuffled_cases:
@@ -248,6 +300,7 @@ def evaluate_reasoning_auditor(
         expected_verdict = c["expected_verdict"]
         expected_concern = c.get("expected_concern_type")
 
+        last_usage.clear()
         # Audit turn
         audit_res: ReasoningAuditResult = auditor.audit_turn(
             task_scope=scope,
@@ -257,8 +310,13 @@ def evaluate_reasoning_auditor(
             raise_on_failure=False,
         )
 
+        # Console/log only: explanations may quote the trace, so they never
+        # enter the persisted report (docs/evaluation.md:123-125).
+        logger.debug("case %s verdict=%s explanation=%s", case_id, audit_res.verdict.value, audit_res.explanation)
+
         match = audit_res.verdict.value == expected_verdict
-        # Exclude raw trace and sensitive arguments from results record
+        # Privacy: omit raw trace AND auditor explanation from the report.
+        # Keep ids, verdicts, counts, and error codes only.
         record = {
             "case_id": case_id,
             "category": category,
@@ -269,9 +327,10 @@ def evaluate_reasoning_auditor(
             "match": match,
             "latency_ms": round(audit_res.latency_ms, 2),
             "error_code": audit_res.error_code,
-            "explanation": audit_res.explanation,
             "flagged_excerpts_count": len(audit_res.flagged_excerpts),
             "total_tokens": audit_res.total_tokens,
+            "prompt_tokens": last_usage.get("prompt_tokens") or 0,
+            "completion_tokens": last_usage.get("completion_tokens") or 0,
         }
         case_results.append(record)
 
@@ -331,6 +390,8 @@ def print_evaluation_summary(report: dict[str, Any]) -> None:
     print(f"  Failure Rate:        {sm['failure_rate'] * 100:.2f}% (auditor crashed or failed closed)")
     print(f"  Latency p50:         {sm['latency_ms']['p50']:.2f} ms")
     print(f"  Latency p95:         {sm['latency_ms']['p95']:.2f} ms")
+    toks = sm.get("tokens", {})
+    print(f"  Tokens total/prompt/completion: {toks.get('total', 0)}/{toks.get('prompt', 0)}/{toks.get('completion', 0)} (provider usage; mock reports 0)")
     print("-" * 78)
     print(f"{'CATEGORY':<24} {'CASES':<8} {'ACCURACY':<10} {'FNR':<10} {'FHR':<10} {'FAIL':<8} {'p50(ms)':<8}")
     print("-" * 78)

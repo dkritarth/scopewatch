@@ -32,12 +32,12 @@ Below, every original finding is preserved with its updated status: **Resolved**
 
 *Observed baseline (September 19, 2026):* 50 Python tests, 10 frontend unit tests, 3/6 mock auditor matches.
 
-*Observed status (September 25, 2026):*
-- Python backend test suite: 40 tests passed (`pytest backend/tests`).
-- Hardened CoT auditing suite: 96 tests and 79 subtests passed (`pytest poc/cot-auditing`).
-- Frontend unit tests: 10 tests passed (`npm test --prefix frontend`).
-- Playwright browser integration tests: 2 suites passed (`npm run test:browser --prefix frontend`).
-- Clean-room demo scenario verification: 5/5 scenarios passed (`./scripts/validate.sh`).
+*Observed status (September 26, 2026, refreshed Wave 1; verified via `./scripts/validate.sh --quick`):*
+- Python backend test suite: 148 tests passed (`PYTHONPATH=backend python3 -m pytest backend/tests -q`).
+- Hardened CoT auditing suite: 96 tests and 79 subtests passed (`python3 -m pytest poc/cot-auditing -q`).
+- Frontend unit tests: 27 tests passed (`npm test --prefix frontend`).
+- Playwright browser integration tests: 2 files passed (`npm run test:browser --prefix frontend`).
+- Clean-room demo scenario verification: 6/6 scenarios passed (`./scripts/validate.sh`).
 
 ---
 
@@ -52,31 +52,31 @@ Below, every original finding is preserved with its updated status: **Resolved**
 ### Disconnected prototypes
 - *Original finding:* The frontend imports static JavaScript fixtures. It does not receive events from the Python pipeline, an agent runtime, a policy service, or an event store. The Python auditor produces classifications in isolation and does not affect the reviewer or any executable action.
 - **Status: Part-Resolved / Tracked in backlog.**
-  - **Resolved by PRs #17, #18, #19:** The reviewer dashboard is now directly connected to the FastAPI backend via Server-Sent Events (`/api/v1/events/stream`), receives live execution receipts and approvals, and features an interactive action simulator.
+  - **Resolved by PRs #17, #18, #19:** The reviewer dashboard is now directly connected to the FastAPI backend via Server-Sent Events (`GET /api/v1/runs/{run_id}/events/stream` at `backend/scopewatch/app.py:231`; the JSON list is `GET /api/v1/runs/{run_id}/events` at `backend/scopewatch/app.py:221`), receives live execution receipts and approvals, and features an interactive action simulator.
   - **Tracked in backlog (#28, #29):** Wiring the hardened reasoning auditor into the live gateway decision loop as an escalate-only evidence source is tracked in issues #28 and #29.
 
 ### No deterministic authorization engine
 - *Original finding:* `TaskScope` represents a task description and basic path and tool lists, but the mock auditor reads only trace text and uses keyword matching. No implemented component canonicalizes resources or evaluates allowed workspaces, blocked resources, tools, verbs, commands, destinations, developer authority, or applicable approvals.
 - **Status: Resolved by PR #16.**
-  - A 15-step deterministic policy engine is implemented in `backend/scopewatch/policy/engine.py`. It enforces workspace boundaries, canonical path resolution, traversal prevention, explicitly blocked paths, tool/verb allowlists, network disabled state, and single-use approval validation.
+  - A 15-step deterministic policy engine is implemented in `backend/scopewatch/policy.py` (not `backend/scopewatch/policy/engine.py`, which does not exist). It enforces workspace boundaries, canonical path resolution, traversal prevention, explicitly blocked paths, tool/verb allowlists, network disabled state, and single-use approval validation.
 
 ### No runtime adapter or canonical contracts
 - *Original finding:* There is no selected coding-agent runtime and no implemented, versioned contract for action requests, decisions, approvals, execution receipts, or evidence events. The repository therefore cannot establish interception coverage or distinguish operations that bypass the proposed gateway.
 - **Status: Part-Resolved / Tracked in backlog.**
-  - **Resolved by PRs #16, #17:** Canonical Pydantic schemas for `ActionRequest`, `PolicyDecision`, `ApprovalRequest`, `ExecutionReceipt`, and `TimelineEvent` are implemented in `backend/scopewatch/domain/models.py`.
+  - **Resolved by PRs #16, #17:** Canonical Pydantic schemas for `ActionRequest`, `PolicyDecision`, `ApprovalRequest`, `ExecutionReceipt`, and `TimelineEvent` are implemented in `backend/scopewatch/schemas.py` and `backend/scopewatch/models.py` (not `backend/scopewatch/domain/models.py`, which does not exist).
   - **Tracked in backlog (#27):** Scopewatch minimal agent loop with purpose-built system prompt and controlled tool surface.
   - **Tracked in backlog (#48, #49):** Agent Client Protocol (ACP) adapter for external coding agents (stretch).
 
 ### No backend or evidence store
 - *Original finding:* The project has no API, persistent database, append-only event log, event integrity mechanism, retention policy, or replay provenance. There is no authoritative record connecting an attempted operation, policy decision, approval, executor dispatch, and observed result.
 - **Status: Part-Resolved / Tracked in backlog.**
-  - **Resolved by PRs #16, #17:** FastAPI application with SQLite repository (`backend/scopewatch/storage/repository.py`) storing runs, action requests, policy decisions, approvals, execution receipts, and timeline events in append-only tables.
+  - **Resolved by PRs #16, #17:** FastAPI application with SQLite repository (`backend/scopewatch/repository.py`, not `backend/scopewatch/storage/repository.py`, which does not exist) storing runs, action requests, policy decisions, approvals, execution receipts, and timeline events in append-only tables.
   - **Tracked in backlog (#52):** Cryptographic SHA-256 tamper-evident hash chain for audit events.
 
 ### No real approval workflow
 - *Original finding:* Pending approval is a fixture status only. Authentication, approver authority, exact request binding, expiry, single-use consumption, replay protection, race handling, and a non-overridable deterministic denial have not been implemented.
 - **Status: Resolved by PRs #16, #17, #18.**
-  - Real server-side approval lifecycle implemented: approvals are bound to exact run ID and action hash, expire after timeout, are consumed exactly once, and cannot override deterministic denials. Supported by `/api/v1/approvals/{id}/resolve` and interactive UI controls.
+  - Real server-side approval lifecycle implemented: approvals are bound to exact run ID and action hash, expire after timeout, are consumed exactly once, and cannot override deterministic denials. Supported by `POST /api/v1/approvals/{approval_id}/approve` and `POST /api/v1/approvals/{approval_id}/deny` at `backend/scopewatch/app.py:191,205` (not `/api/v1/approvals/{id}/resolve`, which does not exist) and interactive UI controls.
 
 ---
 
@@ -89,14 +89,14 @@ Below, every original finding is preserved with its updated status: **Resolved**
   - **Formalized in ADR-0001:** Missing reasoning produces `HOLD` when audited; reasoning is strictly escalate-only (`ALLOW -> HOLD`); absent reasoning displayed as visibly missing.
   - **Tracked in backlog (#25, #26):** Provider spike (#25) and provider profiles (#26) verify Nemotron on Nebius Token Factory and OpenRouter.
   - **Tracked in backlog (#28, #29):** Integration of hardened auditor into backend with escalate-only merge.
-  - **Tracked in backlog (#30):** Held-out adversarial evaluation and calibrated threshold tuning.
+  - **Tracked in backlog (#32):** Held-out adversarial evaluation and calibrated threshold tuning (not #30, which is the dashboard).
 
 ---
 
 ## Security and operations gaps
 
 - *Path canonicalization, traversal defense, symlink escapes:*
-  **Resolved by PR #16.** `backend/scopewatch/security/path.py` canonicalizes paths, verifies workspace boundaries, and rejects traversal sequences (`..`).
+  **Resolved by PR #16.** `backend/scopewatch/policy.py:147,175-198` (not `backend/scopewatch/security/path.py`, which does not exist) canonicalizes paths, verifies workspace boundaries, and rejects traversal sequences (`..`).
 - *Safe command representation and shell argument policy:*
   **Tracked in backlog issue #36.** `run_command` parsed strictly with `shlex` against an allowlist; shell metacharacters rejected.
 - *Outbound network mediation:*
@@ -108,20 +108,20 @@ Below, every original finding is preserved with its updated status: **Resolved**
 - *Request idempotency, rate limiting, approval replay defense:*
   **Resolved by PR #16.** Run-level serialization and single-use token consumption prevent approval replays.
 - *Adversarial system test suite:*
-  **Resolved by PR #19 (`scripts/validate.sh`); container bypass tests tracked in backlog issue #38.**
+  **Resolved by PR #19 (`scripts/validate.sh`); container bypass tests tracked in backlog issue #39 (not #38, which is coding scenarios).**
 - *Branch-protection configuration without required status checks:*
   **Resolved by Issue #22.** Required status checks (`backend`, `cot-auditing`, `reviewer-ui`) configured in `.github/branch-protection.json` and applied to `main`.
 - *Python dependency lock file:*
-  **Tracked in backlog issue #20 (Milestone M0).**
+  **Tracked in backlog issue #59 (new lock-file issue; #20 is the closed planning-session record, not a lock file).**
 
 ---
 
 ## Frontend gaps
 
 - *Static fixtures only / No API or live data:*
-  **Resolved by PR #18.** Connected to backend API and live SSE stream (`/api/v1/events/stream`), with active action simulator and live approval buttons.
+  **Resolved by PR #18.** Connected to backend API and live SSE stream (`GET /api/v1/runs/{run_id}/events/stream`), with active action simulator and live approval buttons.
 - *No visible interception coverage statement:*
-  **Tracked in backlog issue #31.** Adding explicit mediated vs unmediated capability coverage banner.
+  **Tracked in backlog issue #61 (new coverage-banner issue; #31 is real-agent invoice scenarios, not a banner).** Adding explicit mediated vs unmediated capability coverage banner.
 - *No approval actions backed by authority service:*
   **Resolved by PRs #17, #18.** Live UI invokes backend approval endpoint.
 - *Next.js / TypeScript dashboard:*
@@ -159,13 +159,13 @@ Below, every original finding is preserved with its updated status: **Resolved**
 5. *Store decisions and receipts in append-only event store:*
    **Resolved by PR #16, #17.**
 6. *Connect reviewer to real events and display coverage:*
-   **Resolved by PR #18; coverage banner tracked in #31.**
+   **Resolved by PR #18; coverage banner tracked in #61 (not #31).**
 7. *Implement exact, single-use approvals:*
    **Resolved by PRs #16, #17, #18.**
 8. *Integrate selected NVIDIA model through Nebius / OpenRouter:*
    **Tracked in spike #25 and issue #26.**
 9. *Held-out adversarial evaluations and thresholds:*
-   **Hardened suite landed in PR #54; held-out evaluation tracked in #30.**
+   **Hardened suite landed in PR #54; held-out evaluation tracked in #32 (not #30).**
 10. *Deploy complete demonstration proving unsafe requests never reach executor:*
     **In-process demo validated in PR #19; hosted Nebius VM deployment tracked in #42, #43.**
 
@@ -180,7 +180,7 @@ Below, every original finding is preserved with its updated status: **Resolved**
 | Executor evidence confirms denied action was not executed | **Satisfied** | `ExecutionReceipt(dispatched=False, status=NOT_EXECUTED)` recorded in SQLite |
 | Ambiguous action enters `HOLD` | **Satisfied** | File deletion scenario in `scripts/validate.sh` triggers `HOLD` |
 | Developer approves once or denies | **Satisfied** | Server-side single-use approval resolution in API & UI |
-| Approval cannot override deterministic denial | **Satisfied** | Deterministic denials reject approval overrides in `policy/engine.py` |
+| Approval cannot override deterministic denial | **Satisfied** | Deterministic denials reject approval overrides in `backend/scopewatch/policy.py` |
 | Dashboard receives real events and distinguishes states | **Satisfied** | Live reviewer UI receives SSE stream and colors states |
 | Missing semantic-model output fails safely | **Satisfied / Formalized** | Invariant established in ADR-0001; merge tracked in #29 |
 | Fixtures and logs remain synthetic | **Satisfied** | Synthetic-only policy enforced across repository |

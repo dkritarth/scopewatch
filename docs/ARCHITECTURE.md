@@ -47,17 +47,18 @@ It implements the decisions accepted in [ADR-0001](adr/0001-pre-execution-gatewa
 
 ### 1. Pre-execution mediation gateway
 
-The backend API (`backend/scopewatch/app.py`) provides REST endpoints under `/api/v1/` and a Server-Sent Events (SSE) broadcaster for live audit events.
+The backend API (`backend/scopewatch/app.py`) provides REST endpoints under `/api/v1/` and a Server-Sent Events (SSE) broadcaster for live audit events ([app.py:55-83](backend/scopewatch/app.py), [service.py:371-539](backend/scopewatch/service.py)).
 
-The gateway guarantees:
-- **No execution without a decision**: The executor refuses any tool dispatch lacking a stored decision or a valid single-use approval receipt.
-- **Fail closed**: If any component (auditor, database, network) fails, the action defaults to `HOLD` with a descriptive error code (`REASONING_AUDIT_FAILED`, `POLICY_ERROR`).
+The gateway enforces, for actions routed through its API:
+- **No decision, no execution**: `execute_action` requires in-memory policy evidence (`backend/scopewatch/executor.py:34-46`); a `None` decision raises `ExecutionSecurityError`, `DENY` returns `NOT_EXECUTED`, and `HOLD` requires an `APPROVED`/`CONSUMED` approval bound to the same action (`executor.py:64-71`). The service layer persists each decision before dispatch (`ScopewatchRepository.create_policy_decision` at `backend/scopewatch/service.py:539`) and then passes that in-memory decision to the executor. Direct calls that bypass the service have no stored decision to consult.
+- **Fail closed on auditor concern or failure**: an auditor `CONCERN` escalates `ALLOW` to `HOLD` with `REASONING_SCOPE_CONCERN`, and an auditor `FAILED` escalates to `HOLD` with `REASONING_AUDIT_FAILED` (`backend/scopewatch/service.py:461-484`; verified by `backend/tests/test_agent_end_to_end.py::test_invariant_5_*`). `POLICY_ERROR` exists in `backend/scopewatch/models.py:32` but is never emitted; an unexpected database failure surfaces as HTTP 500 via `backend/scopewatch/errors.py:62-66`, and disabled network is a deterministic `DENY [NETWORK_DISABLED]` (`backend/scopewatch/policy.py:114-119`).
 
 Key endpoints:
 - `POST /api/v1/runs`: Initialize an isolated run with an explicit task scope.
 - `GET /api/v1/runs`: List active and historical runs.
 - `POST /api/v1/runs/{run_id}/actions`: Submit a candidate action for policy evaluation, reasoning audit, and controlled execution.
-- `GET /api/v1/runs/{run_id}/events`: Subscribe to live SSE events for a run.
+- `GET /api/v1/runs/{run_id}/events`: Return the stored event list as JSON (`backend/scopewatch/app.py:221`).
+- `GET /api/v1/runs/{run_id}/events/stream`: Subscribe to live SSE events for a run (`backend/scopewatch/app.py:231`).
 - `GET /api/v1/approvals`: List pending, approved, or denied human review requests.
 - `POST /api/v1/approvals/{approval_id}/approve`: Single-use endpoint to authorize an action on hold.
 - `POST /api/v1/approvals/{approval_id}/deny`: Reject an action on hold.
@@ -96,7 +97,8 @@ Model routing is centralized in `backend/scopewatch/providers/` configured via `
 ### 5. Controlled workspace executor
 
 The executor (`backend/scopewatch/executor.py`) operates strictly within the designated workspace boundary:
-- Supported operations: `list_directory`, `read_text`, `write_text`, `delete_path`.
+- Supported operations: `list_directory`, `read_text`, `write_text`, `delete_path` (`backend/scopewatch/executor.py:80-232`).
+- `delete_path` is simulated in the M1 baseline: it returns `"simulated": true` and does not unlink the target (`backend/scopewatch/executor.py:214-232`).
 - Produces immutable execution receipts with execution status, sanitized result payloads, error codes, and completion timestamps.
 
 ### 6. Reviewer UI and live evidence stream
@@ -124,7 +126,7 @@ All tool actions go through the gateway API; actions that bypass the API are not
 | **1. Deterministic policy first** | Policy evaluated before auditor; DENY skips auditor entirely. | `test_agent_end_to_end.py::test_invariant_1_*` |
 | **2. Reasoning is escalate-only** | Auditor concern or failure yields HOLD; never ALLOW or DENY. | `test_agent_end_to_end.py::test_invariant_4_*`, `test_invariant_5_*` |
 | **3. Fail closed** | Timeout, transport error, or ungrounded excerpt yields HOLD. | `test_agent_end_to_end.py::test_invariant_5_*` |
-| **4. No decision, no execution** | Executor requires stored decision or approval receipt. | `test_agent_end_to_end.py::test_invariant_2_*` |
+| **4. No decision, no execution** | Executor requires in-memory policy evidence or approval receipt; service persists the decision before dispatch. | `test_agent_end_to_end.py::test_invariant_2_*` |
 | **5. Approvals are single-use** | Token consumed on resolution; cannot override policy DENY. | `test_agent_end_to_end.py::test_invariant_2_*`, `test_invariant_3_*` |
 | **6. Missing reasoning does not escalate** | Recorded as UNAVAILABLE; policy ALLOW proceeds. | `test_agent_end_to_end.py::test_invariant_6_*` |
 | **7. Monotonic evidence sequence** | Monotonic event sequence; decisions precede execution. | `test_agent_end_to_end.py::test_invariant_7_*` |
