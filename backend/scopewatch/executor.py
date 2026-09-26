@@ -102,6 +102,13 @@ def _execute_local(
     if action.operation == "network_request":
         raise ExecutionSecurityError("Network requests are forbidden in synthetic executor.")
 
+    # Invariant: run_command is Docker-only (policy denies it for the local
+    # backend, but the executor refuses it too as defence in depth).
+    if action.operation == "run_command":
+        raise ExecutionSecurityError(
+            "run_command requires the Docker executor (SCOPEWATCH_EXECUTOR=docker)."
+        )
+
     # Target path resolution
     resolved_workspace = workspace_root.resolve()
     target_path = resolved_workspace / action.resource
