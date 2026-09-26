@@ -17,7 +17,7 @@ The numbers below are shadow prices. Work performed through a ChatGPT or Codex s
 # 1. Install backend dependencies in virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r backend/requirements.txt
+pip install --require-hashes -r backend/requirements.lock
 
 # 2. Install frontend dependencies
 npm ci --prefix frontend
@@ -29,6 +29,31 @@ npx --prefix frontend playwright install --with-deps chromium
 # 4. Launch the integrated demonstration
 ./scripts/run_demo.sh
 ```
+
+### Python dependency lock files
+
+`backend/requirements.txt` and `poc/cot-auditing/requirements.txt` are the
+human-readable inputs (version ranges). The pinned, hashed outputs are
+`backend/requirements.lock` and `poc/cot-auditing/requirements.lock`.
+Always install from the lock files so every machine gets the same bytes:
+
+```bash
+pip install --require-hashes -r backend/requirements.lock
+pip install --require-hashes -r poc/cot-auditing/requirements.lock
+```
+
+Regenerate the locks with Python 3.12.3 and uv 0.12.18 (`--python-version 3.12`
+matches CI's `setup-python: '3.12'`):
+
+```bash
+uv pip compile backend/requirements.txt --generate-hashes --python-version 3.12 -o backend/requirements.lock --custom-compile-command "uv pip compile backend/requirements.txt --generate-hashes --python-version 3.12 -o backend/requirements.lock"
+uv pip compile poc/cot-auditing/requirements.txt --generate-hashes --python-version 3.12 -o poc/cot-auditing/requirements.lock --custom-compile-command "uv pip compile poc/cot-auditing/requirements.txt --generate-hashes --python-version 3.12 -o poc/cot-auditing/requirements.lock"
+```
+
+CI (`backend.yml`, `cot-auditing.yml`, `reviewer-ui.yml`) reinstalls pinned
+uv 0.12.18, recompiles each input to a temp file with the same command, and
+fails the run when the committed lock differs (`cmp -s`), then installs with
+`pip install --require-hashes -r <lockfile>`.
 
 ### Running test suites individually
 
