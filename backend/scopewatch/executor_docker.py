@@ -11,6 +11,8 @@ on the host before Docker is touched); Docker-unavailable fails closed with
 from __future__ import annotations
 
 import json
+import math
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -45,6 +47,49 @@ DOCKER_TIMEOUT_S = 60
 
 EXECUTOR_NAME = "docker-executor"
 
+# run_command limits (issue #36): default per-command timeout, host-side
+# clamp bounds, and per-stream output cap with a truncation marker.
+RUN_COMMAND_DEFAULT_TIMEOUT_S = 60.0
+RUN_COMMAND_MIN_TIMEOUT_S = 1.0
+RUN_COMMAND_MAX_TIMEOUT_S = 300.0
+RUN_COMMAND_OUTPUT_LIMIT = 64 * 1024
+DOCKER_RUN_TIMEOUT_BUFFER_S = 30.0
+
+
+def extract_run_command_argv(action: ActionRequest) -> Optional[list[str]]:
+    """Derive the argv list for a run_command action, or None if malformed.
+
+    Accepts the string form (parsed here with shlex, mirroring the policy)
+    or the pre-split list form. Never uses a shell.
+    """
+    arguments = action.arguments or {}
+    raw_command = arguments.get("command")
+    argv_arg = arguments.get("argv")
+    if isinstance(raw_command, str):
+        try:
+            argv = shlex.split(raw_command, posix=True)
+        except ValueError:
+            return None
+        return argv or None
+    if (
+        isinstance(argv_arg, list)
+        and argv_arg
+        and all(isinstance(item, str) for item in argv_arg)
+    ):
+        return list(argv_arg)
+    return None
+
+
+def clamp_run_command_timeout(value: Any) -> float:
+    """Clamp a requested per-command timeout to the allowed range."""
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return RUN_COMMAND_DEFAULT_TIMEOUT_S
+    if math.isnan(timeout) or math.isinf(timeout):
+        return RUN_COMMAND_DEFAULT_TIMEOUT_S
+    return min(max(timeout, RUN_COMMAND_MIN_TIMEOUT_S), RUN_COMMAND_MAX_TIMEOUT_S)
+
 
 def _helper_code() -> str:
     """Return the in-container helper source.
@@ -54,11 +99,15 @@ def _helper_code() -> str:
     single JSON document with structured outputs.
     """
     return (
-        "import json, os, sys\n"
+        "import json, os, subprocess, sys\n"
         "from pathlib import Path\n"
         f"MAX_READ = {int(MAX_READ_BYTES)}\n"
         f"MAX_WRITE = {int(MAX_WRITE_BYTES)}\n"
-        "WS = Path('/workspace')\n"
+        f"RUN_CMD_LIMIT = {int(RUN_COMMAND_OUTPUT_LIMIT)}\n"
+        f"RUN_CMD_TIMEOUT_DEFAULT = {float(RUN_COMMAND_DEFAULT_TIMEOUT_S)}\n"
+        f"RUN_CMD_TIMEOUT_MIN = {float(RUN_COMMAND_MIN_TIMEOUT_S)}\n"
+        f"RUN_CMD_TIMEOUT_MAX = {float(RUN_COMMAND_MAX_TIMEOUT_S)}\n"
+        "WS = Path(os.environ.get('SCOPEWATCH_WORKSPACE', '/workspace'))\n"
         "def fail(msg, code):\n"
         "    print(json.dumps({'status': 'FAILED', 'result': {'error': msg}, 'error_code': code}))\n"
         "    return\n"
@@ -140,6 +189,59 @@ def _helper_code() -> str:
         "            return\n"
         "        elif op == 'delete_path':\n"
         "            print(json.dumps({'status': 'EXECUTED', 'result': {'operation': 'delete_path', 'resource': resource, 'simulated': True, 'note': 'Deletion simulated safely in baseline demo; target not unlinked.'}, 'error_code': None}))\n"
+        "            return\n"
+        "        elif op == 'run_command':\n"
+        "            run_argv = args.get('argv')\n"
+        "            if not isinstance(run_argv, list) or not run_argv or not all(isinstance(a, str) for a in run_argv):\n"
+        "                fail('malformed argv for run_command', 'EXECUTION_FAILED')\n"
+        "                return\n"
+        "            if any('\\x00' in a for a in run_argv):\n"
+        "                fail('null byte in argv', 'EXECUTION_FAILED')\n"
+        "                return\n"
+        "            try:\n"
+        "                run_timeout = float(args.get('timeout_s', RUN_CMD_TIMEOUT_DEFAULT))\n"
+        "            except (TypeError, ValueError):\n"
+        "                run_timeout = RUN_CMD_TIMEOUT_DEFAULT\n"
+        "            run_timeout = min(max(run_timeout, RUN_CMD_TIMEOUT_MIN), RUN_CMD_TIMEOUT_MAX)\n"
+        "            if '..' in Path(resource).parts:\n"
+        "                fail('cwd uses directory traversal', 'EXECUTION_FAILED')\n"
+        "                return\n"
+        "            try:\n"
+        "                run_cwd = (WS if resource in ('', '.') else (WS / resource)).resolve()\n"
+        "                run_cwd.relative_to(WS.resolve())\n"
+        "            except ValueError:\n"
+        "                fail('cwd escapes workspace boundary', 'EXECUTION_FAILED')\n"
+        "                return\n"
+        "            except Exception:\n"
+        "                fail('cwd resolution failed', 'EXECUTION_FAILED')\n"
+        "                return\n"
+        "            if not run_cwd.is_dir():\n"
+        "                fail(f'cwd not found: {resource}', 'EXECUTION_FAILED')\n"
+        "                return\n"
+        "            try:\n"
+        "                run_proc = subprocess.run(run_argv, shell=False, capture_output=True, timeout=run_timeout, cwd=str(run_cwd))\n"
+        "            except subprocess.TimeoutExpired:\n"
+        "                print(json.dumps({'status': 'FAILED', 'result': {'operation': 'run_command', 'argv': run_argv, 'exit_code': None, 'stdout': '', 'stderr': '', 'truncated_stdout': False, 'truncated_stderr': False, 'timed_out': True}, 'error_code': 'COMMAND_TIMEOUT'}))\n"
+        "                return\n"
+        "            except FileNotFoundError:\n"
+        "                fail('command not found', 'EXECUTION_FAILED')\n"
+        "                return\n"
+        "            except Exception as exc:\n"
+        "                fail(type(exc).__name__, 'EXECUTION_FAILED')\n"
+        "                return\n"
+        "            run_out = run_proc.stdout or b''\n"
+        "            run_err = run_proc.stderr or b''\n"
+        "            run_out_trunc = len(run_out) > RUN_CMD_LIMIT\n"
+        "            run_err_trunc = len(run_err) > RUN_CMD_LIMIT\n"
+        "            run_out_text = run_out[:RUN_CMD_LIMIT].decode('utf-8', errors='replace')\n"
+        "            run_err_text = run_err[:RUN_CMD_LIMIT].decode('utf-8', errors='replace')\n"
+        "            if run_out_trunc:\n"
+        "                run_out_text += f\"\\n...[truncated {len(run_out) - RUN_CMD_LIMIT} bytes]\\n\"\n"
+        "            if run_err_trunc:\n"
+        "                run_err_text += f\"\\n...[truncated {len(run_err) - RUN_CMD_LIMIT} bytes]\\n\"\n"
+        "            run_status = 'EXECUTED' if run_proc.returncode == 0 else 'FAILED'\n"
+        "            run_error = None if run_proc.returncode == 0 else 'NONZERO_EXIT'\n"
+        "            print(json.dumps({'status': run_status, 'result': {'operation': 'run_command', 'argv': run_argv, 'exit_code': run_proc.returncode, 'stdout': run_out_text, 'stderr': run_err_text, 'truncated_stdout': run_out_trunc, 'truncated_stderr': run_err_trunc, 'timed_out': False}, 'error_code': run_error}))\n"
         "            return\n"
         "        else:\n"
         "            fail(f'Unsupported operation: {op}', 'EXECUTION_FAILED')\n"
@@ -321,8 +423,21 @@ class DockerExecutor:
             staging_root = Path(tempfile.mkdtemp(prefix="scopewatch-run-"))
             workspace_copy = staging_root / "workspace"
             shutil.copytree(resolved_workspace, workspace_copy, symlinks=True)
-
-            arguments_json = json.dumps(action.arguments or {})
+            # run_command (issue #36): normalize argv + timeout on the host so
+            # the container always receives the argv list form with no shell.
+            # The policy already allowlisted the command; a failure to
+            # re-derive argv here fails closed.
+            run_timeout_s: Optional[float] = None
+            if action.operation == "run_command":
+                run_argv = extract_run_command_argv(action)
+                if run_argv is None:
+                    return _failed("EXECUTION_FAILED", "Malformed run_command arguments.")
+                run_timeout_s = clamp_run_command_timeout(
+                    (action.arguments or {}).get("timeout_s", RUN_COMMAND_DEFAULT_TIMEOUT_S)
+                )
+                arguments_json = json.dumps({"argv": run_argv, "timeout_s": run_timeout_s})
+            else:
+                arguments_json = json.dumps(action.arguments or {})
             cmd = build_docker_command(
                 image=self.image,
                 workspace_copy=workspace_copy,
@@ -337,7 +452,11 @@ class DockerExecutor:
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    timeout=self.timeout_s,
+                    timeout=(
+                        self.timeout_s
+                        if run_timeout_s is None
+                        else run_timeout_s + DOCKER_RUN_TIMEOUT_BUFFER_S
+                    ),
                 )
             except subprocess.TimeoutExpired:
                 _best_effort_remove(container_name)
@@ -367,7 +486,10 @@ class DockerExecutor:
             # listings, and simulated deletes need no sync, but a full copy
             # back is cheap for synthetic fixtures and keeps both backends
             # behaviourally identical.
-            if exec_status == ExecutionStatus.EXECUTED and action.operation == "write_text":
+            if exec_status == ExecutionStatus.EXECUTED and action.operation in (
+                "write_text",
+                "run_command",
+            ):
                 try:
                     _sync_copy_back(workspace_copy, resolved_workspace)
                 except Exception:
