@@ -556,6 +556,79 @@ def test_approval_cannot_override_policy_deny(test_env: dict[str, Any]):
 # 8. Test: feature flag SCOPEWATCH_REASONING_AUDIT=off bypasses audit
 # =====================================================================
 
+def test_policy_decision_reasoning_audit_id_round_trip(test_env: dict[str, Any]):
+    """Defect 21: PolicyDecision.reasoning_audit_id must survive a DB round trip.
+
+    Previously the column did not exist, so the field always read back None.
+    """
+    import uuid as uuid_mod
+
+    db_file = test_env["db_file"]
+    run = test_env["run"]
+    now = datetime.now(timezone.utc).isoformat()
+
+    action = ActionRequest(
+        id=str(uuid_mod.uuid4()),
+        run_id=run.id,
+        tool="workspace",
+        operation="read_text",
+        resource="invoices/approved/vendor-a.txt",
+        arguments={},
+        requested_by="synthetic-agent",
+        requested_at=now,
+    )
+    conn = get_connection(db_file)
+    try:
+        ScopewatchRepository.create_action_request(conn, action)
+
+        from scopewatch.schemas import PolicyDecision
+
+        decision = PolicyDecision(
+            id=str(uuid_mod.uuid4()),
+            action_request_id=action.id,
+            outcome=PolicyOutcome.ALLOW,
+            reason_code=ReasonCode.ALLOWED_TOOL_AND_RESOURCE,
+            explanation="permitted",
+            matched_rule="RULE_ALLOWED_TOOL_AND_RESOURCE",
+            decided_at=now,
+            deterministic=True,
+            reasoning_audit_id="audit-record-1",
+        )
+        ScopewatchRepository.create_policy_decision(conn, decision)
+        reloaded = ScopewatchRepository.get_policy_decision_by_action(conn, action.id)
+        assert reloaded is not None
+        assert reloaded.reasoning_audit_id == "audit-record-1"
+
+        action2 = ActionRequest(
+            id=str(uuid_mod.uuid4()),
+            run_id=run.id,
+            tool="workspace",
+            operation="read_text",
+            resource="invoices/approved/vendor-a.txt",
+            arguments={},
+            requested_by="synthetic-agent",
+            requested_at=now,
+        )
+        ScopewatchRepository.create_action_request(conn, action2)
+        decision2 = PolicyDecision(
+            id=str(uuid_mod.uuid4()),
+            action_request_id=action2.id,
+            outcome=PolicyOutcome.DENY,
+            reason_code=ReasonCode.BLOCKED_PATH,
+            explanation="blocked",
+            matched_rule="RULE_BLOCKED_PATH_MATCHED",
+            decided_at=now,
+            deterministic=True,
+            reasoning_audit_id=None,
+        )
+        ScopewatchRepository.create_policy_decision(conn, decision2)
+        reloaded2 = ScopewatchRepository.get_policy_decision_by_action(conn, action2.id)
+        assert reloaded2 is not None
+        assert reloaded2.reasoning_audit_id is None
+    finally:
+        conn.close()
+
+
 def test_effective_turn_id_persisted_on_action_row(test_env: dict[str, Any]):
     """Defect 15: the generated effective turn_id must persist on the action row.
 
