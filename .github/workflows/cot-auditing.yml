@@ -18,7 +18,12 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: poc/cot-auditing/requirements.txt
-      - run: python -m pip install -r poc/cot-auditing/requirements.txt
+          cache-dependency-path: poc/cot-auditing/requirements.lock
+      - name: Check PoC lock file is up to date
+        run: |
+          python -m pip install "uv==0.12.18"
+          uv pip compile poc/cot-auditing/requirements.txt --generate-hashes --python-version 3.12 -o /tmp/poc-requirements.lock --custom-compile-command "uv pip compile poc/cot-auditing/requirements.txt --generate-hashes --python-version 3.12 -o poc/cot-auditing/requirements.lock"
+          cmp -s poc/cot-auditing/requirements.lock /tmp/poc-requirements.lock || (echo "poc/cot-auditing/requirements.lock is out of date. Regenerate it (see BUILDING.md) and commit the result."; exit 1)
+      - run: python -m pip install --require-hashes -r poc/cot-auditing/requirements.lock
       - run: python -m pytest poc/cot-auditing -q
       - run: python -m compileall -q poc/cot-auditing/src poc/cot-auditing/scripts
