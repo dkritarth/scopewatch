@@ -182,16 +182,18 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
 def load_dataset_cases(
     cases_dir: Path, split: str
 ) -> tuple[list[dict[str, Any]], str, Path]:
-    """Load test cases from dataset directory and return cases, sha256 hash, and path."""
+    """Load test cases from dataset directory and return cases, sha256 hash, and path.
+
+    Only the subdirectory copies are read (`dev/cases.json`, `heldout/cases.json`);
+    the old top-level `dev.json`/`heldout.json` duplicates were removed (defect 22).
+    """
     if split == "heldout":
         candidates = [
             cases_dir / "heldout" / "cases.json",
-            cases_dir / "heldout.json",
         ]
     elif split == "dev":
         candidates = [
             cases_dir / "dev" / "cases.json",
-            cases_dir / "dev.json",
         ]
     elif split == "all":
         # Load both dev and heldout
