@@ -235,19 +235,14 @@ def test_policy_allow_audit_failed_escalates_to_hold(test_env: dict[str, Any]):
     service: ScopewatchService = test_env["service"]
     run = test_env["run"]
 
-    # Provide an auditor that returns FAILED
-    failing_auditor = MagicMock(spec=ReasoningAuditor)
-    failing_auditor.audit_turn.return_value = ReasoningAuditResult(
-        verdict=ReasoningAuditVerdict.FAILED,
-        concern_type=None,
-        flagged_excerpts=[],
-        explanation="Audit failed closed: simulated auditor parsing failure.",
-        model="mock-rules-auditor",
-        profile="mock",
-        latency_ms=12.5,
-        error_code=AuditErrorCode.INVALID_AUDIT_OUTPUT.value,
+    # Provide a real auditor whose provider returns malformed output, so the
+    # audit fails closed to FAILED (the service now requires injected auditors
+    # to expose the full ReasoningAuditor interface: timeout_s/model/profile).
+    failing_provider = MockAuditorProvider(profile="mock", model="mock-rules-auditor")
+    failing_provider.enqueue_response("This is not JSON at all: { broken }")
+    service._auditor = ReasoningAuditor(
+        provider=failing_provider, profile="mock", model="mock-rules-auditor"
     )
-    service._auditor = failing_auditor
 
     req = SubmitActionRequest(
         tool="workspace",
@@ -693,6 +688,51 @@ def test_feature_flag_disabled_bypasses_audit(test_env: dict[str, Any], monkeypa
     allow_events = [e for e in res.events if e.event_type == EventType.POLICY_ALLOWED]
     assert len(allow_events) == 1
     assert allow_events[0].details.get("reasoning_audit") == "disabled"
+
+
+def test_broken_auditor_profile_fails_closed(test_env: dict[str, Any], monkeypatch):
+    """Defect 1: a configured auditor profile whose client cannot be built
+    (missing key) yields a FAILED audit and a HOLD, never a mock-backed ALLOW.
+
+    The persisted evidence must record the failure with a diagnostic code; a
+    run that never called a model must not be presented as model-backed.
+    """
+    monkeypatch.setenv("SCOPEWATCH_AUDITOR_PROFILE", "nebius-demo")
+    monkeypatch.delenv("NEBIUS_API_KEY", raising=False)
+
+    service: ScopewatchService = test_env["service"]
+    run = test_env["run"]
+    assert service._auditor is None
+
+    with patch("scopewatch.service.execute_action") as mock_executor:
+        res = asyncio.run(
+            service.submit_action(
+                run.id,
+                SubmitActionRequest(
+                    tool="workspace",
+                    operation="read_text",
+                    resource="invoices/approved/vendor-a.txt",
+                    exposed_reasoning_trace="Reading the vendor invoice to verify its total.",
+                    turn_id="turn-broken-profile",
+                ),
+            )
+        )
+
+    assert res.policy_decision.outcome == PolicyOutcome.HOLD
+    assert res.policy_decision.reason_code == ReasonCode.REASONING_AUDIT_FAILED
+    assert res.reasoning_audit is not None
+    assert res.reasoning_audit.verdict == ReasoningAuditVerdict.FAILED.value
+    assert res.reasoning_audit.error_code == "MISSING_API_KEY"
+    assert res.reasoning_audit.profile == "nebius-demo"
+    mock_executor.assert_not_called()
+    assert res.approval_request is not None
+    event_types = [e.event_type for e in res.events]
+    assert event_types == [
+        EventType.ACTION_REQUESTED,
+        EventType.REASONING_AUDIT_FAILED,
+        EventType.POLICY_HELD,
+        EventType.APPROVAL_REQUESTED,
+    ]
 
 
 def test_second_action_in_turn_not_denied_for_waiting_run(test_env: dict[str, Any]):

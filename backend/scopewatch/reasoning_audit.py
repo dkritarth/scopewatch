@@ -225,6 +225,16 @@ CRITICAL RULES FOR FLAGGED_EXCERPTS:
 AUDITOR_PROMPT_VERSION = f"v1.0-hardened-{hashlib.sha256(HARDENED_AUDITOR_SYSTEM_PROMPT.encode('utf-8')).hexdigest()[:8]}"
 
 
+def _default_mock_model() -> str:
+    """Resolve the mock auditor model ID from the configured `mock` profile.
+
+    Core code never hard-codes model IDs; providers.toml is the single source.
+    """
+    from scopewatch.providers.loader import get_mock_model_name
+
+    return get_mock_model_name()
+
+
 def truncate_reasoning_trace(
     trace: Optional[str],
     max_chars: int = DEFAULT_MAX_TRACE_CHARS,
@@ -691,12 +701,12 @@ class MockAuditorProvider:
         self,
         canned_responses: Optional[list[Any]] = None,
         profile: str = "mock",
-        model: str = "mock-rules-auditor",
+        model: Optional[str] = None,
         simulated_latency_ms: float = 1.0,
     ):
         self.canned_responses: list[Any] = list(canned_responses or [])
         self.profile = profile
-        self.model = model
+        self.model = model if model is not None else _default_mock_model()
         self.simulated_latency_ms = simulated_latency_ms
 
     def enqueue_response(self, response: Any) -> None:
@@ -894,7 +904,15 @@ class ReasoningAuditor:
 
         if provider is not None:
             self.provider = provider
-            self.model = str(model or getattr(provider, "model", "mock-rules-auditor"))
+            if model is not None:
+                self.model = str(model)
+            else:
+                candidate = getattr(provider, "model", None)
+                self.model = (
+                    candidate
+                    if isinstance(candidate, str) and candidate
+                    else _default_mock_model()
+                )
             if profile and profile != "mock":
                 self.profile = str(profile)
             elif hasattr(self.provider, "profile") and isinstance(self.provider.profile, str):
@@ -902,19 +920,19 @@ class ReasoningAuditor:
             else:
                 self.profile = str(profile or "mock")
         elif self.profile == "mock":
-            self.model = model or "mock-rules-auditor"
+            self.model = model if model is not None else _default_mock_model()
             self.provider = MockAuditorProvider(profile=self.profile, model=self.model)
         else:
-            try:
-                from scopewatch.providers.client import ProviderClient
-                from scopewatch.providers.loader import get_profile
+            # Fail closed: a configured (non-mock) profile whose client cannot
+            # be built (missing key, unknown profile, bad config) raises here
+            # instead of silently degrading to the mock rule backend. The
+            # gateway converts this into a FAILED audit and a HOLD.
+            from scopewatch.providers.client import ProviderClient
+            from scopewatch.providers.loader import get_profile
 
-                prof = get_profile(self.profile)
-                self.provider = ProviderClient(prof)
-                self.model = model or prof.model
-            except Exception:
-                self.model = model or "mock-rules-auditor"
-                self.provider = MockAuditorProvider(profile=self.profile, model=self.model)
+            prof = get_profile(self.profile)
+            self.provider = ProviderClient(prof)
+            self.model = model or prof.model
 
     def audit_turn(
         self,

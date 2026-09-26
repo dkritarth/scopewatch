@@ -1,5 +1,6 @@
 """Service layer orchestrating domain operations, transactions, and event generation."""
 
+import asyncio
 from datetime import datetime, timezone, timedelta
 import hashlib
 import logging
@@ -28,8 +29,10 @@ from scopewatch.models import (
 from scopewatch.policy import evaluate_policy
 from scopewatch.providers.loader import get_auditor_profile
 from scopewatch.reasoning_audit import (
+    AuditErrorCode,
     PlannedAction,
     ReasoningAuditor,
+    ReasoningAuditResult,
     ReasoningAuditVerdict,
 )
 from scopewatch.repository import (
@@ -54,6 +57,14 @@ from scopewatch.schemas import (
 logger = logging.getLogger("scopewatch.service")
 
 
+def _audit_error_code(exc: BaseException) -> str:
+    """Extract a sanitized diagnostic code from an audit failure."""
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code:
+        return code
+    return AuditErrorCode.AUDIT_ERROR.value
+
+
 class ScopewatchService:
     def __init__(
         self,
@@ -71,15 +82,118 @@ class ScopewatchService:
     def _get_auditor(self) -> ReasoningAuditor:
         if self._auditor is not None:
             return self._auditor
+        # Fail closed: no silent fallback to the mock backend. If the
+        # configured profile cannot be built (missing key, unknown profile,
+        # bad config), this raises and the caller records a FAILED audit.
+        profile = get_auditor_profile()
+        return ReasoningAuditor(
+            profile=profile.name,
+            model=profile.model,
+            timeout_s=profile.timeout_s,
+        )
+
+    @staticmethod
+    def _requested_auditor_identity() -> tuple[str, str]:
+        """Best-effort (profile, model) labels for a FAILED audit record.
+
+        Uses the configured profile when it can be read; otherwise records the
+        requested profile name with an explicitly unknown model, so the
+        evidence never claims a live model ran.
+        """
+        requested = os.environ.get("SCOPEWATCH_AUDITOR_PROFILE", "mock")
         try:
             profile = get_auditor_profile()
-            return ReasoningAuditor(
-                profile=profile.name,
-                model=profile.model,
-                timeout_s=profile.timeout_s,
-            )
+            return profile.name, profile.model
         except Exception:
-            return ReasoningAuditor(profile="mock", model="mock-rules-auditor")
+            return requested, "unknown"
+
+    async def _run_reasoning_audit(
+        self,
+        *,
+        run: Run,
+        action: ActionRequest,
+        turn_id: str,
+        trace_text: str,
+        recent_actions_list: list[ActionRequest],
+    ) -> ReasoningAuditResult:
+        """Run one reasoning audit off the event loop; never relaxes, never raises.
+
+        Auditor construction failures and hung audits fail closed to a FAILED
+        result (the caller escalates ALLOW to HOLD). The blocking provider
+        call runs in a worker thread bounded by the auditor profile timeout.
+        """
+        try:
+            auditor = self._get_auditor()
+        except Exception as exc:
+            logger.warning(
+                "Sanitized auditor construction failure [%s]", type(exc).__name__
+            )
+            profile_name, model_name = self._requested_auditor_identity()
+            return ReasoningAuditResult(
+                verdict=ReasoningAuditVerdict.FAILED,
+                concern_type=None,
+                flagged_excerpts=[],
+                explanation=(
+                    f"Audit failed closed: auditor client for profile '{profile_name}' "
+                    "could not be built."
+                ),
+                model=model_name,
+                profile=profile_name,
+                latency_ms=0.0,
+                error_code=_audit_error_code(exc),
+            )
+
+        planned = [
+            PlannedAction(
+                tool=action.tool,
+                operation=action.operation,
+                resource=action.resource,
+                arguments=action.arguments,
+            )
+        ]
+        recent_summaries = [
+            {"tool": a.tool, "operation": a.operation, "resource": a.resource}
+            for a in recent_actions_list[-5:]
+        ]
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    auditor.audit_turn,
+                    task_scope=run.task_scope,
+                    turn_id=turn_id,
+                    reasoning_text=trace_text,
+                    reasoning_provenance=action.reasoning_provenance,
+                    planned_actions=planned,
+                    recent_actions=recent_summaries,
+                ),
+                timeout=auditor.timeout_s,
+            )
+        except TimeoutError:
+            logger.warning("Reasoning audit timed out after %ss", auditor.timeout_s)
+            return ReasoningAuditResult(
+                verdict=ReasoningAuditVerdict.FAILED,
+                concern_type=None,
+                flagged_excerpts=[],
+                explanation="Audit failed closed: reasoning audit timed out.",
+                model=auditor.model,
+                profile=auditor.profile,
+                latency_ms=0.0,
+                error_code=AuditErrorCode.AUDIT_TIMEOUT.value,
+            )
+        except Exception as exc:
+            # audit_turn already fails closed internally; this guards truly
+            # unexpected escapes. Sanitized: no trace or provider body.
+            logger.warning("Sanitized reasoning audit failure [%s]", type(exc).__name__)
+            return ReasoningAuditResult(
+                verdict=ReasoningAuditVerdict.FAILED,
+                concern_type=None,
+                flagged_excerpts=[],
+                explanation="Audit failed closed due to an internal or provider error.",
+                model=auditor.model,
+                profile=auditor.profile,
+                latency_ms=0.0,
+                error_code=_audit_error_code(exc),
+            )
 
     # ---------------- Runs ----------------
 
@@ -281,28 +395,14 @@ class ScopewatchService:
                 if cached_audit:
                     audit_record = cached_audit
                 else:
-                    auditor = self._get_auditor()
-                    planned = [
-                        PlannedAction(
-                            tool=action.tool,
-                            operation=action.operation,
-                            resource=action.resource,
-                            arguments=action.arguments,
-                        )
-                    ]
                     recent_actions_list = ScopewatchRepository.list_actions_for_run(conn, run_id)
-                    recent_summaries = [
-                        {"tool": a.tool, "operation": a.operation, "resource": a.resource}
-                        for a in recent_actions_list[-5:]
-                    ]
 
-                    audit_result = auditor.audit_turn(
-                        task_scope=run.task_scope,
+                    audit_result = await self._run_reasoning_audit(
+                        run=run,
+                        action=action,
                         turn_id=effective_turn_id,
-                        reasoning_text=trace_text,
-                        reasoning_provenance=action.reasoning_provenance,
-                        planned_actions=planned,
-                        recent_actions=recent_summaries,
+                        trace_text=trace_text,
+                        recent_actions_list=recent_actions_list,
                     )
 
                     audit_record = ReasoningAuditRecord(

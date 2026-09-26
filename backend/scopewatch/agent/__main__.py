@@ -29,9 +29,18 @@ def load_scenario(scenario_path: str) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def build_scenario_mock_provider(scenario_data: dict[str, Any]) -> MockProviderClient:
-    """Build a MockProviderClient scripted from the scenario's planned actions."""
+def build_scenario_mock_provider(
+    scenario_data: dict[str, Any], model: Optional[str] = None
+) -> MockProviderClient:
+    """Build a MockProviderClient scripted from the scenario's planned actions.
+
+    The scripted response model label is derived from the active profile, never
+    hard-coded: core code carries no model IDs.
+    """
+    from scopewatch.providers.loader import get_agent_profile as _get_agent_profile
+
     mock = MockProviderClient()
+    scripted_model = model or _get_agent_profile().model
     actions = scenario_data.get("actions", [])
     for idx, act in enumerate(actions, start=1):
         args_payload: dict[str, Any] = {"path": act["resource"]}
@@ -68,7 +77,7 @@ def build_scenario_mock_provider(scenario_data: dict[str, Any]) -> MockProviderC
                         )
                     )
                 ),
-                model="mock-model",
+                model=scripted_model,
                 profile="mock",
             )
         )
@@ -83,7 +92,7 @@ def build_scenario_mock_provider(scenario_data: dict[str, Any]) -> MockProviderC
             tool_calls=[],
             reasoning_text="All required operations finished without violations.",
             reasoning_provenance=ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value,
-            model="mock-model",
+            model=scripted_model,
             profile="mock",
         )
     )
@@ -191,7 +200,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     is_mock = profile.name == "mock" or profile.base_url.startswith("mock://")
     if is_mock and scenario.get("actions"):
-        provider_client: Any = build_scenario_mock_provider(scenario)
+        provider_client: Any = build_scenario_mock_provider(scenario, model=profile.model)
     else:
         provider_client = ProviderClient(profile)
 
