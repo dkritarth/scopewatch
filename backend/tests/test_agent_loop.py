@@ -50,11 +50,20 @@ def test_agent_package_ast_invariants() -> None:
     py_files = list(agent_dir.glob("*.py"))
     assert len(py_files) >= 4, "Expected at least prompt.py, tools.py, loop.py, __main__.py"
 
-    forbidden_call_names = {"open", "remove", "unlink", "rmdir", "mkdir"}
-    forbidden_call_attrs = {"remove", "unlink", "rmdir", "mkdir"}
+    forbidden_call_names = {"open", "remove", "unlink", "rmdir", "mkdir", "read_text", "write_text"}
+    forbidden_call_attrs = {"remove", "unlink", "rmdir", "mkdir", "read_text", "write_text", "open", "touch"}
 
     for py_file in py_files:
-        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=py_file.name)
+        src = py_file.read_text(encoding="utf-8")
+        tree = ast.parse(src, filename=py_file.name)
+        # __main__.py:29 loads the synthetic scenario JSON via Path.read_text
+        # inside load_scenario(). That is CLI setup reading a fixture, not
+        # workspace mutation; writes (write_text/open/touch) remain forbidden
+        # there, and read_text elsewhere in the package stays forbidden.
+        load_scenario_lines: set[int] = set()
+        if py_file.name == "__main__.py":
+            for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "load_scenario"]:
+                load_scenario_lines.update(range(fn.lineno, (fn.end_lineno or fn.lineno) + 1))
         for node in ast.walk(tree):
             # Check import statements
             if isinstance(node, ast.Import):
@@ -74,6 +83,12 @@ def test_agent_package_ast_invariants() -> None:
                         f"Forbidden function call '{node.func.id}()' in {py_file.name}"
                     )
                 elif isinstance(node.func, ast.Attribute):
+                    if (
+                        py_file.name == "__main__.py"
+                        and node.func.attr == "read_text"
+                        and getattr(node, "lineno", 0) in load_scenario_lines
+                    ):
+                        continue
                     assert node.func.attr not in forbidden_call_attrs, (
                         f"Forbidden attribute call '{node.func.attr}()' in {py_file.name}"
                     )
@@ -90,6 +105,7 @@ def test_agent_package_module_import_isolation() -> None:
             "import scopewatch.agent.loop; "
             "import scopewatch.agent.tools; "
             "import scopewatch.agent.prompt; "
+            "import scopewatch.agent.__main__; "
             "assert 'scopewatch.executor' not in sys.modules, 'scopewatch.executor unexpectedly imported'; "
             "print('ISOLATION_OK')"
         ),
@@ -725,15 +741,59 @@ def test_limits_wall_clock_timeout(test_env: dict[str, Any]) -> None:
     assert "Wall clock timeout reached" in (result.error or "")
 
 
-def test_cli_scenario_01_execution(tmp_path: Path) -> None:
-    """Verify python -m scopewatch.agent CLI entry point works on Scenario 01."""
+def test_cli_scenario_01_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify python -m scopewatch.agent CLI entry point works on Scenario 01.
+
+    Uses a temp workspace and temp port: no writes into demo/workspace and no
+    localhost:8000 probe side effects (defect 18, #62 item 4).
+    """
+    import socket
+
     from scopewatch.agent.__main__ import main
+    import scopewatch.app as app_module
+
     scenario_path = "demo/scenarios/01_safe_audit.json"
     demo_out = Path("demo/workspace/outputs/audit-summary.txt")
+    assert not demo_out.is_file() or True  # baseline: must not be created by this test
+    demo_mtime_before = demo_out.stat().st_mtime if demo_out.is_file() else None
+
     test_db = tmp_path / "cli_test.db"
-    try:
-        exit_code = main(["--scenario", scenario_path, "--max-turns", "10", "--db-path", str(test_db)])
-        assert exit_code == 0
-    finally:
-        if demo_out.is_file():
-            demo_out.unlink()
+    temp_workspace = tmp_path / "workspace"
+    temp_workspace.mkdir(parents=True, exist_ok=True)
+
+    # Free port that nothing listens on: probe fails fast, falls back to in-process app.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        free_port = s.getsockname()[1]
+    temp_base_url = f"http://127.0.0.1:{free_port}"
+
+    # Force in-process gateway onto the temp workspace even though __main__
+    # only forwards --db-path: wrap create_app to inject workspace_root.
+    orig_create_app = app_module.create_app
+
+    def _create_app_tmp(*args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("workspace_root", temp_workspace)
+        return orig_create_app(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "create_app", _create_app_tmp)
+
+    exit_code = main(
+        [
+            "--scenario",
+            scenario_path,
+            "--max-turns",
+            "10",
+            "--db-path",
+            str(test_db),
+            "--base-url",
+            temp_base_url,
+        ]
+    )
+    assert exit_code == 0
+
+    # Temp workspace received the audit summary; tracked demo workspace untouched.
+    assert (temp_workspace / "outputs" / "audit-summary.txt").is_file()
+    if demo_mtime_before is None:
+        assert not demo_out.is_file(), "CLI test must not write into demo/workspace"
+    else:
+        assert demo_out.stat().st_mtime == demo_mtime_before, "CLI test must not modify demo/workspace"
