@@ -695,6 +695,49 @@ def test_feature_flag_disabled_bypasses_audit(test_env: dict[str, Any], monkeypa
     assert allow_events[0].details.get("reasoning_audit") == "disabled"
 
 
+def test_second_action_in_turn_not_denied_for_waiting_run(test_env: dict[str, Any]):
+    """Defect 16: a run in WAITING_FOR_APPROVAL still accepts further tool calls.
+
+    First action holds (approval-required op) so the run enters
+    WAITING_FOR_APPROVAL; the second action in the same turn must not be
+    hard-denied for run-state reasons (OPERATION_NOT_ALLOWED / RULE_RUN_NOT_ACTIVE).
+    """
+    service: ScopewatchService = test_env["service"]
+    run = test_env["run"]
+    turn_id = "turn-two-calls-one-hold"
+
+    res1 = asyncio.run(
+        service.submit_action(
+            run.id,
+            SubmitActionRequest(
+                tool="workspace",
+                operation="delete_path",
+                resource="outputs/archive_2025.txt",
+                exposed_reasoning_trace="Cleaning up the obsolete archive file.",
+                turn_id=turn_id,
+            ),
+        )
+    )
+    assert res1.policy_decision.outcome == PolicyOutcome.HOLD
+    assert res1.policy_decision.reason_code == ReasonCode.APPROVAL_REQUIRED
+
+    res2 = asyncio.run(
+        service.submit_action(
+            run.id,
+            SubmitActionRequest(
+                tool="workspace",
+                operation="read_text",
+                resource="invoices/approved/vendor-a.txt",
+                exposed_reasoning_trace="Reading the vendor invoice to verify its total.",
+                turn_id=turn_id,
+            ),
+        )
+    )
+    assert res2.policy_decision.reason_code != ReasonCode.OPERATION_NOT_ALLOWED
+    assert res2.policy_decision.outcome == PolicyOutcome.ALLOW
+    assert res2.execution_receipt is not None
+
+
 def test_no_reasoning_wording_stays_unavailable(test_env: dict[str, Any]):
     """Defect 17: 'no reasoning supplied' keeps the distinct 'unavailable' label."""
     service: ScopewatchService = test_env["service"]

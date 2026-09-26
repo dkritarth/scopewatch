@@ -63,14 +63,20 @@ def evaluate_policy(
             deterministic=True,
         )
 
-    # Step 2: Confirm the run exists and is active
-    if run.status != RunStatus.ACTIVE:
+    # Step 2: Confirm the run exists and can accept tool calls.
+    # WAITING_FOR_APPROVAL still accepts submissions (mirrors the service-layer
+    # gate): a turn with two tool calls where the first holds must not deny
+    # the second for run-state reasons.
+    if run.status != RunStatus.ACTIVE and run.status != RunStatus.WAITING_FOR_APPROVAL:
         return PolicyDecision(
             id=decision_id,
             action_request_id=action.id,
             outcome=PolicyOutcome.DENY,
             reason_code=ReasonCode.OPERATION_NOT_ALLOWED,
-            explanation=f"Run '{run.id}' is in state {run.status.value}, not ACTIVE.",
+            explanation=(
+                f"Run '{run.id}' is in state {run.status.value}, "
+                "not ACTIVE or WAITING_FOR_APPROVAL."
+            ),
             matched_rule="RULE_RUN_NOT_ACTIVE",
             decided_at=now_iso,
             deterministic=True,
