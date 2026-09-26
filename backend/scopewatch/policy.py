@@ -7,6 +7,11 @@ from typing import Optional, Union
 import uuid
 
 from scopewatch.executor import get_executor_backend
+from scopewatch.path_access import (
+    is_descendant_or_equal as _is_descendant_or_equal,
+    normalize_relative_path as _normalize_relative_path,
+    scoped_path_reason,
+)
 from scopewatch.models import (
     PolicyOutcome,
     ReasonCode,
@@ -15,28 +20,6 @@ from scopewatch.models import (
     SUPPORTED_TOOLS,
 )
 from scopewatch.schemas import ActionRequest, PolicyDecision, Run, TaskScope
-
-
-def _normalize_relative_path(path_str: str) -> Optional[Path]:
-    """Normalize a relative path string without filesystem resolution."""
-    raw = path_str.strip().replace("\\", "/")
-    if not raw:
-        return Path(".")
-    parts = [p for p in raw.split("/") if p and p != "."]
-    if not parts:
-        return Path(".")
-    return Path(*parts)
-
-
-def _is_descendant_or_equal(child: Path, parent: Path) -> bool:
-    """Return True if child is identical to or within parent directory."""
-    if parent == Path(".") or str(parent) in ("", "."):
-        return True
-    child_parts = child.parts
-    parent_parts = parent.parts
-    if len(child_parts) < len(parent_parts):
-        return False
-    return child_parts[: len(parent_parts)] == parent_parts
 
 
 def evaluate_policy(
@@ -206,55 +189,26 @@ def evaluate_policy(
             deterministic=True,
         )
 
-    # Also check existing symlinks in path
-    test_path = resolved_workspace / normalized_rel
-    if test_path.is_symlink():
-        target = test_path.resolve()
-        try:
-            target.relative_to(resolved_workspace)
-        except ValueError:
-            return PolicyDecision(
-                id=decision_id,
-                action_request_id=action.id,
-                outcome=PolicyOutcome.DENY,
-                reason_code=ReasonCode.SYMLINK_ESCAPE,
-                explanation="Symlink targets a location outside the synthetic workspace.",
-                matched_rule="RULE_SYMLINK_ESCAPE_REJECTED",
-                decided_at=now_iso,
-                deterministic=True,
-            )
-
-    # Step 12: Check blocked paths before allowed paths
-    for blocked in scope.blocked_paths:
-        blocked_norm = _normalize_relative_path(blocked)
-        if blocked_norm and _is_descendant_or_equal(normalized_rel, blocked_norm):
-            return PolicyDecision(
-                id=decision_id,
-                action_request_id=action.id,
-                outcome=PolicyOutcome.DENY,
-                reason_code=ReasonCode.BLOCKED_PATH,
-                explanation=f"Resource '{resource_raw}' is under blocked path '{blocked}'.",
-                matched_rule="RULE_BLOCKED_PATH_MATCHED",
-                decided_at=now_iso,
-                deterministic=True,
-            )
-
-    # Check allowed paths
-    path_is_allowed = False
-    for allowed in scope.allowed_paths:
-        allowed_norm = _normalize_relative_path(allowed)
-        if allowed_norm and _is_descendant_or_equal(normalized_rel, allowed_norm):
-            path_is_allowed = True
-            break
-
-    if not path_is_allowed:
+    # Step 12: Check both the submitted alias and its canonical target.
+    canonical_rel = candidate_path.relative_to(resolved_workspace)
+    scope_error = scoped_path_reason(
+        normalized_rel, canonical_rel, scope.allowed_paths, scope.blocked_paths
+    )
+    if scope_error is not None:
+        reason, blocked = scope_error
         return PolicyDecision(
             id=decision_id,
             action_request_id=action.id,
             outcome=PolicyOutcome.DENY,
-            reason_code=ReasonCode.PATH_NOT_ALLOWED,
-            explanation=f"Resource '{resource_raw}' is not within any allowed path.",
-            matched_rule="RULE_PATH_NOT_ALLOWED",
+            reason_code=reason,
+            explanation=(
+                f"Resource '{resource_raw}' resolves under blocked path '{blocked}'."
+                if blocked is not None
+                else f"Resource '{resource_raw}' is not within any allowed path."
+            ),
+            matched_rule=(
+                "RULE_BLOCKED_PATH_MATCHED" if blocked is not None else "RULE_PATH_NOT_ALLOWED"
+            ),
             decided_at=now_iso,
             deterministic=True,
         )
@@ -388,9 +342,13 @@ def _check_run_command_path(
                 f"{describe} is a symlink escaping the workspace.",
                 "RULE_RUN_COMMAND_SYMLINK_ESCAPE_REJECTED",
             )
+    canonical = candidate.relative_to(resolved_workspace)
     for blocked in scope.blocked_paths:
         blocked_norm = _normalize_relative_path(blocked)
-        if blocked_norm and _is_descendant_or_equal(normalized, blocked_norm):
+        if blocked_norm and (
+            _is_descendant_or_equal(normalized, blocked_norm)
+            or _is_descendant_or_equal(canonical, blocked_norm)
+        ):
             return (
                 ReasonCode.BLOCKED_PATH,
                 f"{describe} is under blocked path '{blocked}'.",
