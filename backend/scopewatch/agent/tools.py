@@ -90,6 +90,32 @@ GATEWAY_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": (
+                "Run an allowlisted, shell-free command with a workspace directory "
+                "as its working directory. Only pre-approved command prefixes run; "
+                "anything else is denied by the gateway. No shell is used, so shell "
+                "metacharacters are rejected."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Working directory relative to the workspace root ('.' for the root).",
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Command string with no shell metacharacters (e.g. 'python -m pytest').",
+                    },
+                },
+                "required": ["path", "command"],
+            },
+        },
+    },
 ]
 
 

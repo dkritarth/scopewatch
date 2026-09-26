@@ -34,6 +34,35 @@ from scopewatch.service import ScopewatchService
 
 logger = logging.getLogger("scopewatch.seed")
 
+# Scenario filename groups. The invoice demo (01-06) is the default seed set;
+# the coding demo (10-13, issue #38) is selected with --coding.
+INVOICE_SCENARIO_PREFIXES: tuple[str, ...] = ("01_", "02_", "03_", "04_", "05_", "06_")
+CODING_SCENARIO_PREFIXES: tuple[str, ...] = ("10_", "11_", "12_", "13_")
+
+# Files copied verbatim from the synthetic coding-workspace fixture
+# (demo/coding-workspace) into the seeded gateway workspace. All values are
+# synthetic fixture data; .env holds obviously-fake placeholder credentials.
+CODING_FIXTURE_FILES: tuple[str, ...] = (
+    "auth.py",
+    "CONTRIBUTING.md",
+    "README.md",
+    "README_FIXTURE.md",
+    ".env",
+    "tests/test_auth.py",
+)
+
+
+def _select_scenario_files(
+    scenarios_dir: Path,
+    include_prefixes: tuple[str, ...] | list[str] | None,
+) -> list[Path]:
+    """List scenario JSON files, optionally filtered by filename prefix."""
+    scenario_files = sorted(scenarios_dir.glob("*.json"))
+    if include_prefixes is None:
+        return scenario_files
+    prefixes = tuple(include_prefixes)
+    return [f for f in scenario_files if f.name.startswith(prefixes)]
+
 
 def seed_workspace_files(workspace_root: Path) -> None:
     """Create synthetic demonstration files inside the designated workspace root."""
@@ -88,13 +117,32 @@ def seed_workspace_files(workspace_root: Path) -> None:
         )
 
 
+def seed_coding_workspace_files(workspace_root: Path) -> None:
+    """Copy the synthetic coding-workspace fixture into the gateway workspace.
+
+    Source of truth is demo/coding-workspace (issue #37 fixture: auth.py with
+    an intentional off-by-one bug, its pytest suite, contributor notes with a
+    deliberate .invalid injection string, and a fake-credential .env). Files
+    are copied only when missing so a previous coding run's fix is preserved.
+    """
+    fixture_root = REPO_ROOT / "demo" / "coding-workspace"
+    for rel in CODING_FIXTURE_FILES:
+        src = fixture_root / rel
+        dst = workspace_root / rel
+        if dst.exists():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(src.read_bytes())
+
+
 async def seed_scenarios(
     service: ScopewatchService,
     scenarios_dir: Path,
     auto_approve_last: bool = False,
+    include_prefixes: tuple[str, ...] | list[str] | None = None,
 ) -> list[dict[str, object]]:
     """Load JSON scenarios from disk and submit them through ScopewatchService."""
-    scenario_files = sorted(scenarios_dir.glob("*.json"))
+    scenario_files = _select_scenario_files(scenarios_dir, include_prefixes)
     if not scenario_files:
         print(f"No scenario files found in {scenarios_dir}")
         return []
@@ -184,6 +232,7 @@ def seed_scenarios_agent(
     auto_approve: bool = False,
     profile_name: Optional[str] = None,
     approval_timeout_s: float = 1.0,
+    include_prefixes: tuple[str, ...] | list[str] | None = None,
 ) -> list[dict[str, object]]:
     """Execute scenarios using AgentLoop and MockProviderClient (or specified --profile)."""
     from fastapi.testclient import TestClient
@@ -194,7 +243,7 @@ def seed_scenarios_agent(
     from scopewatch.providers.client import ProviderClient
     from scopewatch.providers.loader import get_profile
 
-    scenario_files = sorted(scenarios_dir.glob("*.json"))
+    scenario_files = _select_scenario_files(scenarios_dir, include_prefixes)
     if not scenario_files:
         print(f"No scenario files found in {scenarios_dir}")
         return []
@@ -350,8 +399,29 @@ def main() -> None:
         action="store_true",
         help="Automatically approve hold actions instead of leaving them pending",
     )
+    parser.add_argument(
+        "--coding",
+        action="store_true",
+        help="Seed the coding scenario set (10-13, issue #38) with the "
+        "synthetic coding-workspace fixture instead of the invoice set (01-06)",
+    )
+    parser.add_argument(
+        "--only",
+        action="append",
+        default=None,
+        metavar="PREFIX",
+        help="Seed only scenario files starting with PREFIX (repeatable; "
+        "overrides the default set selection)",
+    )
 
     args = parser.parse_args()
+
+    if args.coding:
+        include_prefixes: list[str] | None = list(CODING_SCENARIO_PREFIXES)
+    elif args.only:
+        include_prefixes = list(args.only)
+    else:
+        include_prefixes = list(INVOICE_SCENARIO_PREFIXES)
 
     print("==================================================================")
     print("Scopewatch Demo Seeder")
@@ -366,6 +436,12 @@ def main() -> None:
     # 2. Seed workspace files
     seed_workspace_files(args.workspace_root)
     print(f"Workspace fixtures seeded: {args.workspace_root}")
+    if args.coding or (
+        include_prefixes is not None
+        and any(p in CODING_SCENARIO_PREFIXES for p in include_prefixes)
+    ):
+        seed_coding_workspace_files(args.workspace_root)
+        print(f"Coding workspace fixture seeded: {args.workspace_root}")
 
     # 3. Seed scenarios according to mode
     if args.mode == "agent":
@@ -376,6 +452,7 @@ def main() -> None:
             auto_approve=args.auto_approve,
             profile_name=args.profile,
             approval_timeout_s=args.approval_timeout,
+            include_prefixes=include_prefixes,
         )
     else:
         service = ScopewatchService(db_path=args.db_path, workspace_root=args.workspace_root)
@@ -384,6 +461,7 @@ def main() -> None:
                 service,
                 scenarios_dir=args.scenarios_dir,
                 auto_approve_last=args.auto_approve,
+                include_prefixes=include_prefixes,
             )
         )
 
