@@ -915,38 +915,62 @@ def test_invariant_7_event_sequences_are_monotonic_and_decision_precedes_executi
         if aid:
             action_events.setdefault(aid, []).append(ev)
 
-    # Invariant 7 Core Assertion 2: Decision events must ALWAYS precede execution events
+    # Invariant 7 Core Assertion 2: Decision events must ALWAYS precede execution events.
+    # Asserted on the ORDERED list of event types per action. (A
+    # {event_type: sequence} dict would silently drop a duplicate out-of-order
+    # execution event, letting an evidence-before-effect violation pass.)
     for aid, evs in action_events.items():
-        type_to_seq = {e["event_type"]: e["sequence"] for e in evs}
+        ordered = sorted(evs, key=lambda e: e["sequence"])
+        types = [e["event_type"] for e in ordered]
+        seqs = [e["sequence"] for e in ordered]
+        assert seqs == sorted(seqs), f"Events out of order for action {aid}"
+        assert len(set(seqs)) == len(seqs), f"Duplicate event sequence for action {aid}"
+
+        # Each execution event may occur at most once per action: a duplicate
+        # out-of-order execution event must fail this test.
+        for exec_type in (
+            EventType.EXECUTION_STARTED.value,
+            EventType.EXECUTION_SUCCEEDED.value,
+            EventType.EXECUTION_FAILED.value,
+        ):
+            assert types.count(exec_type) <= 1, (
+                f"Duplicate {exec_type} for action {aid}: {types}"
+            )
 
         # If action was allowed and executed
-        if EventType.POLICY_ALLOWED.value in type_to_seq:
-            decision_seq = type_to_seq[EventType.POLICY_ALLOWED.value]
-            if EventType.EXECUTION_STARTED.value in type_to_seq:
-                exec_start_seq = type_to_seq[EventType.EXECUTION_STARTED.value]
-                assert decision_seq < exec_start_seq, (
-                    f"Decision ({decision_seq}) must precede EXECUTION_STARTED ({exec_start_seq}) for action {aid}"
+        if EventType.POLICY_ALLOWED.value in types:
+            decision_idx = types.index(EventType.POLICY_ALLOWED.value)
+            if EventType.EXECUTION_STARTED.value in types:
+                exec_start_idx = types.index(EventType.EXECUTION_STARTED.value)
+                assert decision_idx < exec_start_idx, (
+                    f"Decision at position {decision_idx} must precede EXECUTION_STARTED "
+                    f"at position {exec_start_idx} for action {aid}: {types}"
                 )
-            if EventType.EXECUTION_SUCCEEDED.value in type_to_seq:
-                exec_succ_seq = type_to_seq[EventType.EXECUTION_SUCCEEDED.value]
-                assert decision_seq < exec_succ_seq, (
-                    f"Decision ({decision_seq}) must precede EXECUTION_SUCCEEDED ({exec_succ_seq}) for action {aid}"
+            if EventType.EXECUTION_SUCCEEDED.value in types:
+                exec_succ_idx = types.index(EventType.EXECUTION_SUCCEEDED.value)
+                assert decision_idx < exec_succ_idx, (
+                    f"Decision at position {decision_idx} must precede EXECUTION_SUCCEEDED "
+                    f"at position {exec_succ_idx} for action {aid}: {types}"
                 )
 
         # If action was held, approved, and executed
-        if EventType.POLICY_HELD.value in type_to_seq:
-            held_seq = type_to_seq[EventType.POLICY_HELD.value]
-            appr_grant_seq = type_to_seq.get(EventType.APPROVAL_GRANTED.value)
-            exec_start_seq = type_to_seq.get(EventType.EXECUTION_STARTED.value)
-            if appr_grant_seq and exec_start_seq:
-                assert held_seq < appr_grant_seq < exec_start_seq, (
-                    f"Sequence order violated: HELD({held_seq}) < GRANTED({appr_grant_seq}) < EXEC({exec_start_seq})"
+        if EventType.POLICY_HELD.value in types:
+            held_idx = types.index(EventType.POLICY_HELD.value)
+            if (
+                EventType.APPROVAL_GRANTED.value in types
+                and EventType.EXECUTION_STARTED.value in types
+            ):
+                appr_grant_idx = types.index(EventType.APPROVAL_GRANTED.value)
+                exec_start_idx = types.index(EventType.EXECUTION_STARTED.value)
+                assert held_idx < appr_grant_idx < exec_start_idx, (
+                    f"Order violated for action {aid}: HELD({held_idx}) < "
+                    f"GRANTED({appr_grant_idx}) < EXEC({exec_start_idx}) in {types}"
                 )
 
         # If action was denied
-        if EventType.POLICY_DENIED.value in type_to_seq:
-            assert EventType.EXECUTION_STARTED.value not in type_to_seq
-            assert EventType.EXECUTION_SUCCEEDED.value not in type_to_seq
+        if EventType.POLICY_DENIED.value in types:
+            assert EventType.EXECUTION_STARTED.value not in types
+            assert EventType.EXECUTION_SUCCEEDED.value not in types
 
 
 # ==============================================================================

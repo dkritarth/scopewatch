@@ -364,13 +364,19 @@ class MockProviderClient:
         profile: Optional[ProviderProfile] = None,
         responses: Optional[list[ChatResult | Exception]] = None,
     ) -> None:
-        self.profile = profile or ProviderProfile(
-            name="mock",
-            base_url="mock://localhost",
-            model="mock-model",
-            timeout_s=5.0,
-            max_retries=0,
-        )
+        if profile is None:
+            # Derive the mock model ID from providers.toml; core code never
+            # hard-codes model IDs.
+            from scopewatch.providers.loader import get_mock_model_name
+
+            profile = ProviderProfile(
+                name="mock",
+                base_url="mock://localhost",
+                model=get_mock_model_name(),
+                timeout_s=5.0,
+                max_retries=0,
+            )
+        self.profile = profile
         self._queue: list[ChatResult | Exception] = list(responses or [])
         self.call_history: list[dict[str, Any]] = []
 

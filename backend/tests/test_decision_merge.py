@@ -235,19 +235,14 @@ def test_policy_allow_audit_failed_escalates_to_hold(test_env: dict[str, Any]):
     service: ScopewatchService = test_env["service"]
     run = test_env["run"]
 
-    # Provide an auditor that returns FAILED
-    failing_auditor = MagicMock(spec=ReasoningAuditor)
-    failing_auditor.audit_turn.return_value = ReasoningAuditResult(
-        verdict=ReasoningAuditVerdict.FAILED,
-        concern_type=None,
-        flagged_excerpts=[],
-        explanation="Audit failed closed: simulated auditor parsing failure.",
-        model="mock-rules-auditor",
-        profile="mock",
-        latency_ms=12.5,
-        error_code=AuditErrorCode.INVALID_AUDIT_OUTPUT.value,
+    # Provide a real auditor whose provider returns malformed output, so the
+    # audit fails closed to FAILED (the service now requires injected auditors
+    # to expose the full ReasoningAuditor interface: timeout_s/model/profile).
+    failing_provider = MockAuditorProvider(profile="mock", model="mock-rules-auditor")
+    failing_provider.enqueue_response("This is not JSON at all: { broken }")
+    service._auditor = ReasoningAuditor(
+        provider=failing_provider, profile="mock", model="mock-rules-auditor"
     )
-    service._auditor = failing_auditor
 
     req = SubmitActionRequest(
         tool="workspace",
@@ -556,6 +551,114 @@ def test_approval_cannot_override_policy_deny(test_env: dict[str, Any]):
 # 8. Test: feature flag SCOPEWATCH_REASONING_AUDIT=off bypasses audit
 # =====================================================================
 
+def test_policy_decision_reasoning_audit_id_round_trip(test_env: dict[str, Any]):
+    """Defect 21: PolicyDecision.reasoning_audit_id must survive a DB round trip.
+
+    Previously the column did not exist, so the field always read back None.
+    """
+    import uuid as uuid_mod
+
+    db_file = test_env["db_file"]
+    run = test_env["run"]
+    now = datetime.now(timezone.utc).isoformat()
+
+    action = ActionRequest(
+        id=str(uuid_mod.uuid4()),
+        run_id=run.id,
+        tool="workspace",
+        operation="read_text",
+        resource="invoices/approved/vendor-a.txt",
+        arguments={},
+        requested_by="synthetic-agent",
+        requested_at=now,
+    )
+    conn = get_connection(db_file)
+    try:
+        ScopewatchRepository.create_action_request(conn, action)
+
+        from scopewatch.schemas import PolicyDecision
+
+        decision = PolicyDecision(
+            id=str(uuid_mod.uuid4()),
+            action_request_id=action.id,
+            outcome=PolicyOutcome.ALLOW,
+            reason_code=ReasonCode.ALLOWED_TOOL_AND_RESOURCE,
+            explanation="permitted",
+            matched_rule="RULE_ALLOWED_TOOL_AND_RESOURCE",
+            decided_at=now,
+            deterministic=True,
+            reasoning_audit_id="audit-record-1",
+        )
+        ScopewatchRepository.create_policy_decision(conn, decision)
+        reloaded = ScopewatchRepository.get_policy_decision_by_action(conn, action.id)
+        assert reloaded is not None
+        assert reloaded.reasoning_audit_id == "audit-record-1"
+
+        action2 = ActionRequest(
+            id=str(uuid_mod.uuid4()),
+            run_id=run.id,
+            tool="workspace",
+            operation="read_text",
+            resource="invoices/approved/vendor-a.txt",
+            arguments={},
+            requested_by="synthetic-agent",
+            requested_at=now,
+        )
+        ScopewatchRepository.create_action_request(conn, action2)
+        decision2 = PolicyDecision(
+            id=str(uuid_mod.uuid4()),
+            action_request_id=action2.id,
+            outcome=PolicyOutcome.DENY,
+            reason_code=ReasonCode.BLOCKED_PATH,
+            explanation="blocked",
+            matched_rule="RULE_BLOCKED_PATH_MATCHED",
+            decided_at=now,
+            deterministic=True,
+            reasoning_audit_id=None,
+        )
+        ScopewatchRepository.create_policy_decision(conn, decision2)
+        reloaded2 = ScopewatchRepository.get_policy_decision_by_action(conn, action2.id)
+        assert reloaded2 is not None
+        assert reloaded2.reasoning_audit_id is None
+    finally:
+        conn.close()
+
+
+def test_effective_turn_id_persisted_on_action_row(test_env: dict[str, Any]):
+    """Defect 15: the generated effective turn_id must persist on the action row.
+
+    Previously the audit record carried the turn but the action row stored the
+    raw (often None) request turn_id, leaving seeded timelines turn-less.
+    """
+    service: ScopewatchService = test_env["service"]
+    run = test_env["run"]
+
+    req = SubmitActionRequest(
+        tool="workspace",
+        operation="read_text",
+        resource="invoices/approved/vendor-a.txt",
+        exposed_reasoning_trace="Reading vendor invoice for verification.",
+    )
+    assert req.turn_id is None
+    res = asyncio.run(service.submit_action(run.id, req))
+
+    assert res.action_request.turn_id, "effective turn_id must be generated"
+    assert res.reasoning_audit is not None
+    assert res.reasoning_audit.turn_id == res.action_request.turn_id
+
+    conn = get_connection(test_env["db_file"])
+    try:
+        row = conn.execute(
+            "SELECT turn_id, reasoning_audit_id FROM action_requests WHERE id = ?",
+            (res.action_request.id,),
+        ).fetchone()
+        assert row is not None
+        assert row["turn_id"] == res.action_request.turn_id
+        assert row["turn_id"] is not None
+    finally:
+        conn.close()
+
+
 def test_feature_flag_disabled_bypasses_audit(test_env: dict[str, Any], monkeypatch):
     monkeypatch.setenv("SCOPEWATCH_REASONING_AUDIT", "off")
 
@@ -580,3 +683,190 @@ def test_feature_flag_disabled_bypasses_audit(test_env: dict[str, Any], monkeypa
     assert res.policy_decision.reason_code == ReasonCode.ALLOWED_TOOL_AND_RESOURCE
     auditor_mock.audit_turn.assert_not_called()
     assert res.reasoning_audit is None
+
+    # Defect 17: flag-off evidence must say the audit was disabled, not "unavailable".
+    allow_events = [e for e in res.events if e.event_type == EventType.POLICY_ALLOWED]
+    assert len(allow_events) == 1
+    assert allow_events[0].details.get("reasoning_audit") == "disabled"
+
+
+def test_hung_audit_times_out_without_blocking_event_loop(test_env: dict[str, Any]):
+    """Defect 14: a hung reasoning audit must not stall the event loop.
+
+    The audit runs off-loop bounded by the auditor profile timeout; on expiry
+    the gateway fails closed to HOLD/REASONING_AUDIT_FAILED and never calls
+    the executor, while other loop tasks keep ticking.
+    """
+    import time as time_mod
+
+    from scopewatch.reasoning_audit import AuditorChatResponse
+
+    service: ScopewatchService = test_env["service"]
+    run = test_env["run"]
+
+    class HangingProvider:
+        profile = "mock"
+        model = "mock-rules-auditor"
+
+        def audit_chat(self, messages, *, model=None, profile=None, timeout=None):
+            time_mod.sleep(3)  # far longer than the auditor timeout below
+            return AuditorChatResponse(
+                content='{"verdict": "NO_CONCERN", "concern_type": null, '
+                '"flagged_excerpts": [], "explanation": "too late"}',
+                model=self.model,
+                profile=self.profile,
+            )
+
+    service._auditor = ReasoningAuditor(
+        provider=HangingProvider(), profile="mock", model="mock-rules-auditor", timeout_s=0.2
+    )
+
+    beats = 0
+
+    async def heartbeat() -> None:
+        nonlocal beats
+        while True:
+            await asyncio.sleep(0.05)
+            beats += 1
+
+    async def main():
+        beat_task = asyncio.create_task(heartbeat())
+        try:
+            with patch("scopewatch.service.execute_action") as mock_executor:
+                started = time_mod.monotonic()
+                res = await service.submit_action(
+                    run.id,
+                    SubmitActionRequest(
+                        tool="workspace",
+                        operation="read_text",
+                        resource="invoices/approved/vendor-a.txt",
+                        exposed_reasoning_trace="Reading the vendor invoice.",
+                        turn_id="turn-hung-audit",
+                    ),
+                )
+                elapsed = time_mod.monotonic() - started
+            return res, elapsed, mock_executor
+        finally:
+            beat_task.cancel()
+
+    res, elapsed, mock_executor = asyncio.run(main())
+
+    # Returns promptly, well under the 3s hang.
+    assert elapsed < 2.5
+    # The event loop stayed responsive while the audit hung in its thread.
+    assert beats >= 1
+    # Fail closed: HOLD with REASONING_AUDIT_FAILED, executor never called.
+    assert res.policy_decision.outcome == PolicyOutcome.HOLD
+    assert res.policy_decision.reason_code == ReasonCode.REASONING_AUDIT_FAILED
+    assert res.reasoning_audit is not None
+    assert res.reasoning_audit.verdict == ReasoningAuditVerdict.FAILED.value
+    assert res.reasoning_audit.error_code == AuditErrorCode.AUDIT_TIMEOUT.value
+    mock_executor.assert_not_called()
+    assert res.approval_request is not None
+
+
+def test_broken_auditor_profile_fails_closed(test_env: dict[str, Any], monkeypatch):
+    """Defect 1: a configured auditor profile whose client cannot be built
+    (missing key) yields a FAILED audit and a HOLD, never a mock-backed ALLOW.
+
+    The persisted evidence must record the failure with a diagnostic code; a
+    run that never called a model must not be presented as model-backed.
+    """
+    monkeypatch.setenv("SCOPEWATCH_AUDITOR_PROFILE", "nebius-demo")
+    monkeypatch.delenv("NEBIUS_API_KEY", raising=False)
+
+    service: ScopewatchService = test_env["service"]
+    run = test_env["run"]
+    assert service._auditor is None
+
+    with patch("scopewatch.service.execute_action") as mock_executor:
+        res = asyncio.run(
+            service.submit_action(
+                run.id,
+                SubmitActionRequest(
+                    tool="workspace",
+                    operation="read_text",
+                    resource="invoices/approved/vendor-a.txt",
+                    exposed_reasoning_trace="Reading the vendor invoice to verify its total.",
+                    turn_id="turn-broken-profile",
+                ),
+            )
+        )
+
+    assert res.policy_decision.outcome == PolicyOutcome.HOLD
+    assert res.policy_decision.reason_code == ReasonCode.REASONING_AUDIT_FAILED
+    assert res.reasoning_audit is not None
+    assert res.reasoning_audit.verdict == ReasoningAuditVerdict.FAILED.value
+    assert res.reasoning_audit.error_code == "MISSING_API_KEY"
+    assert res.reasoning_audit.profile == "nebius-demo"
+    mock_executor.assert_not_called()
+    assert res.approval_request is not None
+    event_types = [e.event_type for e in res.events]
+    assert event_types == [
+        EventType.ACTION_REQUESTED,
+        EventType.REASONING_AUDIT_FAILED,
+        EventType.POLICY_HELD,
+        EventType.APPROVAL_REQUESTED,
+    ]
+
+
+def test_second_action_in_turn_not_denied_for_waiting_run(test_env: dict[str, Any]):
+    """Defect 16: a run in WAITING_FOR_APPROVAL still accepts further tool calls.
+
+    First action holds (approval-required op) so the run enters
+    WAITING_FOR_APPROVAL; the second action in the same turn must not be
+    hard-denied for run-state reasons (OPERATION_NOT_ALLOWED / RULE_RUN_NOT_ACTIVE).
+    """
+    service: ScopewatchService = test_env["service"]
+    run = test_env["run"]
+    turn_id = "turn-two-calls-one-hold"
+
+    res1 = asyncio.run(
+        service.submit_action(
+            run.id,
+            SubmitActionRequest(
+                tool="workspace",
+                operation="delete_path",
+                resource="outputs/archive_2025.txt",
+                exposed_reasoning_trace="Cleaning up the obsolete archive file.",
+                turn_id=turn_id,
+            ),
+        )
+    )
+    assert res1.policy_decision.outcome == PolicyOutcome.HOLD
+    assert res1.policy_decision.reason_code == ReasonCode.APPROVAL_REQUIRED
+
+    res2 = asyncio.run(
+        service.submit_action(
+            run.id,
+            SubmitActionRequest(
+                tool="workspace",
+                operation="read_text",
+                resource="invoices/approved/vendor-a.txt",
+                exposed_reasoning_trace="Reading the vendor invoice to verify its total.",
+                turn_id=turn_id,
+            ),
+        )
+    )
+    assert res2.policy_decision.reason_code != ReasonCode.OPERATION_NOT_ALLOWED
+    assert res2.policy_decision.outcome == PolicyOutcome.ALLOW
+    assert res2.execution_receipt is not None
+
+
+def test_no_reasoning_wording_stays_unavailable(test_env: dict[str, Any]):
+    """Defect 17: 'no reasoning supplied' keeps the distinct 'unavailable' label."""
+    service: ScopewatchService = test_env["service"]
+    run = test_env["run"]
+
+    req = SubmitActionRequest(
+        tool="workspace",
+        operation="read_text",
+        resource="invoices/approved/vendor-a.txt",
+    )
+    res = asyncio.run(service.submit_action(run.id, req))
+
+    assert res.policy_decision.outcome == PolicyOutcome.ALLOW
+    assert res.reasoning_audit is None
+    allow_events = [e for e in res.events if e.event_type == EventType.POLICY_ALLOWED]
+    assert len(allow_events) == 1
+    assert allow_events[0].details.get("reasoning_audit") == "unavailable"

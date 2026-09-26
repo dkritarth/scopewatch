@@ -83,6 +83,16 @@ def get_auditor_profile(config_path: Optional[Path | str] = None) -> ProviderPro
     return get_profile(name, config_path=config_path)
 
 
+def get_mock_model_name(config_path: Optional[Path | str] = None) -> str:
+    """Return the model ID configured for the `mock` profile.
+
+    Single source of mock model IDs: providers.toml. Core modules derive mock
+    defaults from here instead of hard-coding them (invariant: models are
+    swappable; model IDs live in provider profiles, never in code).
+    """
+    return get_profile("mock", config_path=config_path).model
+
+
 def get_api_key_for_profile(profile: ProviderProfile) -> Optional[str]:
     """Retrieve and validate the API key for a profile.
 

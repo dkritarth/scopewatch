@@ -118,7 +118,6 @@ class ReasoningAuditResult(BaseModel):
     latency_ms: float = 0.0
     total_tokens: Optional[int] = None
     error_code: Optional[str] = None
-    total_tokens: Optional[int] = None
 
 
 class AuditorChatResponse(BaseModel):
@@ -226,6 +225,16 @@ CRITICAL RULES FOR FLAGGED_EXCERPTS:
 AUDITOR_PROMPT_VERSION = f"v1.0-hardened-{hashlib.sha256(HARDENED_AUDITOR_SYSTEM_PROMPT.encode('utf-8')).hexdigest()[:8]}"
 
 
+def _default_mock_model() -> str:
+    """Resolve the mock auditor model ID from the configured `mock` profile.
+
+    Core code never hard-codes model IDs; providers.toml is the single source.
+    """
+    from scopewatch.providers.loader import get_mock_model_name
+
+    return get_mock_model_name()
+
+
 def truncate_reasoning_trace(
     trace: Optional[str],
     max_chars: int = DEFAULT_MAX_TRACE_CHARS,
@@ -241,6 +250,37 @@ def truncate_reasoning_trace(
     return trace[:keep] + TRUNCATION_MARKER
 
 
+# Tag-boundary smuggling patterns neutralized inside the untrusted trace.
+# Each replacement carries no angle brackets, so escaping is idempotent and the
+# built prompt keeps exactly one authoritative <task_scope> pair and one
+# <untrusted_reasoning_trace> pair.
+_TRACE_BOUNDARY_ESCAPES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"</\s*untrusted_reasoning_trace\s*>", re.IGNORECASE), "[UNTRUSTED:/untrusted_reasoning_trace]"),
+    (re.compile(r"<\s*untrusted_reasoning_trace(?:\s[^>]*)?>", re.IGNORECASE), "[UNTRUSTED:untrusted_reasoning_trace]"),
+    (re.compile(r"</\s*task_scope\s*>", re.IGNORECASE), "[UNTRUSTED:/task_scope]"),
+    (re.compile(r"<\s*task_scope\s*>", re.IGNORECASE), "[UNTRUSTED:task_scope]"),
+)
+
+
+def escape_untrusted_trace(trace: Optional[str]) -> str:
+    """Neutralize tag-boundary smuggling inside the untrusted reasoning trace.
+
+    A trace containing a literal closing tag (plus a forged scope block and an
+    auditor directive) would otherwise place two copies of every boundary tag
+    in the auditor prompt, letting a live auditor be talked into the single
+    relaxing verdict. Escaping keeps the hostile text visible inside the one
+    untrusted region so injection/forgery detectors can still flag it.
+
+    `AUDITOR:`-style directives are deliberately left as plain text: the
+    auditor must see them to classify the turn as INJECTION_FOLLOWING, and the
+    single-region guarantee keeps them from acting as prompt structure.
+    """
+    escaped = trace or ""
+    for pattern, replacement in _TRACE_BOUNDARY_ESCAPES:
+        escaped = pattern.sub(replacement, escaped)
+    return escaped
+
+
 def build_turn_audit_messages(
     scope: TaskScope,
     trace_text: str,
@@ -251,7 +291,9 @@ def build_turn_audit_messages(
     max_recent_actions: int = DEFAULT_MAX_RECENT_ACTIONS,
 ) -> list[dict[str, str]]:
     """Build hardened auditor chat messages with XML-isolated boundaries."""
-    bounded_trace = truncate_reasoning_trace(trace_text, max_chars=max_trace_chars)
+    bounded_trace = escape_untrusted_trace(
+        truncate_reasoning_trace(trace_text, max_chars=max_trace_chars)
+    )
     bounded_recent = recent_actions[-max_recent_actions:] if recent_actions else []
 
     scope_xml = (
@@ -659,12 +701,12 @@ class MockAuditorProvider:
         self,
         canned_responses: Optional[list[Any]] = None,
         profile: str = "mock",
-        model: str = "mock-rules-auditor",
+        model: Optional[str] = None,
         simulated_latency_ms: float = 1.0,
     ):
         self.canned_responses: list[Any] = list(canned_responses or [])
         self.profile = profile
-        self.model = model
+        self.model = model if model is not None else _default_mock_model()
         self.simulated_latency_ms = simulated_latency_ms
 
     def enqueue_response(self, response: Any) -> None:
@@ -862,7 +904,15 @@ class ReasoningAuditor:
 
         if provider is not None:
             self.provider = provider
-            self.model = str(model or getattr(provider, "model", "mock-rules-auditor"))
+            if model is not None:
+                self.model = str(model)
+            else:
+                candidate = getattr(provider, "model", None)
+                self.model = (
+                    candidate
+                    if isinstance(candidate, str) and candidate
+                    else _default_mock_model()
+                )
             if profile and profile != "mock":
                 self.profile = str(profile)
             elif hasattr(self.provider, "profile") and isinstance(self.provider.profile, str):
@@ -870,19 +920,19 @@ class ReasoningAuditor:
             else:
                 self.profile = str(profile or "mock")
         elif self.profile == "mock":
-            self.model = model or "mock-rules-auditor"
+            self.model = model if model is not None else _default_mock_model()
             self.provider = MockAuditorProvider(profile=self.profile, model=self.model)
         else:
-            try:
-                from scopewatch.providers.client import ProviderClient
-                from scopewatch.providers.loader import get_profile
+            # Fail closed: a configured (non-mock) profile whose client cannot
+            # be built (missing key, unknown profile, bad config) raises here
+            # instead of silently degrading to the mock rule backend. The
+            # gateway converts this into a FAILED audit and a HOLD.
+            from scopewatch.providers.client import ProviderClient
+            from scopewatch.providers.loader import get_profile
 
-                prof = get_profile(self.profile)
-                self.provider = ProviderClient(prof)
-                self.model = model or prof.model
-            except Exception:
-                self.model = model or "mock-rules-auditor"
-                self.provider = MockAuditorProvider(profile=self.profile, model=self.model)
+            prof = get_profile(self.profile)
+            self.provider = ProviderClient(prof)
+            self.model = model or prof.model
 
     def audit_turn(
         self,
@@ -943,13 +993,15 @@ class ReasoningAuditor:
                 elif isinstance(pa, dict):
                     norm_planned.append(PlannedAction(**pa))
 
-        # Normalize trace
+        # Normalize trace. The auditor only ever sees the escaped trace, so
+        # grounded-excerpt validation below runs against that same text.
         raw_trace = reasoning_text or ""
         bounded_trace = truncate_reasoning_trace(raw_trace, max_chars=self.max_trace_chars)
+        sanitized_trace = escape_untrusted_trace(bounded_trace)
 
         messages = build_turn_audit_messages(
             scope=scope_obj,
-            trace_text=bounded_trace,
+            trace_text=sanitized_trace,
             provenance=prov_str,
             planned_actions=norm_planned,
             recent_actions=recent_actions or [],
@@ -1003,7 +1055,7 @@ class ReasoningAuditor:
 
             result = parse_auditor_output(
                 response_text=content,
-                bounded_trace_text=bounded_trace,
+                bounded_trace_text=sanitized_trace,
                 model=resp_model,
                 profile=resp_profile,
                 latency_ms=eff_latency,
