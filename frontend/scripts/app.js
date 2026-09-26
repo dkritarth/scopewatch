@@ -51,6 +51,13 @@ export const GATEWAY_TOOLS = {
 };
 
 /**
+ * Maximum characters of execution output shown in the evidence panel.
+ * The executor already truncates run_command streams with a marker; this cap
+ * keeps the dashboard readable for long receipts.
+ */
+export const EXECUTION_OUTPUT_DISPLAY_LIMIT = 2000;
+
+/**
  * Classify a timeline event into its HOLD provenance for badge + icon.
  * Returns "policy" | "concern" | "failed" | null. Text label is the
  * non-colour signal; the icon glyph is redundant reinforcement, never alone.
@@ -503,8 +510,22 @@ function renderEvidence() {
   execTitle.textContent = "4. Controlled synthetic execution";
   const execList = evidenceList([
     { label: "Execution status", value: event.executionStatus || event.execution },
-    { label: "Exit code", value: String(event.exitCode ?? 0) },
+    { label: "Command", value: event.executionCommand || "N/A" },
+    {
+      label: "Exit code",
+      value:
+        event.executionExitCode !== undefined && event.executionExitCode !== null
+          ? String(event.executionExitCode)
+          : "N/A",
+    },
     { label: "Result preview", value: event.resultPreview || "None" },
+    {
+      label: event.executionTruncated ? "Output (truncated)" : "Output",
+      value:
+        event.executionTimedOut && !event.executionOutput
+          ? "Timed out with no output."
+          : event.executionOutput || "None",
+    },
   ]);
   execSec.append(execTitle, execList);
 
@@ -983,6 +1004,41 @@ export function transformApiEvent(ev, context = null) {
   const offset = `+00:${String(ev.sequence ?? 0).padStart(2, "0")}`;
   const title = ev.summary || (d.operation ? `${d.operation} on ${d.resource}` : `${type}`);
 
+  // Execution receipt fields: the EXECUTION_* events carry the sanitized
+  // receipt as details.result (argv, exit_code, stdout/stderr with truncation
+  // flags for run_command; previews for file operations). Surface the
+  // command, exit code, and truncated output for the evidence panel.
+  const execResult = d.result && typeof d.result === "object" ? d.result : null;
+  const submittedArgs = d.arguments || actionReq.arguments || cachedReq.arguments || {};
+  let executionCommand = null;
+  if (execResult && Array.isArray(execResult.argv)) {
+    executionCommand = execResult.argv.join(" ");
+  } else if (typeof submittedArgs.command === "string" && submittedArgs.command) {
+    executionCommand = submittedArgs.command;
+  } else if (Array.isArray(submittedArgs.argv)) {
+    executionCommand = submittedArgs.argv.join(" ");
+  }
+  const executionExitCode =
+    execResult && execResult.exit_code !== undefined && execResult.exit_code !== null
+      ? execResult.exit_code
+      : (d.exit_code ?? null);
+  const outputParts = [];
+  if (execResult && typeof execResult.stdout === "string" && execResult.stdout) {
+    outputParts.push(execResult.stdout);
+  }
+  if (execResult && typeof execResult.stderr === "string" && execResult.stderr) {
+    outputParts.push(`[stderr]\n${execResult.stderr}`);
+  }
+  let executionOutput = outputParts.length > 0 ? outputParts.join("\n") : null;
+  let executionTruncated = Boolean(
+    execResult && (execResult.truncated_stdout || execResult.truncated_stderr || execResult.truncated),
+  );
+  if (executionOutput && executionOutput.length > EXECUTION_OUTPUT_DISPLAY_LIMIT) {
+    executionOutput = `${executionOutput.slice(0, EXECUTION_OUTPUT_DISPLAY_LIMIT)}\n...[display truncated]`;
+    executionTruncated = true;
+  }
+  const executionTimedOut = Boolean(execResult && execResult.timed_out);
+
   return {
     id: ev.id,
     sequence: ev.sequence,
@@ -1007,6 +1063,11 @@ export function transformApiEvent(ev, context = null) {
     executionStatus: d.execution_status || (status === "executed" ? "EXECUTED" : "NOT_EXECUTED"),
     exitCode: d.exit_code ?? 0,
     resultPreview: d.result_preview || (d.sanitized_result?.preview ?? null),
+    executionCommand,
+    executionExitCode,
+    executionOutput,
+    executionTruncated,
+    executionTimedOut,
     reasoningSummary,
     reasoning_summary: reasoningSummary,
     execution: status === "executed" ? "Executed in synthetic sandbox." : "Not executed.",
@@ -1186,6 +1247,16 @@ if (typeof document !== "undefined") {
               executionStatus: "NOT_EXECUTED",
               exitCode: 0,
               resultPreview: null,
+              executionCommand:
+                typeof parsedArgs.command === "string"
+                  ? parsedArgs.command
+                  : Array.isArray(parsedArgs.argv)
+                    ? parsedArgs.argv.join(" ")
+                    : null,
+              executionExitCode: null,
+              executionOutput: null,
+              executionTruncated: false,
+              executionTimedOut: false,
               reasoningSummary: payload.reasoning_summary,
               execution: "Not executed.",
               policyDecision: "Policy decision: REASONING_SCOPE_CONCERN",
@@ -1237,6 +1308,16 @@ if (typeof document !== "undefined") {
               executionStatus: "NOT_EXECUTED",
               exitCode: 0,
               resultPreview: null,
+              executionCommand:
+                typeof parsedArgs.command === "string"
+                  ? parsedArgs.command
+                  : Array.isArray(parsedArgs.argv)
+                    ? parsedArgs.argv.join(" ")
+                    : null,
+              executionExitCode: null,
+              executionOutput: null,
+              executionTruncated: false,
+              executionTimedOut: false,
               reasoningSummary: payload.reasoning_summary,
               execution: "Not executed.",
               policyDecision: "Policy decision: APPROVAL_REQUIRED",
@@ -1281,6 +1362,16 @@ if (typeof document !== "undefined") {
               executionStatus: "EXECUTED",
               exitCode: 0,
               resultPreview: "Synthetic preview output",
+              executionCommand:
+                typeof parsedArgs.command === "string"
+                  ? parsedArgs.command
+                  : Array.isArray(parsedArgs.argv)
+                    ? parsedArgs.argv.join(" ")
+                    : null,
+              executionExitCode: null,
+              executionOutput: null,
+              executionTruncated: false,
+              executionTimedOut: false,
               reasoningSummary: payload.reasoning_summary,
               execution: "Executed in synthetic sandbox.",
               policyDecision: "Policy decision: DEFAULT_ALLOW",
