@@ -1,9 +1,13 @@
-"""Controlled synthetic executor operating within a restricted workspace."""
+"""Controlled synthetic executor operating within a restricted workspace.
+
+Single entry point is :func:`execute_action`, which dispatches to the
+backend selected by ``SCOPEWATCH_EXECUTOR=local|docker`` (default ``local``).
+"""
 
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Protocol, runtime_checkable
 import uuid
 
 from scopewatch.config import MAX_READ_BYTES, MAX_WRITE_BYTES
@@ -20,6 +24,28 @@ class ExecutionSecurityError(Exception):
     """Raised when execution invariants or policy boundaries are violated."""
 
 
+LOCAL_EXECUTOR_NAME = "synthetic-workspace-executor"
+
+
+@runtime_checkable
+class ExecutorBackend(Protocol):
+    """Execution backend interface shared by local and Docker executors."""
+
+    def execute(
+        self,
+        action: ActionRequest,
+        workspace_root: Path,
+        policy_decision: Optional[PolicyDecision] = None,
+        approval_request: Optional[ApprovalRequest] = None,
+    ) -> ExecutionReceipt:
+        ...
+
+
+def get_executor_backend() -> str:
+    """Return the configured executor backend name (``local`` by default)."""
+    return os.environ.get("SCOPEWATCH_EXECUTOR", "local").strip().lower() or "local"
+
+
 def _verify_workspace_containment(workspace_root: Path, target_path: Path) -> Path:
     """Ensure target_path resolves strictly within workspace_root."""
     resolved_root = workspace_root.resolve()
@@ -31,13 +57,13 @@ def _verify_workspace_containment(workspace_root: Path, target_path: Path) -> Pa
     return resolved_target
 
 
-def execute_action(
+def _execute_local(
     action: ActionRequest,
     workspace_root: Path,
     policy_decision: Optional[PolicyDecision] = None,
     approval_request: Optional[ApprovalRequest] = None,
 ) -> ExecutionReceipt:
-    """Execute an authorized action inside the synthetic workspace."""
+    """Execute an authorized action inside the synthetic workspace (local backend)."""
     receipt_id = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc).isoformat()
 
@@ -251,3 +277,53 @@ def execute_action(
             resource=action.resource,
             operation=action.operation,
         )
+
+
+class LocalWorkspaceExecutor:
+    """Local backend preserving the current synthetic workspace behaviour."""
+
+    executor_name = LOCAL_EXECUTOR_NAME
+
+    def execute(
+        self,
+        action: ActionRequest,
+        workspace_root: Path,
+        policy_decision: Optional[PolicyDecision] = None,
+        approval_request: Optional[ApprovalRequest] = None,
+    ) -> ExecutionReceipt:
+        return _execute_local(
+            action,
+            workspace_root,
+            policy_decision=policy_decision,
+            approval_request=approval_request,
+        )
+
+
+def execute_action(
+    action: ActionRequest,
+    workspace_root: Path,
+    policy_decision: Optional[PolicyDecision] = None,
+    approval_request: Optional[ApprovalRequest] = None,
+) -> ExecutionReceipt:
+    """Single gateway entry point; dispatches to the configured backend.
+
+    ``SCOPEWATCH_EXECUTOR=docker`` selects the Docker-isolated backend,
+    anything else (including unset) selects the local backend. Docker
+    failures fail closed inside the Docker backend and never fall back to
+    local execution.
+    """
+    if get_executor_backend() == "docker":
+        from scopewatch.executor_docker import DockerExecutor
+
+        return DockerExecutor().execute(
+            action,
+            workspace_root,
+            policy_decision=policy_decision,
+            approval_request=approval_request,
+        )
+    return _execute_local(
+        action,
+        workspace_root,
+        policy_decision=policy_decision,
+        approval_request=approval_request,
+    )
