@@ -688,3 +688,27 @@ def test_feature_flag_disabled_bypasses_audit(test_env: dict[str, Any], monkeypa
     assert res.policy_decision.reason_code == ReasonCode.ALLOWED_TOOL_AND_RESOURCE
     auditor_mock.audit_turn.assert_not_called()
     assert res.reasoning_audit is None
+
+    # Defect 17: flag-off evidence must say the audit was disabled, not "unavailable".
+    allow_events = [e for e in res.events if e.event_type == EventType.POLICY_ALLOWED]
+    assert len(allow_events) == 1
+    assert allow_events[0].details.get("reasoning_audit") == "disabled"
+
+
+def test_no_reasoning_wording_stays_unavailable(test_env: dict[str, Any]):
+    """Defect 17: 'no reasoning supplied' keeps the distinct 'unavailable' label."""
+    service: ScopewatchService = test_env["service"]
+    run = test_env["run"]
+
+    req = SubmitActionRequest(
+        tool="workspace",
+        operation="read_text",
+        resource="invoices/approved/vendor-a.txt",
+    )
+    res = asyncio.run(service.submit_action(run.id, req))
+
+    assert res.policy_decision.outcome == PolicyOutcome.ALLOW
+    assert res.reasoning_audit is None
+    allow_events = [e for e in res.events if e.event_type == EventType.POLICY_ALLOWED]
+    assert len(allow_events) == 1
+    assert allow_events[0].details.get("reasoning_audit") == "unavailable"

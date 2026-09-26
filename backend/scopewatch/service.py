@@ -444,9 +444,14 @@ class ScopewatchService:
                         "matched_rule": decision.matched_rule,
                     }
                     if not audit_record:
-                        # Not attempted (no trace and no summary) -> evidence notes reasoning unavailable
-                        details_allow["reasoning_audit"] = "unavailable"
-                        details_allow["reasoning_availability"] = "unavailable"
+                        if not reasoning_audit_enabled:
+                            # Audit disabled by operator flag: distinct from "no reasoning supplied".
+                            details_allow["reasoning_audit"] = "disabled"
+                            details_allow["reasoning_availability"] = "disabled"
+                        else:
+                            # Not attempted (no trace and no summary) -> reasoning unavailable
+                            details_allow["reasoning_audit"] = "unavailable"
+                            details_allow["reasoning_availability"] = "unavailable"
 
                     ev_pol = ScopewatchRepository.append_event(
                         conn,
