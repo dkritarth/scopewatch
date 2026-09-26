@@ -690,6 +690,81 @@ def test_feature_flag_disabled_bypasses_audit(test_env: dict[str, Any], monkeypa
     assert allow_events[0].details.get("reasoning_audit") == "disabled"
 
 
+def test_hung_audit_times_out_without_blocking_event_loop(test_env: dict[str, Any]):
+    """Defect 14: a hung reasoning audit must not stall the event loop.
+
+    The audit runs off-loop bounded by the auditor profile timeout; on expiry
+    the gateway fails closed to HOLD/REASONING_AUDIT_FAILED and never calls
+    the executor, while other loop tasks keep ticking.
+    """
+    import time as time_mod
+
+    from scopewatch.reasoning_audit import AuditorChatResponse
+
+    service: ScopewatchService = test_env["service"]
+    run = test_env["run"]
+
+    class HangingProvider:
+        profile = "mock"
+        model = "mock-rules-auditor"
+
+        def audit_chat(self, messages, *, model=None, profile=None, timeout=None):
+            time_mod.sleep(3)  # far longer than the auditor timeout below
+            return AuditorChatResponse(
+                content='{"verdict": "NO_CONCERN", "concern_type": null, '
+                '"flagged_excerpts": [], "explanation": "too late"}',
+                model=self.model,
+                profile=self.profile,
+            )
+
+    service._auditor = ReasoningAuditor(
+        provider=HangingProvider(), profile="mock", model="mock-rules-auditor", timeout_s=0.2
+    )
+
+    beats = 0
+
+    async def heartbeat() -> None:
+        nonlocal beats
+        while True:
+            await asyncio.sleep(0.05)
+            beats += 1
+
+    async def main():
+        beat_task = asyncio.create_task(heartbeat())
+        try:
+            with patch("scopewatch.service.execute_action") as mock_executor:
+                started = time_mod.monotonic()
+                res = await service.submit_action(
+                    run.id,
+                    SubmitActionRequest(
+                        tool="workspace",
+                        operation="read_text",
+                        resource="invoices/approved/vendor-a.txt",
+                        exposed_reasoning_trace="Reading the vendor invoice.",
+                        turn_id="turn-hung-audit",
+                    ),
+                )
+                elapsed = time_mod.monotonic() - started
+            return res, elapsed, mock_executor
+        finally:
+            beat_task.cancel()
+
+    res, elapsed, mock_executor = asyncio.run(main())
+
+    # Returns promptly, well under the 3s hang.
+    assert elapsed < 2.5
+    # The event loop stayed responsive while the audit hung in its thread.
+    assert beats >= 1
+    # Fail closed: HOLD with REASONING_AUDIT_FAILED, executor never called.
+    assert res.policy_decision.outcome == PolicyOutcome.HOLD
+    assert res.policy_decision.reason_code == ReasonCode.REASONING_AUDIT_FAILED
+    assert res.reasoning_audit is not None
+    assert res.reasoning_audit.verdict == ReasoningAuditVerdict.FAILED.value
+    assert res.reasoning_audit.error_code == AuditErrorCode.AUDIT_TIMEOUT.value
+    mock_executor.assert_not_called()
+    assert res.approval_request is not None
+
+
 def test_broken_auditor_profile_fails_closed(test_env: dict[str, Any], monkeypatch):
     """Defect 1: a configured auditor profile whose client cannot be built
     (missing key) yields a FAILED audit and a HOLD, never a mock-backed ALLOW.
