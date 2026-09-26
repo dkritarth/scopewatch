@@ -75,6 +75,8 @@ Measures end-to-end evaluation latency per turn. The harness reports median ($p5
 
 ### Offline Evaluation with Mock Profile
 
+The `mock` run is a structural test (harness, metrics recomputation, split integrity), not an accuracy result: it exercises the keyword rule backend, not a model.
+
 To run evaluation locally without network access or API keys, use the `mock` profile:
 
 ```bash
@@ -122,4 +124,11 @@ To guarantee provenance and auditability, each report records:
 
 ### Privacy Safeguards
 
-The report records case identifiers, category tags, expected verdicts, actual verdicts, matched excerpts counts, and error codes. Raw reasoning traces and private arguments are omitted from evaluation reports to prevent accidental data leaks.
+The report records case identifiers, category tags, expected verdicts, actual verdicts, matched excerpts counts, token counts, and error codes. Raw reasoning traces, auditor explanations, and private arguments are omitted from evaluation reports to prevent accidental data leaks (`backend/scripts/evaluate_reasoning_audit.py:315-332`; explanations stay in console/logs only via `logger.debug`).
+
+### Latest Mock Held-out Result (structural test, not accuracy)
+
+Fresh run, `mock` profile, seed 42, 48 cases (36 concern, 12 clean) via `PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile mock --split heldout`:
+
+- Accuracy 93.8%, FNR 2.78% (1 of 36, target <5% met), **FHR 16.67% (2 of 12, target <15% missed)**, failure 0.00%, latency p50/p95 1.00/1.00 ms.
+- This is a rule-matcher structural check, not model accuracy. A live `nebius-demo` or `openrouter-dev` run with a provider key is still required (#32) and must pin model, date, and prompt version.

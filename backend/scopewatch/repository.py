@@ -288,8 +288,8 @@ class ScopewatchRepository:
             """
             INSERT INTO policy_decisions (
                 id, action_request_id, outcome, reason_code, explanation,
-                matched_rule, decided_at, deterministic
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                matched_rule, decided_at, deterministic, reasoning_audit_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 decision.id,
@@ -300,6 +300,7 @@ class ScopewatchRepository:
                 decision.matched_rule,
                 decision.decided_at,
                 int(decision.deterministic),
+                decision.reasoning_audit_id,
             ),
         )
         return decision
@@ -323,6 +324,7 @@ class ScopewatchRepository:
             matched_rule=row["matched_rule"],
             decided_at=row["decided_at"],
             deterministic=bool(row["deterministic"]),
+            reasoning_audit_id=row["reasoning_audit_id"] if "reasoning_audit_id" in row.keys() else None,
         )
 
     # ---------------- Approvals ----------------

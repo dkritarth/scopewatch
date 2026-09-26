@@ -119,6 +119,33 @@ export async function getEvents(runId, afterSequence = null) {
 }
 
 /**
+ * Every EventType the backend gateway can emit over SSE
+ * (backend/scopewatch/models.py `EventType`, streamed by `app.py`
+ * `GET /api/v1/runs/{run_id}/events/stream`). Kept as an exported constant
+ * so unit tests can assert the subscription tracks the backend 1:1 instead
+ * of drifting silently (defect 3a: POLICY_HELD, REASONING_AUDIT_COMPLETED,
+ * REASONING_AUDIT_FAILED were omitted and never rendered live).
+ */
+export const LIVE_EVENT_TYPES = [
+  "RUN_CREATED",
+  "ACTION_REQUESTED",
+  "POLICY_ALLOWED",
+  "POLICY_DENIED",
+  "POLICY_HELD",
+  "APPROVAL_REQUESTED",
+  "APPROVAL_GRANTED",
+  "APPROVAL_DENIED",
+  "APPROVAL_EXPIRED",
+  "EXECUTION_STARTED",
+  "EXECUTION_SUCCEEDED",
+  "EXECUTION_FAILED",
+  "RUN_COMPLETED",
+  "SYSTEM_ERROR",
+  "REASONING_AUDIT_COMPLETED",
+  "REASONING_AUDIT_FAILED",
+];
+
+/**
  * Connect to live Server-Sent Events stream with automated fallback to polling.
  */
 export function connectLiveEvents(runId, { onEvent, onStatusChange, initialSequence = 0 }) {
@@ -190,22 +217,8 @@ export function connectLiveEvents(runId, { onEvent, onStatusChange, initialSeque
         setStatus("connected", "Live SSE stream connected.");
       });
 
-      // Register all domain event types
-      const eventTypes = [
-        "RUN_CREATED",
-        "RUN_COMPLETED",
-        "ACTION_REQUESTED",
-        "POLICY_ALLOWED",
-        "POLICY_DENIED",
-        "POLICY_HELD_FOR_APPROVAL",
-        "APPROVAL_REQUESTED",
-        "APPROVAL_GRANTED",
-        "APPROVAL_DENIED",
-        "APPROVAL_EXPIRED",
-        "EXECUTION_STARTED",
-        "EXECUTION_SUCCEEDED",
-        "EXECUTION_FAILED",
-      ];
+      // Register all domain event types (see LIVE_EVENT_TYPES above).
+      const eventTypes = LIVE_EVENT_TYPES;
 
       for (const eventType of eventTypes) {
         eventSource.addEventListener(eventType, (e) => {

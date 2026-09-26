@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS policy_decisions (
     explanation TEXT NOT NULL,
     matched_rule TEXT NOT NULL,
     decided_at TEXT NOT NULL,
-    deterministic INTEGER NOT NULL DEFAULT 1
+    deterministic INTEGER NOT NULL DEFAULT 1,
+    reasoning_audit_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS approval_requests (
@@ -169,6 +170,11 @@ def init_db(db_path: Path | str) -> None:
             conn.execute("ALTER TABLE action_requests ADD COLUMN turn_id TEXT")
         if cols and "reasoning_audit_id" not in cols:
             conn.execute("ALTER TABLE action_requests ADD COLUMN reasoning_audit_id TEXT")
+
+        cur = conn.execute("PRAGMA table_info(policy_decisions)")
+        decision_cols = {row["name"] for row in cur.fetchall()}
+        if decision_cols and "reasoning_audit_id" not in decision_cols:
+            conn.execute("ALTER TABLE policy_decisions ADD COLUMN reasoning_audit_id TEXT")
 
         cur = conn.execute("SELECT version FROM schema_version WHERE version = 1")
         if cur.fetchone() is None:

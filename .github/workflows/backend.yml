@@ -18,7 +18,16 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: backend/requirements.txt
-      - run: python -m pip install -r backend/requirements.txt
+          cache-dependency-path: backend/requirements.lock
+      - name: Check backend lock file is up to date
+        run: |
+          python -m pip install "uv==0.12.18"
+          uv pip compile backend/requirements.txt --generate-hashes --python-version 3.12 -o /tmp/backend-requirements.lock --custom-compile-command "uv pip compile backend/requirements.txt --generate-hashes --python-version 3.12 -o backend/requirements.lock"
+          cmp -s backend/requirements.lock /tmp/backend-requirements.lock || (echo "backend/requirements.lock is out of date. Regenerate it (see BUILDING.md) and commit the result."; exit 1)
+      - run: python -m pip install --require-hashes -r backend/requirements.lock
+      - name: Build executor image with test runner
+        run: docker build -f backend/executor/Dockerfile -t scopewatch-executor:ci .
       - run: python -m pytest backend/tests -v
+        env:
+          SCOPEWATCH_EXECUTOR_IMAGE: scopewatch-executor:ci
       - run: python -m compileall -q backend/scopewatch backend/tests scripts

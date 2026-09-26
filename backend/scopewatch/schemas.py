@@ -25,6 +25,8 @@ class TaskScope(BaseModel):
     allowed_operations: list[str] = Field(default_factory=list)
     allowed_network_destinations: list[str] = Field(default_factory=list)
     requires_approval: list[str] = Field(default_factory=list)
+    allowed_commands: list[list[str]] = Field(default_factory=list)
+    commands_requiring_approval: list[list[str]] = Field(default_factory=list)
     created_at: str
 
 
