@@ -39,3 +39,10 @@ Order constraints honored: #35 → #36 → (#38, #39); #36 + #37 → #38; #29 �
 ## Log
 
 - Sep 26: run opened. Wave 1 (A–D) dispatched in parallel. orchestrator session `t3code/finish-milestone-issues`.
+- Sep 26: Wave 1 merged (auditor+gateway integrity, reviewer-ui-live, fixture #37, locks #59). `./scripts/validate.sh --quick` green.
+- Sep 26: Wave 2 merged (truth-pass #24/#34/#32/#62-rest, docker executor #35). Quick green.
+- Sep 26: Wave 3 merged (run_command #36). Quick green.
+- Sep 26: Wave 4 merged (coding scenarios #38, bypass suite #39). Full evidence: backend 259 passed/24 skipped (docker-daemon skips), PoC 96 passed + 79 subtests, frontend unit 27/27, browser 5/5, mutation_check 12/12 caught, fixture exactly-1-failure, `./scripts/validate.sh` full green with clean-room checks, `git status` clean.
+- Follow-ups filed: #63 (symlink-to-blocked served), #64 (approve-after-completed executes) — both type:bug, priority:high, review:second-pass, must fix before M3 per #39.
+- Live runs NOT done (no Nebius/OpenRouter keys): #32 live held-out, #31/#38 live scenario runs, #25 spike probe. Docker-daemon probes (6+4) skip here; must go green in docker-executor CI.
+- M1 remainder after merge: #60 (needs-human decision), live-run portions of #31/#32. M2 remainder: #63/#64 fixes + docker CI green + live runs. M0 remainder: #25 (needs-human).
