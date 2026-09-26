@@ -37,6 +37,9 @@
         <p class="safety-banner" id="synthetic-banner">
           <strong>Synthetic demo gateway.</strong> This local baseline mediates only actions submitted through its synthetic demo gateway. It does not intercept arbitrary host or agent operations. No actual enforcement outside the synthetic sandbox. Preview controls change this page only.
         </p>
+        <p class="mediation-boundary" id="mediation-boundary">
+          <strong>Mediation boundary.</strong> All tool actions go through the gateway API; actions that bypass the API are not observed, blocked, or recorded. See docs/ARCHITECTURE.md (Mediation boundary).
+        </p>
       </header>
 
       <noscript>This synthetic replay viewer needs JavaScript. No live actions are connected.</noscript>

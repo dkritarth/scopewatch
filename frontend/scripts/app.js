@@ -34,6 +34,107 @@ export function getProvenanceLabel(provenance) {
 }
 
 /**
+ * Persistent mediation-boundary statement (#61). Rendered verbatim in the UI
+ * banner (`#mediation-boundary`) and in docs/ARCHITECTURE.md. Never dismissible.
+ */
+export const MEDIATION_BOUNDARY_TEXT =
+  "All tool actions go through the gateway API; actions that bypass the API are not observed, blocked, or recorded.";
+
+/**
+ * Gateway-mediated tool set (#61). Mirrors backend/scopewatch/models.py
+ * SUPPORTED_TOOLS / SUPPORTED_OPERATIONS; asserted by
+ * frontend/tests/live-runs.test.js rather than by hand.
+ */
+export const GATEWAY_TOOLS = {
+  tools: ["workspace"],
+  operations: ["list_directory", "read_text", "write_text", "delete_path", "network_request"],
+};
+
+/**
+ * Classify a timeline event into its HOLD provenance for badge + icon.
+ * Returns "policy" | "concern" | "failed" | null. Text label is the
+ * non-colour signal; the icon glyph is redundant reinforcement, never alone.
+ */
+export function getHoldKind(event) {
+  if (!event || event.status !== "pending-approval") return null;
+  if (event.reasonCode === "REASONING_SCOPE_CONCERN") return "concern";
+  if (event.reasonCode === "REASONING_AUDIT_FAILED") return "failed";
+  return "policy";
+}
+
+export const HOLD_ICONS = {
+  policy: "■",
+  concern: "▲",
+  failed: "●",
+};
+
+export function getHoldIcon(kind) {
+  return HOLD_ICONS[kind] || "";
+}
+
+/**
+ * Group timeline events by turn_id, preserving first-seen order.
+ * Events without a turn form a trailing "unassigned" group (turnId null).
+ */
+export function groupEventsByTurn(events) {
+  const groups = [];
+  const indexByTurn = new Map();
+  for (const event of events || []) {
+    const key = event?.turnId ?? event?.turn_id ?? null;
+    if (key !== null && indexByTurn.has(key)) {
+      groups[indexByTurn.get(key)].events.push(event);
+    } else if (key === null) {
+      const last = groups[groups.length - 1];
+      if (last && last.turnId === null) {
+        last.events.push(event);
+      } else {
+        indexByTurn.delete(null);
+        groups.push({ turnId: null, events: [event] });
+      }
+    } else {
+      indexByTurn.set(key, groups.length);
+      groups.push({ turnId: key, events: [event] });
+    }
+  }
+  return groups;
+}
+
+/**
+ * Format one backend run + its raw API events into a selectable timeline run.
+ * Exported so tests assert every seeded scenario run stays reachable.
+ */
+export function formatLiveRun(backendRun, rawEvents = []) {
+  const transformedEvents = (rawEvents || []).map((e) => transformApiEvent(e));
+  const scope = backendRun?.task_scope;
+  return {
+    id: backendRun.id,
+    name: `${backendRun.name} (Live)`,
+    task: scope?.task_description || "Synthetic live run",
+    scope: [
+      `Allowed: ${scope?.allowed_paths?.join(", ") || "none"}`,
+      `Blocked: ${scope?.blocked_paths?.join(", ") || "none"}`,
+      `Operations: ${scope?.allowed_operations?.join(", ") || "none"}`,
+      `Requires approval: ${scope?.requires_approval?.join(", ") || "none"}`,
+    ],
+    taskScope: scope || null,
+    gatewayTools: {
+      tools: scope?.allowed_tools || [...GATEWAY_TOOLS.tools],
+      operations: scope?.allowed_operations || [...GATEWAY_TOOLS.operations],
+    },
+    events: transformedEvents,
+    isLive: true,
+  };
+}
+
+/**
+ * Build selectable live runs for EVERY backend run (defect 3b).
+ * Never truncates to backendRuns[0]; the six seeded scenario runs stay reachable.
+ */
+export function buildLiveRuns(backendRuns = [], eventsByRun = {}) {
+  return (backendRuns || []).map((run) => formatLiveRun(run, eventsByRun[run.id] || []));
+}
+
+/**
  * Safely renders text inside container with highlighted excerpts.
  * NEVER uses innerHTML! All strings are inserted as DOM Text nodes or mark.textContent.
  *
@@ -260,6 +361,20 @@ function renderScope() {
       return listItem;
     }),
   );
+  // Per-run gateway-mediated tool list (#61): what this run's scope puts
+  // through the gateway API. Rendered with textContent only.
+  let toolsItem = elements.runScope.querySelector('[data-gateway-tools]');
+  if (!toolsItem) {
+    toolsItem = document.createElement("li");
+    toolsItem.dataset.gatewayTools = "true";
+    toolsItem.className = "scope-gateway-tools";
+    elements.runScope.append(toolsItem);
+  }
+  const tools = run.gatewayTools?.tools || run.taskScope?.allowed_tools || [...GATEWAY_TOOLS.tools];
+  const operations = run.gatewayTools?.operations || run.taskScope?.allowed_operations || [...GATEWAY_TOOLS.operations];
+  toolsItem.textContent = `Gateway-mediated tools: ${tools.join(", ")} — operations: ${operations.join(", ")}`;
+  // Keep the tools item last even when scope re-renders.
+  elements.runScope.append(toolsItem);
 }
 
 function evidenceList(items) {
@@ -508,14 +623,11 @@ function timelineButton(event, run) {
   if (event.reasonCode) {
     button.classList.add(`reason-${event.reasonCode.toLowerCase().replace(/_/g, "-")}`);
   }
-  if (event.status === "pending-approval") {
-    if (event.reasonCode === "REASONING_SCOPE_CONCERN") {
-      button.classList.add("hold-concern");
-    } else if (event.reasonCode === "REASONING_AUDIT_FAILED") {
-      button.classList.add("hold-failed");
-    } else {
-      button.classList.add("hold-policy");
-    }
+  const holdKind = getHoldKind(event);
+  if (holdKind) {
+    button.classList.add(
+      holdKind === "concern" ? "hold-concern" : holdKind === "failed" ? "hold-failed" : "hold-policy",
+    );
   }
   button.dataset.eventId = event.id;
   button.setAttribute("aria-current", String(event.id === state.eventId));
@@ -532,10 +644,12 @@ function timelineButton(event, run) {
 
   const meta = document.createElement("span");
   meta.className = "event-meta";
-  if (event.turnId) {
+  const turnLabel = event.turnId ?? event.turn_id ?? null;
+  if (turnLabel) {
     const turnBadge = document.createElement("span");
     turnBadge.className = "turn-badge";
-    turnBadge.textContent = event.turnId;
+    turnBadge.textContent = `Turn ${turnLabel}`;
+    turnBadge.setAttribute("title", `Turn ${turnLabel}`);
     meta.append(turnBadge, document.createTextNode(` • ${event.tool} • ${event.resource}`));
   } else {
     meta.textContent = `${event.tool} • ${event.resource}`;
@@ -543,16 +657,26 @@ function timelineButton(event, run) {
 
   const status = document.createElement("span");
   status.className = "event-status";
-  if (event.status === "pending-approval") {
-    if (event.reasonCode === "REASONING_SCOPE_CONCERN") {
-      status.classList.add("status-hold-concern");
-    } else if (event.reasonCode === "REASONING_AUDIT_FAILED") {
-      status.classList.add("status-hold-failed");
-    } else {
-      status.classList.add("status-hold-policy");
-    }
+  if (holdKind) {
+    status.classList.add(
+      holdKind === "concern"
+        ? "status-hold-concern"
+        : holdKind === "failed"
+          ? "status-hold-failed"
+          : "status-hold-policy",
+    );
   }
-  status.textContent = event.statusLabel;
+  // Icon glyph reinforces the text label; text remains the primary signal
+  // so meaning never depends on colour alone (#30).
+  const icon = document.createElement("span");
+  icon.className = "hold-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = holdKind ? getHoldIcon(holdKind) : "";
+  status.append(icon);
+  const label = document.createElement("span");
+  label.className = "hold-label";
+  label.textContent = event.statusLabel;
+  status.append(label);
 
   content.append(title, meta);
   button.append(time, content, status);
@@ -574,13 +698,28 @@ function renderTimeline() {
   if (!run || !elements.timeline || !elements.timelineCount) return;
   const visibleEvents = filterEvents(run.events, state.filters);
   state.eventId = reconcileSelection(activeRuns, state.runId, state.eventId, visibleEvents);
-  elements.timeline.replaceChildren(
-    ...visibleEvents.map((event) => {
+  const visibleById = new Map(visibleEvents.map((e) => [e.id, e]));
+  const groups = groupEventsByTurn(visibleEvents);
+  const nodes = [];
+  for (const group of groups) {
+    if (groups.length > 1) {
+      const header = document.createElement("li");
+      header.className = "turn-group-header";
+      header.dataset.turnId = group.turnId ?? "unassigned";
+      header.textContent =
+        group.turnId !== null
+          ? `Turn ${group.turnId} — ${group.events.length} action${group.events.length === 1 ? "" : "s"}`
+          : `No turn assigned — ${group.events.length} action${group.events.length === 1 ? "" : "s"}`;
+      nodes.push(header);
+    }
+    for (const event of group.events) {
+      if (!visibleById.has(event.id)) continue;
       const listItem = document.createElement("li");
       listItem.append(timelineButton(event, run));
-      return listItem;
-    }),
-  );
+      nodes.push(listItem);
+    }
+  }
+  elements.timeline.replaceChildren(...nodes);
   elements.timelineCount.textContent = `${visibleEvents.length} of ${run.events.length} events shown`;
 
   const isEmpty = visibleEvents.length === 0;
@@ -1205,12 +1344,9 @@ async function bootstrap() {
     updateGatewayStatus("Live gateway connected", "connected");
 
     try {
-      const backendRuns = await getRuns();
-      let liveRun = null;
-      if (backendRuns && backendRuns.length > 0) {
-        liveRun = backendRuns[0];
-      } else {
-        liveRun = await createRun("Invoice Processing Run", {
+      let backendRuns = await getRuns();
+      if (!backendRuns || backendRuns.length === 0) {
+        const created = await createRun("Invoice Processing Run", {
           schema_version: "1",
           task_description: "Audit approved vendor invoices and generate summary report.",
           allowed_paths: ["invoices/approved", "outputs"],
@@ -1221,28 +1357,28 @@ async function bootstrap() {
           requires_approval: ["delete_path"],
           created_at: new Date().toISOString(),
         });
+        backendRuns = [created];
       }
 
-      // Fetch existing events for the live run
-      const rawEvents = await getEvents(liveRun.id);
-      const transformedEvents = rawEvents.map((e) => transformApiEvent(e));
+      // Render EVERY backend run so all six seeded scenario runs stay
+      // selectable (defect 3b); never truncate to backendRuns[0].
+      const eventsByRun = {};
+      for (const run of backendRuns) {
+        try {
+          eventsByRun[run.id] = await getEvents(run.id);
+        } catch {
+          eventsByRun[run.id] = [];
+        }
+      }
+      const formattedLiveRuns = buildLiveRuns(backendRuns, eventsByRun);
 
-      const formattedLiveRun = {
-        id: liveRun.id,
-        name: `${liveRun.name} (Live)`,
-        task: liveRun.task_scope?.task_description || "Synthetic live run",
-        scope: [
-          `Allowed: ${liveRun.task_scope?.allowed_paths?.join(", ") || "none"}`,
-          `Blocked: ${liveRun.task_scope?.blocked_paths?.join(", ") || "none"}`,
-          `Operations: ${liveRun.task_scope?.allowed_operations?.join(", ") || "none"}`,
-          `Requires approval: ${liveRun.task_scope?.requires_approval?.join(", ") || "none"}`,
-        ],
-        events: transformedEvents,
-        isLive: true,
-      };
-
-      activeRuns = [...fixtureRuns, formattedLiveRun];
+      activeRuns = [...fixtureRuns, ...formattedLiveRuns];
+      // Keep selection valid when new runs arrive; prefer the first live run
+      // with held events so the M1 escalation headline is one click away.
       renderRunButtons();
+      renderScope();
+      renderTimeline();
+      renderEvidence();
       refreshApprovals();
     } catch (err) {
       console.warn("Could not initialize live runs, falling back to fixtures:", err);
