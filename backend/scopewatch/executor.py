@@ -7,7 +7,7 @@ backend selected by ``SCOPEWATCH_EXECUTOR=local|docker`` (default ``local``).
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Optional
 import uuid
 
 from scopewatch.config import MAX_READ_BYTES, MAX_WRITE_BYTES
@@ -25,20 +25,6 @@ class ExecutionSecurityError(Exception):
 
 
 LOCAL_EXECUTOR_NAME = "synthetic-workspace-executor"
-
-
-@runtime_checkable
-class ExecutorBackend(Protocol):
-    """Execution backend interface shared by local and Docker executors."""
-
-    def execute(
-        self,
-        action: ActionRequest,
-        workspace_root: Path,
-        policy_decision: Optional[PolicyDecision] = None,
-        approval_request: Optional[ApprovalRequest] = None,
-    ) -> ExecutionReceipt:
-        ...
 
 
 def get_executor_backend() -> str:
@@ -283,26 +269,6 @@ def _execute_local(
             error_code="EXECUTION_FAILED",
             resource=action.resource,
             operation=action.operation,
-        )
-
-
-class LocalWorkspaceExecutor:
-    """Local backend preserving the current synthetic workspace behaviour."""
-
-    executor_name = LOCAL_EXECUTOR_NAME
-
-    def execute(
-        self,
-        action: ActionRequest,
-        workspace_root: Path,
-        policy_decision: Optional[PolicyDecision] = None,
-        approval_request: Optional[ApprovalRequest] = None,
-    ) -> ExecutionReceipt:
-        return _execute_local(
-            action,
-            workspace_root,
-            policy_decision=policy_decision,
-            approval_request=approval_request,
         )
 
 

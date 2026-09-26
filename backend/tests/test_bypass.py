@@ -111,15 +111,6 @@ def bypass_run() -> Run:
     )
 
 
-@pytest.fixture
-def docker_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SCOPEWATCH_EXECUTOR", "docker")
-
-
-@pytest.fixture
-def local_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("SCOPEWATCH_EXECUTOR", raising=False)
-
 
 @pytest.fixture
 def cmd_run() -> Run:
@@ -189,11 +180,6 @@ def svc_env(tmp_path: Path):
     run, _ = service.create_run(name="Bypass Service Run", task_scope=scope)
     return {"service": service, "run": run, "workspace": ws}
 
-
-@pytest.fixture
-def requires_docker() -> None:
-    if not is_docker_available():
-        pytest.skip("Docker daemon unavailable; skipping Docker integration test.")
 
 
 def _read_action(

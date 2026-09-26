@@ -20,7 +20,6 @@ from scopewatch.executor_docker import (
     _make_world_accessible,
     _stage_workspace_copy,
     build_docker_command,
-    docker_available,
     is_docker_available,
     resolve_executor_image,
 )
@@ -49,11 +48,6 @@ def docker_workspace(tmp_path: Path) -> Path:
     (ws / "docs" / "file_a.txt").write_text("content A", encoding="utf-8")
     return ws
 
-
-@pytest.fixture
-def requires_docker() -> None:
-    if not is_docker_available():
-        pytest.skip("Docker daemon unavailable; skipping Docker integration test.")
 
 
 def _action(
@@ -396,8 +390,8 @@ def test_docker_approved_hold_executes(
     assert receipt.executor == "docker-executor"
 
 
-def test_docker_available_helper_returns_bool() -> None:
-    assert isinstance(docker_available(), bool)
+def test_docker_availability_helper_returns_bool() -> None:
+    assert isinstance(is_docker_available(), bool)
 
 
 def test_resolve_executor_image_defaults_to_pin(

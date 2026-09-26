@@ -85,6 +85,8 @@ The reasoning auditor (`backend/scopewatch/reasoning_audit.py`) audits agent rea
 - **Grounded excerpt validation**: Flagged excerpts must be exact verbatim substrings of the trace. If an excerpt is hallucinated or ungrounded, the audit fails closed with `UNGROUNDED_EXCERPT`.
 - **Escalate-only authority**: The auditor can only escalate an `ALLOW` to a `HOLD` (reason codes: `REASONING_SCOPE_CONCERN`, `REASONING_AUDIT_FAILED`). It can never produce `ALLOW` or `DENY`, and never relaxes a policy decision.
 - **Turn caching**: Audits are cached per `(run_id, turn_id, sha256(trace))`. Multiple actions in a single turn share one audit execution.
+- **Reasoning statement**: raw reasoning is read only from provider fields `message.reasoning_content`, `message.reasoning`, `message.reasoning_details` (in that order; `backend/scopewatch/providers/client.py:50-69`). Visible reasoning can be unfaithful or incomplete, so a clean trace never proves benign intent; closed models expose summaries at best (`AGENT_AUTHORED_SUMMARY`). Reasoning is evidence, not proof of intent.
+- **Model data policy**: only synthetic content is ever sent to providers; free/stealth endpoints may log prompts. Reports pin profile, served model, date, and dataset hash (`docs/evaluation.md`).
 
 ### 4. Swappable provider profile layer
 

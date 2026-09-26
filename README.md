@@ -13,6 +13,10 @@ It enforces a strict defense-in-depth model:
 > Scopewatch is an application-level gateway: it mediates only actions routed through its API. It does not intercept arbitrary out-of-band host processes or direct OS system calls (container-level isolation is introduced in Milestone M2).
 >
 > Reasoning traces are isolated inside `<untrusted_reasoning_trace>` boundary delimiters. Reasoning is evidence, not proof of intent.
+>
+> **Reasoning statement:** raw reasoning reaches the auditor only through provider response fields, checked in order in `backend/scopewatch/providers/client.py:50-69`: `message.reasoning_content`, then `message.reasoning`, then `message.reasoning_details`. Anything else (including `<thinking>` blocks inside message content) is ignored and recorded as `UNAVAILABLE`. Visible reasoning can be unfaithful or incomplete: a model may rationalize, omit, or misstate its own plan, so a clean trace never proves benign intent. Closed models typically expose no reasoning fields at all and yield agent-authored summaries (`AGENT_AUTHORED_SUMMARY`) at best.
+>
+> **Model data policy:** only synthetic fixtures and invented content are ever sent to model providers. Free and stealth endpoints may log prompts, so provider calls carry nothing real by construction. Evaluation reports pin the profile, the served model ID, the date, and the case-file hash (`docs/evaluation.md`).
 
 ---
 

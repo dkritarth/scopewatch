@@ -16,10 +16,6 @@ from scopewatch.policy import evaluate_policy
 from scopewatch.schemas import ActionRequest, Run, TaskScope
 
 
-@pytest.fixture
-def docker_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SCOPEWATCH_EXECUTOR", "docker")
-
 
 @pytest.fixture
 def cmd_workspace(tmp_path: Path) -> Path:

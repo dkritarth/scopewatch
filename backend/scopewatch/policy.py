@@ -134,7 +134,7 @@ def evaluate_policy(
     # Step 6: Normalize the requested resource
     resource_raw = action.resource or ""
 
-    # Step 8: Reject null bytes
+    # Step 7: Reject null bytes
     if "\x00" in resource_raw:
         return PolicyDecision(
             id=decision_id,
@@ -147,7 +147,7 @@ def evaluate_policy(
             deterministic=True,
         )
 
-    # Step 7: Reject absolute paths
+    # Step 8: Reject absolute paths
     if resource_raw.startswith("/") or resource_raw.startswith("\\") or (len(resource_raw) > 1 and resource_raw[1] == ":"):
         return PolicyDecision(
             id=decision_id,
@@ -312,12 +312,17 @@ def _contains_shell_metacharacter(text: str) -> bool:
     return any(marker in text for marker in _RUN_COMMAND_METACHARACTERS)
 
 
-def _argv_matches_prefix(argv: list[str], prefixes: list[list[str]]) -> bool:
-    """Return True if argv starts with any non-empty allowlist prefix."""
+def _match_prefix_len(argv: list[str], prefixes: list[list[str]]) -> int:
+    """Return the length of the first matching allowlist prefix, else 0."""
     for prefix in prefixes:
         if prefix and argv[: len(prefix)] == prefix:
-            return True
-    return False
+            return len(prefix)
+    return 0
+
+
+def _argv_matches_prefix(argv: list[str], prefixes: list[list[str]]) -> bool:
+    """Return True if argv starts with any non-empty allowlist prefix."""
+    return _match_prefix_len(argv, prefixes) > 0
 
 
 def _check_run_command_path(
@@ -507,11 +512,7 @@ def _evaluate_run_command(
     assert argv is not None and len(argv) > 0
 
     # R6: argv must start with an allowlisted per-scope prefix.
-    matched_len = 0
-    for prefix in scope.allowed_commands:
-        if prefix and argv[: len(prefix)] == prefix:
-            matched_len = len(prefix)
-            break
+    matched_len = _match_prefix_len(argv, scope.allowed_commands)
     if matched_len == 0:
         return deny(
             ReasonCode.COMMAND_NOT_ALLOWED,
