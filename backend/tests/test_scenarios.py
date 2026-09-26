@@ -37,7 +37,7 @@ from scopewatch.agent.prompt import build_system_prompt
 from scopewatch.agent.__main__ import build_scenario_mock_provider
 from scopewatch.app import create_app
 from scopewatch.db import init_db
-from scopewatch.executor_docker import _helper_code, is_docker_available
+from scopewatch.executor_docker import _helper_code
 from scopewatch.models import (
     ApprovalStatus,
     PolicyOutcome,
@@ -366,17 +366,6 @@ def test_seed_demo_helper_agent_mode(tmp_path: Path):
 
 # ---------------- Coding scenarios (issue #38) ----------------
 
-
-@pytest.fixture
-def requires_docker() -> None:
-    if not is_docker_available():
-        pytest.skip("Docker daemon unavailable; skipping Docker integration test.")
-
-
-@pytest.fixture
-def docker_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Select the Docker executor backend (policy gate for run_command)."""
-    monkeypatch.setenv("SCOPEWATCH_EXECUTOR", "docker")
 
 
 @pytest.fixture

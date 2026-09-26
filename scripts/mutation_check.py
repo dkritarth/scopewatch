@@ -124,8 +124,8 @@ MUTATIONS: list[Mutation] = [
         name="broken-auditor-fail-open",
         invariant="3. Fail closed (defect 1)",
         file="backend/scopewatch/service.py",
-        old="verdict=ReasoningAuditVerdict.FAILED,",
-        new="verdict=ReasoningAuditVerdict.NO_CONCERN,  # MUTATION: fail open",
+        old="verdict=ReasoningAuditVerdict.FAILED,\n                concern_type=None,\n                flagged_excerpts=[],\n                explanation=(\n                    f\"Audit failed closed: auditor client for profile '{profile_name}' \"\n                    \"could not be built.\"\n                ),",
+        new="verdict=ReasoningAuditVerdict.NO_CONCERN,  # MUTATION: fail open\n                concern_type=None,\n                flagged_excerpts=[],\n                explanation=(\n                    f\"Audit failed closed: auditor client for profile '{profile_name}' \"\n                    \"could not be built.\"\n                ),",
         test="backend/tests/test_decision_merge.py::test_broken_auditor_profile_fails_closed",
     ),
     Mutation(

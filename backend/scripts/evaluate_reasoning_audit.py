@@ -222,6 +222,47 @@ def load_dataset_cases(
     )
 
 
+def attach_usage_capture(auditor: ReasoningAuditor) -> dict[str, Any]:
+    """Wrap the auditor's provider calls to record real token usage.
+
+    Returns the shared `last_usage` dict, updated after each provider call
+    (cleared by the caller per case). Never touches core modules: the
+    auditor only surfaces total_tokens, while prompt/completion counts live
+    in the provider ChatResult.usage dict (mock backends report none and
+    honestly sum to 0). Failures to wrap leave usage empty, never fatal.
+    """
+    last_usage: dict[str, Any] = {}
+
+    def _capture_usage(resp: Any) -> None:
+        usage = getattr(resp, "usage", None)
+        if isinstance(usage, dict) and usage:
+            last_usage.clear()
+            last_usage.update(usage)
+
+    def _wrapping_call(provider: Any, method_name: str) -> None:
+        orig = getattr(provider, method_name, None)
+        if not callable(orig):
+            return
+
+        def _wrapped(messages: Any, **kwargs: Any) -> Any:  # type: ignore[no-redef]
+            resp = orig(messages, **kwargs)
+            try:
+                _capture_usage(resp)
+            except Exception:
+                pass
+            return resp
+
+        try:
+            setattr(provider, method_name, _wrapped)
+        except Exception:
+            pass
+
+    provider = getattr(auditor, "provider", None)
+    if provider is not None:
+        _wrapping_call(provider, "complete")
+        _wrapping_call(provider, "audit_chat")
+    return last_usage
+
 def evaluate_reasoning_auditor(
     profile: str = "mock",
     split: str = "heldout",
@@ -245,49 +286,7 @@ def evaluate_reasoning_auditor(
     auditor = ReasoningAuditor(profile=profile)
     actual_model = auditor.model
 
-    # Capture real provider token usage without touching core. The auditor
-    # only surfaces total_tokens; prompt/completion live in the provider
-    # ChatResult.usage dict (mock backends report none and honestly sum to 0).
-    last_usage: dict[str, Any] = {}
-
-    def _capture_usage(resp: Any) -> None:
-        usage = getattr(resp, "usage", None)
-        if isinstance(usage, dict) and usage:
-            last_usage.clear()
-            last_usage.update(usage)
-
-    provider = getattr(auditor, "provider", None)
-    if provider is not None:
-        orig_complete = getattr(provider, "complete", None)
-        if callable(orig_complete):
-            def _wrapped_complete(messages: Any, **kwargs: Any) -> Any:  # type: ignore[no-redef]
-                resp = orig_complete(messages, **kwargs)
-                try:
-                    _capture_usage(resp)
-                except Exception:
-                    pass
-                return resp
-
-            try:
-                provider.complete = _wrapped_complete  # type: ignore[method-assign]
-            except Exception:
-                pass
-        orig_audit_chat = getattr(provider, "audit_chat", None)
-        if callable(orig_audit_chat):
-            def _wrapped_audit_chat(messages: Any, **kwargs: Any) -> Any:  # type: ignore[no-redef]
-                resp = orig_audit_chat(messages, **kwargs)
-                try:
-                    _capture_usage(resp)
-                    # AuditorChatResponse carries no usage; total_tokens if present
-                    # is still captured via audit_res.total_tokens below.
-                except Exception:
-                    pass
-                return resp
-
-            try:
-                provider.audit_chat = _wrapped_audit_chat  # type: ignore[method-assign]
-            except Exception:
-                pass
+    last_usage = attach_usage_capture(auditor)
 
     case_results: list[dict[str, Any]] = []
 

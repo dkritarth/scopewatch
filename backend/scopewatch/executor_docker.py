@@ -281,11 +281,6 @@ def is_docker_available(timeout_s: float = 5.0) -> bool:
         return False
 
 
-# Backwards-compatible alias used by tests.
-def docker_available(timeout_s: float = 5.0) -> bool:
-    return is_docker_available(timeout_s=timeout_s)
-
-
 def build_docker_command(
     *,
     image: str,
@@ -429,7 +424,7 @@ class DockerExecutor:
             )
 
         # Defence in depth: stored-decision checks run on the host before
-        # Docker is touched. Mirrors LocalWorkspaceExecutor invariants.
+        # Docker is touched. Mirrors the local backend invariants.
         if policy_decision is None:
             from scopewatch.executor import ExecutionSecurityError
 

@@ -249,11 +249,6 @@ def test_docker_unavailable_run_command_fails_closed(
 # ---------------- Container round-trips: skipped when Docker absent ----------------
 
 
-@pytest.fixture
-def requires_docker() -> None:
-    if not is_docker_available():
-        pytest.skip("Docker daemon unavailable; skipping Docker integration test.")
-
 
 def _docker_action(argv: list[str], timeout_s: float = 60) -> ActionRequest:
     return _run_command_action(

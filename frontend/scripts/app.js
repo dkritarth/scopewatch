@@ -47,8 +47,23 @@ export const MEDIATION_BOUNDARY_TEXT =
  */
 export const GATEWAY_TOOLS = {
   tools: ["workspace"],
-  operations: ["list_directory", "read_text", "write_text", "delete_path", "network_request"],
+  operations: ["list_directory", "read_text", "write_text", "delete_path", "network_request", "run_command"],
 };
+
+/**
+ * Command string for a submitted (not yet executed) action, preferring the
+ * raw command string over the argv list form. Shared by the synthetic
+ * submit handlers so the derivation lives in one place.
+ */
+export function getSubmittedCommand(args) {
+  if (typeof args.command === "string" && args.command) {
+    return args.command;
+  }
+  if (Array.isArray(args.argv)) {
+    return args.argv.join(" ");
+  }
+  return null;
+}
 
 /**
  * Maximum characters of execution output shown in the evidence panel.
@@ -1061,7 +1076,6 @@ export function transformApiEvent(ev, context = null) {
     resolvedBy: d.resolved_by || null,
     resolutionReason: d.resolution_reason || null,
     executionStatus: d.execution_status || (status === "executed" ? "EXECUTED" : "NOT_EXECUTED"),
-    exitCode: d.exit_code ?? 0,
     resultPreview: d.result_preview || (d.sanitized_result?.preview ?? null),
     executionCommand,
     executionExitCode,
@@ -1245,14 +1259,8 @@ if (typeof document !== "undefined") {
               policyExplanation: "Reasoning audit identified scope concern [EXFILTRATION_INTENT]",
               approvalStatus: "Pending reviewer authorization",
               executionStatus: "NOT_EXECUTED",
-              exitCode: 0,
               resultPreview: null,
-              executionCommand:
-                typeof parsedArgs.command === "string"
-                  ? parsedArgs.command
-                  : Array.isArray(parsedArgs.argv)
-                    ? parsedArgs.argv.join(" ")
-                    : null,
+              executionCommand: getSubmittedCommand(parsedArgs),
               executionExitCode: null,
               executionOutput: null,
               executionTruncated: false,
@@ -1306,14 +1314,8 @@ if (typeof document !== "undefined") {
               policyExplanation: "Operation requires human authorization.",
               approvalStatus: "Pending reviewer authorization",
               executionStatus: "NOT_EXECUTED",
-              exitCode: 0,
               resultPreview: null,
-              executionCommand:
-                typeof parsedArgs.command === "string"
-                  ? parsedArgs.command
-                  : Array.isArray(parsedArgs.argv)
-                    ? parsedArgs.argv.join(" ")
-                    : null,
+              executionCommand: getSubmittedCommand(parsedArgs),
               executionExitCode: null,
               executionOutput: null,
               executionTruncated: false,
@@ -1360,14 +1362,8 @@ if (typeof document !== "undefined") {
               policyExplanation: "Action permitted.",
               approvalStatus: "Not required",
               executionStatus: "EXECUTED",
-              exitCode: 0,
               resultPreview: "Synthetic preview output",
-              executionCommand:
-                typeof parsedArgs.command === "string"
-                  ? parsedArgs.command
-                  : Array.isArray(parsedArgs.argv)
-                    ? parsedArgs.argv.join(" ")
-                    : null,
+              executionCommand: getSubmittedCommand(parsedArgs),
               executionExitCode: null,
               executionOutput: null,
               executionTruncated: false,
