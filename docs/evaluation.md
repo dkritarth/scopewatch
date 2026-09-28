@@ -90,6 +90,25 @@ PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile
 PYTHONPATH=backend pytest backend/tests/test_evaluation_harness.py -v
 ```
 
+### Held-out tuning guard (fail closed)
+
+`--max-trace-chars` and `--audit-timeout-s` are dev-only tuning knobs: they
+change auditor behaviour, so they are accepted with `--split dev` (and pinned
+in the report's `auditor_settings`) but refused outright with
+`--split heldout`:
+
+```bash
+PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py \
+  --profile mock --split heldout --max-trace-chars 500
+# error: Refusing held-out run with tuning flags (--max-trace-chars=500). ...
+# exit code 2
+```
+
+There is no bypass flag. Tune on `dev`, then measure held-out once with pinned
+defaults. Prompt-text tuning happens in code, so the same rule applies by
+discipline: never adjust prompts against held-out cases
+(`backend/fixtures/eval/README.md`).
+
 ### Live Model Evaluation
 
 To evaluate on real models via OpenRouter or Nebius providers, specify the configured profile and supply API keys in the environment:
@@ -125,6 +144,48 @@ To guarantee provenance and auditability, each report records:
 ### Privacy Safeguards
 
 The report records case identifiers, category tags, expected verdicts, actual verdicts, matched excerpts counts, token counts, and error codes. Raw reasoning traces, auditor explanations, and private arguments are omitted from evaluation reports to prevent accidental data leaks (`backend/scripts/evaluate_reasoning_audit.py:315-332`; explanations stay in console/logs only via `logger.debug`).
+
+### Report checker (`--check`)
+
+A saved report is verified, never trusted. `--check` recomputes every metric
+from the per-case `results` with `compute_metrics` and fails on any mismatch
+with the report-supplied totals; it also enforces the pinned-metadata schema,
+rejects forbidden per-case keys (`reasoning_trace`, `explanation`, ...),
+rejects duplicate/unknown case rows, checks `dataset_cases_count` against
+`len(results)`, and re-hashes the pinned `dataset_file`, failing on hash
+mismatch:
+
+```bash
+PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py \
+  --profile mock --split heldout --output reports/heldout_mock.json --quiet
+
+PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py \
+  --check reports/heldout_mock.json
+# REPORT CHECK PASSED: reports/heldout_mock.json (48 cases recomputed clean)
+```
+
+Checker coverage lives in `backend/tests/test_eval_harness_hardening.py`
+(mutated totals, leaked explanation/trace, bad hash, missing metadata,
+duplicate ids, empty and single-sided splits, `--check` CLI paths).
+
+### Live held-out run — PENDING (needs-human, not attempted)
+
+One live held-out run on `nebius-demo` (or the spike's fallback) is still
+required by #32 and was NOT attempted here: this machine has no provider key,
+and overnight work is offline-only by rule. The human run is:
+
+```bash
+NEBIUS_API_KEY="..." PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py \
+  --profile nebius-demo \
+  --split heldout \
+  --output reports/heldout_nebius_nemotron.json
+```
+
+Record in the PR (not under `logs/`): model ID as served, date, prompt
+version, case-file hash, and the full metrics table (accuracy, FNR, FHR,
+failure rate, latency p50/p95, tokens), plus any divergence from the mock
+structural numbers below. Then run `--check` on the saved report and paste
+that verdict too.
 
 ### Latest Mock Held-out Result (structural test, not accuracy)
 
