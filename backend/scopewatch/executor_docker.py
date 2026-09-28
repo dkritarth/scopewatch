@@ -30,6 +30,7 @@ from scopewatch.schemas import (
     ApprovalRequest,
     ExecutionReceipt,
     PolicyDecision,
+    TaskScope,
 )
 
 # Pinned base image digest (Debian bookworm slim Python).
@@ -387,6 +388,24 @@ def _stage_workspace_copy(workspace_root: Path) -> tuple[Path, Path]:
     return staging_root, workspace_copy
 
 
+def _load_scope_from_store(
+    action: ActionRequest, db_path: Path | str
+) -> Optional[TaskScope]:
+    """Best-effort load of the run's task scope; None when unverifiable."""
+    try:
+        from scopewatch.db import get_connection
+        from scopewatch.repository import ScopewatchRepository
+
+        conn = get_connection(db_path)
+        try:
+            run = ScopewatchRepository.get_run(conn, action.run_id)
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    return run.task_scope if run is not None else None
+
+
 class DockerExecutor:
     """Execute actions inside a per-run hardened container."""
 
@@ -404,6 +423,8 @@ class DockerExecutor:
         workspace_root: Path,
         policy_decision: Optional[PolicyDecision] = None,
         approval_request: Optional[ApprovalRequest] = None,
+        db_path: Optional[Path | str] = None,
+        task_scope: Optional[TaskScope] = None,
     ) -> ExecutionReceipt:
         receipt_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc).isoformat()
@@ -446,10 +467,12 @@ class DockerExecutor:
                 operation=action.operation,
             )
         if policy_decision.outcome == PolicyOutcome.HOLD:
+            # Single-use (issue #66): only a live APPROVED approval bound to
+            # this exact action executes. CONSUMED approvals never execute;
+            # the service presents APPROVED and consumes afterwards.
             if (
                 approval_request is None
-                or approval_request.status
-                not in (ApprovalStatus.APPROVED, ApprovalStatus.CONSUMED)
+                or approval_request.status != ApprovalStatus.APPROVED
                 or approval_request.action_request_id != action.id
             ):
                 from scopewatch.executor import ExecutionSecurityError
@@ -457,6 +480,18 @@ class DockerExecutor:
                 raise ExecutionSecurityError(
                     "Held action requires valid approved status to execute."
                 )
+            # Verifiable single-use: with a store handle, consult the stored
+            # approval, the execution receipt, and the run status.
+            if db_path is not None:
+                from scopewatch.executor import _verify_stored_approval_single_use
+
+                _verify_stored_approval_single_use(action, approval_request, db_path)
+        elif db_path is not None:
+            # Non-held actions carry no approval, but a store handle still
+            # binds them to the run lifecycle.
+            from scopewatch.executor import _verify_stored_run_not_terminal
+
+            _verify_stored_run_not_terminal(action, db_path)
         if action.operation == "network_request":
             from scopewatch.executor import ExecutionSecurityError
 
@@ -478,6 +513,33 @@ class DockerExecutor:
                 )
             except OSError:
                 return _failed("EXECUTION_FAILED", "Workspace staging failed.")
+            # run_command (issue #68): revalidate the path-bearing argv and
+            # the cwd against the run scope in the STAGED workspace
+            # immediately before dispatch. A symlink swapped between the
+            # policy decision and staging resolves to its staged target
+            # here; a blocked or escaping target refuses dispatch before
+            # any container is invoked.
+            if action.operation == "run_command":
+                scope_for_revalidation = task_scope
+                if scope_for_revalidation is None and db_path is not None:
+                    scope_for_revalidation = _load_scope_from_store(action, db_path)
+                    if scope_for_revalidation is None:
+                        return _failed(
+                            "EXECUTION_FAILED",
+                            "run_command scope unavailable; failing closed.",
+                        )
+                if scope_for_revalidation is not None:
+                    from scopewatch.policy import revalidate_run_command_in_workspace
+
+                    denial = revalidate_run_command_in_workspace(
+                        action, scope_for_revalidation, workspace_copy
+                    )
+                    if denial is not None:
+                        reason_code, _explanation, _matched_rule = denial
+                        return _failed(
+                            reason_code.value,
+                            "run_command dispatch refused: staged path revalidation failed.",
+                        )
             # run_command (issue #36): normalize argv + timeout on the host so
             # the container always receives the argv list form with no shell.
             # The policy already allowlisted the command; a failure to
@@ -585,6 +647,8 @@ def execute_action_docker(
     policy_decision: Optional[PolicyDecision] = None,
     approval_request: Optional[ApprovalRequest] = None,
     image: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+    task_scope: Optional[TaskScope] = None,
 ) -> ExecutionReceipt:
     """Convenience wrapper used by the gateway entry point and tests."""
     return DockerExecutor(image=image).execute(
@@ -592,4 +656,6 @@ def execute_action_docker(
         workspace_root,
         policy_decision=policy_decision,
         approval_request=approval_request,
+        db_path=db_path,
+        task_scope=task_scope,
     )

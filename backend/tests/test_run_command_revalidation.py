@@ -219,20 +219,33 @@ def test_docker_dispatch_refuses_swapped_symlink_before_invoke(
 
 
 def test_docker_dispatch_proceeds_when_symlink_unchanged(
-    swap_workspace: Path, swap_run: Run, docker_backend: None, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, swap_run: Run, docker_backend: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Control: no swap -> dispatch proceeds (mocked container success)."""
+    """Control: no swap -> dispatch proceeds (mocked container success).
+
+    Uses a symlink-free workspace: the staged copy-back on origin/main
+    cannot overwrite a pre-existing symlink (shutil.Error, fails closed),
+    which is orthogonal to revalidation and filed separately. The
+    no-false-positive case for an unswapped symlink is covered at the
+    helper level by test_helper_passes_before_swap.
+    """
     from scopewatch.models import ExecutionStatus
 
-    action = _cat_action(swap_run)
-    decision = evaluate_policy(action, swap_run, swap_workspace)
+    ws = tmp_path / "workspace"
+    (ws / "tests").mkdir(parents=True)
+    (ws / "tests" / "allowed.txt").write_text("synthetic allowed", encoding="utf-8")
+    (ws / "secrets").mkdir(parents=True)
+    (ws / "secrets" / "notes.txt").write_text(BLOCKED_SENTINEL, encoding="utf-8")
+
+    action = _cat_action(swap_run, argv=["cat", "tests/allowed.txt"])
+    decision = evaluate_policy(action, swap_run, ws)
     assert decision.outcome == PolicyOutcome.ALLOW
 
     calls: list = []
-    _mock_docker(monkeypatch, calls, payload=_executed_payload(["cat", "link"]))
+    _mock_docker(monkeypatch, calls, payload=_executed_payload(["cat", "tests/allowed.txt"]))
     receipt = DockerExecutor().execute(
         action,
-        swap_workspace,
+        ws,
         policy_decision=decision,
         task_scope=swap_run.task_scope,
     )

@@ -453,15 +453,14 @@ def test_allow_on_terminal_run_refused_via_store(
 
 
 def test_docker_store_check_runs_before_daemon(
-    su_service: dict, docker_backend: None, monkeypatch: pytest.MonkeyPatch
+    su_service: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Docker backend consults the store (and refuses) before touching Docker."""
     import scopewatch.executor_docker as docker_mod
 
-    def _no_daemon(*args: object, **kwargs: object) -> bool:
-        raise AssertionError("Docker must not be consulted on store refusal")
-
-    monkeypatch.setattr(docker_mod, "is_docker_available", _no_daemon)
+    # The service flow itself runs on the local backend; only the replay
+    # attempt below runs under the Docker backend selector.
+    monkeypatch.delenv("SCOPEWATCH_EXECUTOR", raising=False)
     service: ScopewatchService = su_service["service"]
     res = _submit_hold(su_service)
     assert res.approval_request is not None
@@ -471,6 +470,13 @@ def test_docker_store_check_runs_before_daemon(
         )
     )
     assert resolved.approval_request.status == ApprovalStatus.CONSUMED
+
+    monkeypatch.setenv("SCOPEWATCH_EXECUTOR", "docker")
+
+    def _no_daemon(*args: object, **kwargs: object) -> bool:
+        raise AssertionError("Docker must not be consulted on store refusal")
+
+    monkeypatch.setattr(docker_mod, "is_docker_available", _no_daemon)
     with pytest.raises(ExecutionSecurityError):
         execute_action(
             res.action_request,
