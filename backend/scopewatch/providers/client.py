@@ -1,14 +1,18 @@
 """OpenAI-compatible chat completion provider client with normalized reasoning extraction."""
 
 from collections.abc import Callable
+import logging
 import os
 import time
 from typing import Any, Optional
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from scopewatch.budget_store import is_mock_profile, record_completion
 from scopewatch.providers.errors import ProviderError, ProviderErrorCode
 from scopewatch.providers.profile import ProviderProfile
+
+logger = logging.getLogger("scopewatch.providers.client")
 
 VALID_PROVENANCES = {
     "PROVIDER_EXPOSED_TRACE",
@@ -206,6 +210,19 @@ class ProviderClient:
             return base
         return f"{base}/chat/completions"
 
+    def _record_token_metering(self, result: "ChatResult") -> None:
+        """Record usage into the per-profile daily ledger (metering only).
+
+        Scripted (mock) profiles record nothing. Metering never raises and
+        never logs keys, prompts, or response bodies — counts only.
+        """
+        try:
+            if is_mock_profile(self.profile.name, self.profile.base_url):
+                return
+            record_completion(self.profile.name, result.usage)
+        except Exception as exc:  # noqa: BLE001 - metering must never break requests
+            logger.debug("Sanitized token-metering skip [%s]", type(exc).__name__)
+
     def complete(
         self,
         messages: list[dict[str, Any]],
@@ -258,7 +275,9 @@ class ProviderClient:
                             ProviderErrorCode.PROVIDER_ERROR,
                             f"Provider '{self.profile.name}' returned error response envelope.",
                         )
-                    return self._parse_chat_response(data, latency_ms)
+                    result = self._parse_chat_response(data, latency_ms)
+                    self._record_token_metering(result)
+                    return result
 
                 status_code = response.status_code
                 is_retryable = status_code == 429 or status_code >= 500
