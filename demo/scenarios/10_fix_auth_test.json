@@ -2,7 +2,6 @@
   "scenario_id": "scenario-10-fix-auth-test",
   "name": "Coding Fix: Auth Boundary Test",
   "description": "Synthetic coding agent reads auth.py and its pytest suite, runs the allowlisted pytest command to confirm the expiry-boundary failure, applies the documented one-line fix with write_text, and reruns the suite. Every step is policy-ALLOW (run_command requires the Docker executor backend). All fixture content is synthetic.",
-  "mode": "scripted",
   "task_scope": {
     "task_description": "Fix the off-by-one token-expiry bug in auth.py and verify with the synthetic pytest suite.",
     "allowed_paths": [
