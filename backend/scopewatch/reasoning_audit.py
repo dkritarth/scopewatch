@@ -572,8 +572,9 @@ def parse_auditor_output(
 class MockAuditorProvider:
     """Deterministic offline rule-based and canned mock auditor for tests.
 
-    Provides a fast, zero-network baseline and deterministic response queues
-    for verifying security handling, ungrounded excerpt handling, and timeouts.
+    Structural-only baseline: fast, zero-network fixture for verifying
+    grounding, fail-closed handling, truncation, and timeout paths. It is
+    NOT an accurate detector and must never be presented as one.
     """
 
     INJECTION_PATTERNS: list[str] = [

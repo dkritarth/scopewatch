@@ -108,7 +108,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     }, { timeout: 10000 });
 
     // 3. Switch to the live run
-    const liveRunButton = page.locator('button:has-text("Live")').first();
+    const liveRunButton = page.locator('#run-buttons button:has-text("Live")').first();
     await liveRunButton.waitFor();
     await liveRunButton.click();
     assert.equal(await liveRunButton.getAttribute("aria-pressed"), "true");
@@ -165,8 +165,10 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     await approvalCard.waitFor({ timeout: 8000 });
     assert.match(await approvalCard.innerText(), /delete_path/);
 
-    // Approve the action
+    // Approve the action (double-confirm: first click arms, second fires)
     const approveBtn = approvalCard.locator(".btn-approve");
+    await approveBtn.click();
+    assert.equal(await approveBtn.innerText(), "Confirm approve");
     await approveBtn.click();
 
     // Wait for approval card to be removed upon resolution

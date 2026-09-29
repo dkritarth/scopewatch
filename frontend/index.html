@@ -37,9 +37,13 @@
         <p class="safety-banner" id="synthetic-banner">
           <strong>Synthetic demo gateway.</strong> This local baseline mediates only actions submitted through its synthetic demo gateway. It does not intercept arbitrary host or agent operations. No actual enforcement outside the synthetic sandbox. Preview controls change this page only.
         </p>
-        <p class="mediation-boundary" id="mediation-boundary">
-          <strong>Mediation boundary.</strong> All tool actions go through the gateway API; actions that bypass the API are not observed, blocked, or recorded. See docs/ARCHITECTURE.md (Mediation boundary).
-        </p>
+          <p class="mediation-boundary" id="mediation-boundary">
+            <strong>Mediation boundary.</strong> All tool actions go through the gateway API; actions that bypass the API are not observed, blocked, or recorded. See docs/ARCHITECTURE.md (Mediation boundary).
+          </p>
+          <div class="stale-banner" id="sse-banner" role="status" hidden>
+            <span id="sse-banner-text"></span>
+            <button type="button" id="sse-retry">Retry live stream</button>
+          </div>
       </header>
 
       <noscript>This synthetic replay viewer needs JavaScript. No live actions are connected.</noscript>
@@ -50,6 +54,8 @@
             <p>Select a synthetic run or replay.</p>
           </div>
           <div class="run-buttons" id="run-buttons" role="group" aria-label="Select synthetic replay run"></div>
+          <p class="panel-status" id="runs-status" role="status" hidden></p>
+          <button type="button" id="runs-retry" class="retry-btn" hidden>Retry loading runs</button>
           <section class="scope-card" aria-labelledby="scope-heading">
             <h3 id="scope-heading">Task scope</h3>
             <p id="run-task"></p>
@@ -129,6 +135,7 @@
             </div>
           </form>
           <ol id="timeline" class="timeline"></ol>
+          <p class="panel-status" id="timeline-status" role="status" hidden></p>
           <div id="empty-state" class="empty-state" hidden>
             <h3>No matching replay events</h3>
             <p>Adjust the status or text filters to see more of this synthetic run.</p>
@@ -143,6 +150,8 @@
             <div id="approvals-list" class="approvals-list">
               <p id="no-approvals-msg" class="no-approvals-msg">No pending approvals.</p>
             </div>
+            <p class="panel-status" id="approvals-status" role="status" hidden></p>
+            <button type="button" id="approvals-retry" class="retry-btn" hidden>Retry loading approvals</button>
           </section>
         </section>
 
