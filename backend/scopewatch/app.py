@@ -9,13 +9,20 @@ from typing import Optional
 from fastapi import Depends, FastAPI, Header, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from scopewatch import __version__
 from scopewatch.config import DB_PATH, DEMO_REVIEWER_ID, WORKSPACE_ROOT
 from scopewatch.db import init_db
+from scopewatch.demo_guards import (
+    DemoGuardConfig,
+    DemoGuardPolicy,
+    DemoGuardRefusal,
+    client_ip_from,
+    is_mutating_api_call,
+)
 from scopewatch.errors import (
     ScopewatchAPIError,
     generic_error_handler,
@@ -43,6 +50,29 @@ logger = logging.getLogger("scopewatch.app")
 frontend_dir = Path(__file__).resolve().parent.parent.parent / "frontend"
 
 
+async def demo_guard_refusal_handler(request: Request, exc: DemoGuardRefusal) -> JSONResponse:
+    """Render demo-guard/token-budget refusals as flat sanitized JSON.
+
+    Shape: {"error": "<code>", "message": "<msg>"} with Retry-After where apt.
+    Never echoes tokens, keys, prompts, traces, or provider bodies.
+    """
+    headers = {}
+    if exc.retry_after_s > 0:
+        headers["Retry-After"] = str(exc.retry_after_s)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.code, "message": exc.message},
+        headers=headers,
+    )
+
+
+def request_client_ip(request: Request) -> str:
+    """Best-effort client IP for per-IP rate limiting (X-Forwarded-For aware)."""
+    lowered = {key.lower(): value for key, value in request.headers.items()}
+    peer = request.client.host if request.client else "unknown"
+    return client_ip_from(lowered, peer)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: ensure database and demo workspace root exist
@@ -56,6 +86,7 @@ def create_app(
     db_path: Path | str = DB_PATH,
     workspace_root: Path | str = WORKSPACE_ROOT,
     auditor: Optional[ReasoningAuditor] = None,
+    demo_config: Optional[DemoGuardConfig] = None,
 ) -> FastAPI:
     actual_db_path = Path(db_path)
     actual_workspace_root = Path(workspace_root)
@@ -80,9 +111,33 @@ def create_app(
     # Register standardized error handlers
     app.add_exception_handler(ScopewatchAPIError, scopewatch_api_error_handler)  # type: ignore
     app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore
+    app.add_exception_handler(DemoGuardRefusal, demo_guard_refusal_handler)  # type: ignore
     app.add_exception_handler(Exception, generic_error_handler)
 
-    service = ScopewatchService(db_path=db_path, workspace_root=workspace_root, auditor=auditor)
+    # Gateway-native demo guards (#76): one shared policy for the token
+    # middleware and the service so rate/budget state never diverges.
+    guards = DemoGuardPolicy(demo_config if demo_config is not None else DemoGuardConfig.from_env())
+    app.state.guards = guards
+
+    @app.middleware("http")
+    async def demo_token_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+        """Require the shared demo token on mutating /api/* (demo mode only).
+
+        Health, dashboard reads, and static assets stay public. Denials are
+        flat {"error", "message"} JSON; the token is never echoed or logged.
+        """
+        if guards.config.enabled and is_mutating_api_call(request.method, request.url.path):
+            decision = guards.check_token(request.headers.get("x-demo-token"))
+            if not decision.allowed:
+                return JSONResponse(
+                    status_code=decision.status,
+                    content={"error": decision.code, "message": decision.message},
+                )
+        return await call_next(request)
+
+    service = ScopewatchService(
+        db_path=db_path, workspace_root=workspace_root, auditor=auditor, guards=guards
+    )
     app.state.service = service
 
     def get_service() -> ScopewatchService:
@@ -125,8 +180,14 @@ def create_app(
         return svc.list_runs()
 
     @app.post("/api/v1/runs", response_model=Run, status_code=status.HTTP_201_CREATED)
-    def create_run(req: CreateRunRequest, svc: ScopewatchService = Depends(get_service)) -> Run:
-        run, _ = svc.create_run(name=req.name, task_scope=req.task_scope)
+    def create_run(
+        req: CreateRunRequest,
+        request: Request,
+        svc: ScopewatchService = Depends(get_service),
+    ) -> Run:
+        run, _ = svc.create_run(
+            name=req.name, task_scope=req.task_scope, client_ip=request_client_ip(request)
+        )
         return run
 
     @app.get("/api/v1/runs/{run_id}", response_model=Run)
