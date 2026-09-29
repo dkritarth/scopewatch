@@ -119,18 +119,159 @@ export async function getEvents(runId, afterSequence = null) {
 }
 
 /**
- * Connect to live Server-Sent Events stream with automated fallback to polling.
+ * Backoff schedule shared by SSE reconnects and failed-fetch retries.
+ * Exponential: baseMs * 2^attempt, capped at maxMs. Pure and exported so
+ * unit tests pin the schedule instead of wall-clock timers.
  */
-export function connectLiveEvents(runId, { onEvent, onStatusChange, initialSequence = 0 }) {
+export const RECONNECT_BASE_DELAY_MS = 1000;
+export const RECONNECT_MAX_DELAY_MS = 30000;
+
+export function computeBackoffDelay(attempt, baseMs = RECONNECT_BASE_DELAY_MS, maxMs = RECONNECT_MAX_DELAY_MS) {
+  const n = Math.max(0, Math.floor(Number(attempt) || 0));
+  const base = Math.max(0, Number(baseMs) || 0);
+  const cap = Math.max(0, Number(maxMs) || 0);
+  return Math.min(base * 2 ** n, cap);
+}
+
+/** SSE reconnect schedule: 1s, 2s, 4s, ... capped at 30s. */
+export function computeReconnectDelay(attempt) {
+  return computeBackoffDelay(attempt, RECONNECT_BASE_DELAY_MS, RECONNECT_MAX_DELAY_MS);
+}
+
+/**
+ * Parse one SSE `data:` payload into a live event object.
+ * Malformed frames are logged and skipped (returns null) — never thrown —
+ * so one bad frame cannot crash the timeline (#hardening: malformed-frame
+ * tolerance). Callers must check for null.
+ */
+export function parseLiveFrame(data) {
+  if (typeof data !== "string" || data.trim() === "") {
+    console.warn("[scopewatch] skipping malformed live frame: empty or non-string payload");
+    return null;
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    console.warn("[scopewatch] skipping malformed live frame: invalid JSON");
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    console.warn("[scopewatch] skipping malformed live frame: expected a JSON object");
+    return null;
+  }
+  return parsed;
+}
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Run an async `task(attempt)` with exponential-backoff retries.
+ * Resolves with the first success; rethrows the last error after
+ * `retries` failed retries. `sleep` is injectable so unit tests assert the
+ * schedule without waiting. Used for failed-fetch retry on approvals/runs.
+ */
+export async function withRetry(task, { retries = 2, baseDelayMs = 300, maxDelayMs = 5000, sleep = defaultSleep } = {}) {
+  const maxRetries = Math.max(0, Math.floor(Number(retries) || 0));
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await task(attempt);
+    } catch (err) {
+      if (attempt >= maxRetries) throw err;
+      await sleep(computeBackoffDelay(attempt, baseDelayMs, maxDelayMs));
+      attempt += 1;
+    }
+  }
+}
+
+/**
+ * Every EventType the backend gateway can emit over SSE
+ * (backend/scopewatch/models.py `EventType`, streamed by `app.py`
+ * `GET /api/v1/runs/{run_id}/events/stream`). Kept as an exported constant
+ * so unit tests can assert the subscription tracks the backend 1:1 instead
+ * of drifting silently (defect 3a: POLICY_HELD, REASONING_AUDIT_COMPLETED,
+ * REASONING_AUDIT_FAILED were omitted and never rendered live).
+ */
+export const LIVE_EVENT_TYPES = [
+  "RUN_CREATED",
+  "ACTION_REQUESTED",
+  "POLICY_ALLOWED",
+  "POLICY_DENIED",
+  "POLICY_HELD",
+  "APPROVAL_REQUESTED",
+  "APPROVAL_GRANTED",
+  "APPROVAL_DENIED",
+  "APPROVAL_EXPIRED",
+  "EXECUTION_STARTED",
+  "EXECUTION_SUCCEEDED",
+  "EXECUTION_FAILED",
+  "RUN_COMPLETED",
+  "SYSTEM_ERROR",
+  "REASONING_AUDIT_COMPLETED",
+  "REASONING_AUDIT_FAILED",
+];
+
+/**
+ * Connect to live Server-Sent Events stream with automated fallback to polling.
+ *
+ * Robustness contract (frontend hardening):
+ * - Every inbound frame goes through `parseLiveFrame`: malformed frames are
+ *   logged and skipped, never delivered to `onEvent`, never thrown.
+ * - SSE errors report `reconnecting` with the backoff schedule
+ *   (`computeReconnectDelay`) instead of failing silently; a permanent close
+ *   falls back to polling.
+ * - `staleAfterMs` (default 45s) emits a `stale` status when no frame arrives
+ *   in time, driving the dashboard's stale banner. Any valid frame resets it.
+ */
+export const STALE_AFTER_MS = 45000;
+
+export function connectLiveEvents(runId, { onEvent, onStatusChange, initialSequence = 0, staleAfterMs = STALE_AFTER_MS }) {
   let isClosed = false;
   let eventSource = null;
   let pollInterval = null;
   let lastSequence = initialSequence;
+  let reconnectAttempt = 0;
+  let staleTimer = null;
 
   function setStatus(status, detail = "") {
     if (!isClosed && onStatusChange) {
       onStatusChange({ status, detail });
     }
+  }
+
+  function armStaleTimer() {
+    clearStaleTimer();
+    if (isClosed) return;
+    const after = Math.max(0, Number(staleAfterMs) || 0);
+    if (after === 0) return;
+    staleTimer = setTimeout(() => {
+      staleTimer = null;
+      if (!isClosed) {
+        setStatus("stale", `No live frames for ${Math.round(after / 1000)}s. Showing last known state.`);
+      }
+    }, after);
+    if (typeof staleTimer.unref === "function") staleTimer.unref();
+  }
+
+  function clearStaleTimer() {
+    if (staleTimer) {
+      clearTimeout(staleTimer);
+      staleTimer = null;
+    }
+  }
+
+  function deliver(rawData) {
+    const ev = parseLiveFrame(rawData);
+    if (!ev) return;
+    reconnectAttempt = 0;
+    armStaleTimer();
+    if (ev.sequence && ev.sequence > lastSequence) {
+      lastSequence = ev.sequence;
+    }
+    onEvent(ev);
   }
 
   function startPolling() {
@@ -169,55 +310,29 @@ export function connectLiveEvents(runId, { onEvent, onStatusChange, initialSeque
       eventSource = new EventSource(url);
 
       eventSource.onopen = () => {
+        reconnectAttempt = 0;
         stopPolling();
+        armStaleTimer();
         setStatus("connected", "Live SSE stream connected.");
       };
 
       eventSource.onmessage = (e) => {
-        try {
-          const ev = JSON.parse(e.data);
-          if (ev.sequence && ev.sequence > lastSequence) {
-            lastSequence = ev.sequence;
-          }
-          onEvent(ev);
-        } catch {
-          // Keepalive or comment
-        }
+        deliver(e.data);
       };
 
       eventSource.addEventListener("connected", () => {
+        reconnectAttempt = 0;
         stopPolling();
+        armStaleTimer();
         setStatus("connected", "Live SSE stream connected.");
       });
 
-      // Register all domain event types
-      const eventTypes = [
-        "RUN_CREATED",
-        "RUN_COMPLETED",
-        "ACTION_REQUESTED",
-        "POLICY_ALLOWED",
-        "POLICY_DENIED",
-        "POLICY_HELD_FOR_APPROVAL",
-        "APPROVAL_REQUESTED",
-        "APPROVAL_GRANTED",
-        "APPROVAL_DENIED",
-        "APPROVAL_EXPIRED",
-        "EXECUTION_STARTED",
-        "EXECUTION_SUCCEEDED",
-        "EXECUTION_FAILED",
-      ];
+      // Register all domain event types (see LIVE_EVENT_TYPES above).
+      const eventTypes = LIVE_EVENT_TYPES;
 
       for (const eventType of eventTypes) {
         eventSource.addEventListener(eventType, (e) => {
-          try {
-            const ev = JSON.parse(e.data);
-            if (ev.sequence && ev.sequence > lastSequence) {
-              lastSequence = ev.sequence;
-            }
-            onEvent(ev);
-          } catch {
-            // Ignore parse errors
-          }
+          deliver(e.data);
         });
       }
 
@@ -227,7 +342,9 @@ export function connectLiveEvents(runId, { onEvent, onStatusChange, initialSeque
           eventSource = null;
           startPolling();
         } else {
-          setStatus("reconnecting", "Reconnecting live stream...");
+          const delayMs = computeReconnectDelay(reconnectAttempt);
+          reconnectAttempt += 1;
+          setStatus("reconnecting", `Reconnecting live stream (attempt ${reconnectAttempt}, retry in ${Math.round(delayMs / 1000)}s)...`);
         }
       };
     } catch {
@@ -240,6 +357,7 @@ export function connectLiveEvents(runId, { onEvent, onStatusChange, initialSeque
   return {
     close() {
       isClosed = true;
+      clearStaleTimer();
       if (eventSource) {
         eventSource.close();
         eventSource = null;
@@ -249,6 +367,9 @@ export function connectLiveEvents(runId, { onEvent, onStatusChange, initialSeque
     },
     getLastSequence() {
       return lastSequence;
+    },
+    getReconnectAttempt() {
+      return reconnectAttempt;
     },
   };
 }

@@ -1,4 +1,9 @@
-"""Controlled synthetic executor operating within a restricted workspace."""
+"""Controlled synthetic executor operating within a restricted workspace.
+
+Single entry point is :func:`execute_action`, which dispatches to the
+backend selected by ``SCOPEWATCH_EXECUTOR=local|docker|remote``
+(default ``local``).
+"""
 
 from datetime import datetime, timezone
 import os
@@ -13,11 +18,20 @@ from scopewatch.models import (
     PolicyOutcome,
     SUPPORTED_OPERATIONS,
 )
-from scopewatch.schemas import ActionRequest, ApprovalRequest, ExecutionReceipt, PolicyDecision
+from scopewatch.path_access import normalize_relative_path, scoped_path_reason
+from scopewatch.schemas import ActionRequest, ApprovalRequest, ExecutionReceipt, PolicyDecision, TaskScope
 
 
 class ExecutionSecurityError(Exception):
     """Raised when execution invariants or policy boundaries are violated."""
+
+
+LOCAL_EXECUTOR_NAME = "synthetic-workspace-executor"
+
+
+def get_executor_backend() -> str:
+    """Return the configured executor backend name (``local`` by default)."""
+    return os.environ.get("SCOPEWATCH_EXECUTOR", "local").strip().lower() or "local"
 
 
 def _verify_workspace_containment(workspace_root: Path, target_path: Path) -> Path:
@@ -31,13 +45,34 @@ def _verify_workspace_containment(workspace_root: Path, target_path: Path) -> Pa
     return resolved_target
 
 
-def execute_action(
+def _verify_scoped_target(
+    workspace_root: Path, resource: str, task_scope: Optional[TaskScope],
+    *, require_allowed: bool = True,
+) -> Path:
+    """Re-resolve immediately before execution; use the checked target for I/O."""
+    root = workspace_root.resolve()
+    requested = normalize_relative_path(resource)
+    target = _verify_workspace_containment(root, root / requested)
+    canonical = target.relative_to(root)
+    if task_scope is None:
+        # A direct caller without scope evidence cannot authorize an alias.
+        if canonical != requested:
+            raise ExecutionSecurityError("Symlink target requires task scope evidence.")
+    else:
+        allowed = task_scope.allowed_paths if require_allowed else ["."]
+        if scoped_path_reason(requested, canonical, allowed, task_scope.blocked_paths):
+            raise ExecutionSecurityError("Resolved path violates the task scope.")
+    return target
+
+
+def _execute_local(
     action: ActionRequest,
     workspace_root: Path,
     policy_decision: Optional[PolicyDecision] = None,
     approval_request: Optional[ApprovalRequest] = None,
+    task_scope: Optional[TaskScope] = None,
 ) -> ExecutionReceipt:
-    """Execute an authorized action inside the synthetic workspace."""
+    """Execute an authorized action inside the synthetic workspace (local backend)."""
     receipt_id = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc).isoformat()
 
@@ -76,12 +111,20 @@ def execute_action(
     if action.operation == "network_request":
         raise ExecutionSecurityError("Network requests are forbidden in synthetic executor.")
 
+    # Invariant: run_command is Docker-only (policy denies it for the local
+    # backend, but the executor refuses it too as defence in depth).
+    if action.operation == "run_command":
+        raise ExecutionSecurityError(
+            "run_command requires the Docker executor (SCOPEWATCH_EXECUTOR=docker)."
+        )
+
     # Target path resolution
     resolved_workspace = workspace_root.resolve()
-    target_path = resolved_workspace / action.resource
 
     try:
-        _verify_workspace_containment(resolved_workspace, target_path)
+        target_path = _verify_scoped_target(
+            resolved_workspace, action.resource, task_scope
+        )
 
         if action.operation == "list_directory":
             if not target_path.exists():
@@ -251,3 +294,48 @@ def execute_action(
             resource=action.resource,
             operation=action.operation,
         )
+
+
+def execute_action(
+    action: ActionRequest,
+    workspace_root: Path,
+    policy_decision: Optional[PolicyDecision] = None,
+    approval_request: Optional[ApprovalRequest] = None,
+    task_scope: Optional[TaskScope] = None,
+) -> ExecutionReceipt:
+    """Single gateway entry point; dispatches to the configured backend.
+
+    ``SCOPEWATCH_EXECUTOR=docker`` selects the Docker-isolated backend,
+    ``SCOPEWATCH_EXECUTOR=remote`` selects the executor-runner sidecar
+    client (issue #78; the only socket-holding process), and anything else
+    (including unset) selects the local backend. Remote and Docker failures
+    fail closed inside their own backend and never fall back to local
+    execution.
+    """
+    backend = get_executor_backend()
+    if backend == "docker":
+        from scopewatch.executor_docker import DockerExecutor
+
+        return DockerExecutor().execute(
+            action,
+            workspace_root,
+            policy_decision=policy_decision,
+            approval_request=approval_request,
+            task_scope=task_scope,
+        )
+    if backend == "remote":
+        from scopewatch.executor_remote import RemoteExecutor
+
+        return RemoteExecutor().execute(
+            action,
+            workspace_root,
+            policy_decision=policy_decision,
+            approval_request=approval_request,
+        )
+    return _execute_local(
+        action,
+        workspace_root,
+        policy_decision=policy_decision,
+        approval_request=approval_request,
+        task_scope=task_scope,
+    )

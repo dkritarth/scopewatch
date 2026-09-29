@@ -17,7 +17,7 @@ The numbers below are shadow prices. Work performed through a ChatGPT or Codex s
 # 1. Install backend dependencies in virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r backend/requirements.txt
+pip install --require-hashes -r backend/requirements.lock
 
 # 2. Install frontend dependencies
 npm ci --prefix frontend
@@ -29,6 +29,46 @@ npx --prefix frontend playwright install --with-deps chromium
 # 4. Launch the integrated demonstration
 ./scripts/run_demo.sh
 ```
+
+### Python dependency lock files
+
+`backend/requirements.txt` and `poc/cot-auditing/requirements.txt` are the
+human-readable inputs (version ranges). The pinned, hashed outputs are
+`backend/requirements.lock` and `poc/cot-auditing/requirements.lock`.
+Always install from the lock files so every machine gets the same bytes:
+
+```bash
+pip install --require-hashes -r backend/requirements.lock
+pip install --require-hashes -r poc/cot-auditing/requirements.lock
+```
+
+Regenerate the locks with Python 3.12.3 and uv 0.12.18 (`--python-version 3.12`
+matches CI's `setup-python: '3.12'`):
+
+```bash
+uv pip compile backend/requirements.txt --generate-hashes --python-version 3.12 -o backend/requirements.lock --custom-compile-command "uv pip compile backend/requirements.txt --generate-hashes --python-version 3.12 -o backend/requirements.lock"
+uv pip compile poc/cot-auditing/requirements.txt --generate-hashes --python-version 3.12 -o poc/cot-auditing/requirements.lock --custom-compile-command "uv pip compile poc/cot-auditing/requirements.txt --generate-hashes --python-version 3.12 -o poc/cot-auditing/requirements.lock"
+```
+
+Compiling onto an existing lock refreshes only what the inputs no longer
+allow. To pull in newer versions of everything the range permits, delete the
+lock first so uv resolves from scratch, then run the command above.
+
+CI (`backend.yml`, `cot-auditing.yml`, `docker-executor.yml`, `reviewer-ui.yml`)
+reinstalls pinned uv 0.12.18, copies the committed lock to a temp file, and
+recompiles `requirements.txt` **into that seeded copy** with the same command,
+then fails the run when the two differ (`cmp -s`) before installing with
+`pip install --require-hashes -r <lockfile>`.
+
+Seeding matters. `uv pip compile` prefers the pins already present in an
+existing output file, so compiling into a seeded copy means "does the lock still
+satisfy `requirements.txt`", which is what the lock is for. Compiling into a
+brand-new path instead would re-resolve from scratch and turn every PyPI release
+of an already-pinned transitive dependency into a red build. The check still
+fails when it should: a new dependency, a dropped dependency, or a constraint
+that the committed pin no longer satisfies all rewrite the seeded output and
+break `cmp -s`.
+
 
 ### Running test suites individually
 

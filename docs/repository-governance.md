@@ -8,7 +8,7 @@ The initial empty commit establishes the base for the first PR. It contains no p
 
 GitHub does not allow authors to approve their own PRs, so the required approval count is zero and latest-push approval is disabled. Merging is still limited to collaborators with write access or higher. Administrators retain the technical ability to edit settings, but project policy forbids disabling PR-only protection to push directly to main.
 
-The desired settings are stored in [.github/branch-protection.json](../.github/branch-protection.json). This file documents configuration; GitHub enforces the applied server settings. CI has three workflows with distinct job names: `backend` (Backend tests), `cot-auditing` (CoT auditing tests), and `reviewer-ui` (Reviewer UI tests, which also runs `./scripts/validate.sh`). They are not yet required status checks; issue #22 tracks requiring them. This change does not modify branch protection.
+The desired settings are stored in [.github/branch-protection.json](../.github/branch-protection.json). This file documents configuration; GitHub enforces the applied server settings. CI has three workflows with distinct job names: `backend` (Backend tests), `cot-auditing` (CoT auditing tests), and `reviewer-ui` (Reviewer UI tests, which also runs `./scripts/validate.sh`). As implemented in issue #22, all three jobs are required status checks on `main` (`strict: true`), ensuring branches must be up to date and all test suites passing before any PR can merge. This enforces the automated CI gate required for agent self-merge under ADR-0001.
 
 An administrator can restore the recorded settings with:
 

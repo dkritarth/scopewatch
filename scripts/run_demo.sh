@@ -9,6 +9,72 @@ PORT="${PORT:-8000}"
 HOST="${HOST:-127.0.0.1}"
 DB_PATH="${REPO_ROOT}/runtime-data/scopewatch.db"
 WORKSPACE_ROOT="${REPO_ROOT}/demo/workspace"
+MODE="scripted"
+PROFILE=""
+AUTO_APPROVE=0
+CODING=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      cat <<'EOF'
+Usage: scripts/run_demo.sh [options]
+
+Options:
+  --mode scripted|agent   How scenarios run (default: scripted).
+                          scripted: submit each scenario action directly.
+                          agent: replay each scenario through the agent loop
+                            with the mock provider (deterministic replay, not
+                            model choice). For genuine model choice, pass
+                            --profile <live-profile> with --mode agent.
+  --agent                 Shorthand for --mode agent (mock replay).
+  --profile NAME          Provider profile for --mode agent (default: mock).
+                          Any non-mock profile makes live model calls.
+  --coding                Run the coding sequence 10-13 (issue #38) with the
+                          synthetic coding-workspace fixture instead of 01-06.
+  --auto-approve          Auto-approve HOLD actions while seeding.
+  --port PORT --host HOST Gateway bind address (defaults: 127.0.0.1:8000).
+
+Scenario files carry no per-scenario mode key; the global --mode above is
+the sole control. See demo/SCENARIOS.md for scripted vs mock-agent
+(replay) vs live.
+EOF
+      exit 0
+      ;;
+    --agent)
+      MODE="agent"
+      shift
+      ;;
+    --coding)
+      CODING=1
+      shift
+      ;;
+    --mode)
+      MODE="$2"
+      shift 2
+      ;;
+    --profile)
+      PROFILE="$2"
+      shift 2
+      ;;
+    --auto-approve)
+      AUTO_APPROVE=1
+      shift
+      ;;
+    --port)
+      PORT="$2"
+      shift 2
+      ;;
+    --host)
+      HOST="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
 
 # Python detection
 if [[ -f "${REPO_ROOT}/.venv/bin/python" ]]; then
@@ -20,9 +86,27 @@ else
   exit 1
 fi
 
+# The coding sequence (issue #38) runs against an isolated runtime workspace
+# seeded from the synthetic demo/coding-workspace fixture, never the fixture
+# directory itself, so the agent's fix cannot dirty the repository.
+if [[ "${CODING}" -eq 1 ]]; then
+  if [[ "${WORKSPACE_ROOT}" == "${REPO_ROOT}/demo/workspace" ]]; then
+    WORKSPACE_ROOT="${REPO_ROOT}/runtime-data/coding-workspace"
+  fi
+  DB_PATH="${REPO_ROOT}/runtime-data/scopewatch-coding.db"
+fi
+
 echo "=================================================================="
 echo "Scopewatch Local Demonstration"
-echo "Synthetic mediation gateway baseline"
+if [[ "${CODING}" -eq 1 ]]; then
+  echo "Synthetic coding-scenario sequence 10-13 (mode: ${MODE})"
+else
+  echo "Synthetic mediation gateway baseline (mode: ${MODE})"
+fi
+if [[ "${MODE}" == "agent" && -z "${PROFILE}" ]]; then
+  echo "Agent mode with the default mock provider is deterministic replay,"
+  echo "not model choice (see demo/SCENARIOS.md)."
+fi
 echo "=================================================================="
 echo "Safety statement:"
 echo "This local baseline mediates only actions submitted through its"
@@ -34,9 +118,23 @@ echo ""
 # 1. Seed workspace fixtures and scenarios
 echo "[1/2] Seeding synthetic workspace and demonstration scenarios..."
 mkdir -p "${REPO_ROOT}/runtime-data"
-"${PYTHON}" "${REPO_ROOT}/scripts/seed_demo.py" \
-  --db-path "${DB_PATH}" \
+
+SEED_ARGS=(
+  --db-path "${DB_PATH}"
   --workspace-root "${WORKSPACE_ROOT}"
+  --mode "${MODE}"
+)
+if [[ -n "${PROFILE}" ]]; then
+  SEED_ARGS+=(--profile "${PROFILE}")
+fi
+if [[ "${AUTO_APPROVE}" -eq 1 ]]; then
+  SEED_ARGS+=(--auto-approve)
+fi
+if [[ "${CODING}" -eq 1 ]]; then
+  SEED_ARGS+=(--coding)
+fi
+
+"${PYTHON}" "${REPO_ROOT}/scripts/seed_demo.py" "${SEED_ARGS[@]}"
 
 # 2. Start server
 echo ""

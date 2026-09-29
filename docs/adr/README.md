@@ -8,4 +8,4 @@ Numbered, short records of decisions the team has accepted. An ADR is accepted w
 
 | ADR | Title | Status |
 | --- | --- | --- |
-| 0001 | Pre-execution gateway with an open-weight reasoning agent | Being written in issue #21 |
+| [0001](0001-pre-execution-gateway.md) | Pre-execution gateway with an open-weight reasoning agent | Accepted |

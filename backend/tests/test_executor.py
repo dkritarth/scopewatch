@@ -1,4 +1,4 @@
-"""Unit tests for the controlled synthetic executor."""
+"""Unit tests for the controlled synthetic executor (both backends)."""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +14,24 @@ from scopewatch.models import (
     ReasonCode,
 )
 from scopewatch.schemas import ActionRequest, ApprovalRequest, PolicyDecision
+
+
+@pytest.fixture(params=["local", "docker"], autouse=True)
+def executor_backend(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> str:
+    """Parametrize every executor test over both backends.
+
+    The Docker variants require a reachable daemon and are skipped cleanly
+    when Docker is absent; on CI with Docker they run the same assertions
+    through the container-isolated backend.
+    """
+    backend = str(request.param)
+    monkeypatch.setenv("SCOPEWATCH_EXECUTOR", backend)
+    if backend == "docker":
+        from scopewatch.executor_docker import is_docker_available
+
+        if not is_docker_available():
+            pytest.skip("Docker daemon unavailable; skipping Docker backend variant.")
+    return backend
 
 
 @pytest.fixture

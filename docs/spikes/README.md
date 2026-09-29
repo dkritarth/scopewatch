@@ -11,3 +11,7 @@ File name: `<yyyy-mm>-<topic>.md`. Each spike states:
 5. Recommendation and follow-up issues.
 
 Negative results count. Never include keys, account identifiers, or raw responses that contain them.
+
+| Spike | Topic | Status |
+| --- | --- | --- |
+| [2026-09-nemotron-provider-spike.md](2026-09-nemotron-provider-spike.md) | Nemotron reasoning, tool calling, and structured output on Nebius Token Factory and OpenRouter | Complete |

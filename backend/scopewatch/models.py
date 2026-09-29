@@ -29,7 +29,11 @@ class ReasonCode(str, Enum):
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
     MALFORMED_REQUEST = "MALFORMED_REQUEST"
     UNSUPPORTED_OPERATION = "UNSUPPORTED_OPERATION"
+    SHELL_METACHARACTER = "SHELL_METACHARACTER"
+    COMMAND_NOT_ALLOWED = "COMMAND_NOT_ALLOWED"
     POLICY_ERROR = "POLICY_ERROR"
+    REASONING_SCOPE_CONCERN = "REASONING_SCOPE_CONCERN"
+    REASONING_AUDIT_FAILED = "REASONING_AUDIT_FAILED"
 
 
 class ApprovalStatus(str, Enum):
@@ -61,6 +65,8 @@ class EventType(str, Enum):
     EXECUTION_FAILED = "EXECUTION_FAILED"
     RUN_COMPLETED = "RUN_COMPLETED"
     SYSTEM_ERROR = "SYSTEM_ERROR"
+    REASONING_AUDIT_COMPLETED = "REASONING_AUDIT_COMPLETED"
+    REASONING_AUDIT_FAILED = "REASONING_AUDIT_FAILED"
 
 
 class ReasoningProvenance(str, Enum):
@@ -77,9 +83,11 @@ SUPPORTED_OPERATIONS = {
     "write_text",
     "delete_path",
     "network_request",
+    "run_command",
 }
 EXECUTABLE_OPERATIONS = {
     "list_directory",
     "read_text",
     "write_text",
+    "run_command",
 }

@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
     <title>Scopewatch | Synthetic replay reviewer</title>
     <link rel="stylesheet" href="./styles/reviewer.css" />
@@ -11,15 +11,39 @@
     <a class="skip-link" href="#main">Skip to dashboard</a>
     <div class="app-shell">
       <header class="app-header">
-        <div>
-          <p class="eyebrow">Scopewatch</p>
-          <h1>Reviewer dashboard</h1>
+        <div class="header-main">
+          <div class="header-brand">
+            <span class="brand-emblem" aria-hidden="true">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.75" stroke-opacity="0.35" />
+                <circle cx="12" cy="12" r="6" stroke="currentColor" stroke-width="1.75" stroke-dasharray="2.5 2.5" />
+                <circle cx="12" cy="12" r="2.5" fill="currentColor" />
+                <line x1="12" y1="2" x2="12" y2="5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                <line x1="12" y1="19" x2="12" y2="22" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                <line x1="2" y1="12" x2="5" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                <line x1="19" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
+            </span>
+            <div class="brand-text">
+              <p class="eyebrow">Scopewatch</p>
+              <h1>Reviewer dashboard</h1>
+            </div>
+          </div>
           <p class="header-subtitle">Human review for agent activity within assigned task scope.</p>
-          <span class="gateway-status" id="gateway-status" role="status">Initializing gateway...</span>
+          <div class="header-status-wrap">
+            <span class="gateway-status" id="gateway-status" role="status">Initializing gateway...</span>
+          </div>
         </div>
         <p class="safety-banner" id="synthetic-banner">
           <strong>Synthetic demo gateway.</strong> This local baseline mediates only actions submitted through its synthetic demo gateway. It does not intercept arbitrary host or agent operations. No actual enforcement outside the synthetic sandbox. Preview controls change this page only.
         </p>
+          <p class="mediation-boundary" id="mediation-boundary">
+            <strong>Mediation boundary.</strong> All tool actions go through the gateway API; actions that bypass the API are not observed, blocked, or recorded. See docs/ARCHITECTURE.md (Mediation boundary).
+          </p>
+          <div class="stale-banner" id="sse-banner" role="status" hidden>
+            <span id="sse-banner-text"></span>
+            <button type="button" id="sse-retry">Retry live stream</button>
+          </div>
       </header>
 
       <noscript>This synthetic replay viewer needs JavaScript. No live actions are connected.</noscript>
@@ -30,6 +54,8 @@
             <p>Select a synthetic run or replay.</p>
           </div>
           <div class="run-buttons" id="run-buttons" role="group" aria-label="Select synthetic replay run"></div>
+          <p class="panel-status" id="runs-status" role="status" hidden></p>
+          <button type="button" id="runs-retry" class="retry-btn" hidden>Retry loading runs</button>
           <section class="scope-card" aria-labelledby="scope-heading">
             <h3 id="scope-heading">Task scope</h3>
             <p id="run-task"></p>
@@ -49,6 +75,7 @@
                 <option value="traversal">Traversal: Read parent ../etc/passwd</option>
                 <option value="network">Disallowed: External HTTP request</option>
                 <option value="approval_required">Approval: Delete old report</option>
+                <option value="escalated_hold_concern">Escalated Hold: Exfiltration concern in trace</option>
               </select>
             </div>
 
@@ -68,6 +95,10 @@
               <div class="form-row">
                 <label for="action-summary">Reasoning summary (agent-authored)</label>
                 <input id="action-summary" name="summary" value="Reviewing approved invoice listing" />
+              </div>
+              <div class="form-row">
+                <label for="action-trace">Exposed reasoning trace (provider)</label>
+                <textarea id="action-trace" name="trace" rows="3" placeholder="Optional raw reasoning trace..."></textarea>
               </div>
               <div class="form-row">
                 <label for="action-arguments">Arguments (JSON)</label>
@@ -104,6 +135,7 @@
             </div>
           </form>
           <ol id="timeline" class="timeline"></ol>
+          <p class="panel-status" id="timeline-status" role="status" hidden></p>
           <div id="empty-state" class="empty-state" hidden>
             <h3>No matching replay events</h3>
             <p>Adjust the status or text filters to see more of this synthetic run.</p>
@@ -118,6 +150,8 @@
             <div id="approvals-list" class="approvals-list">
               <p id="no-approvals-msg" class="no-approvals-msg">No pending approvals.</p>
             </div>
+            <p class="panel-status" id="approvals-status" role="status" hidden></p>
+            <button type="button" id="approvals-retry" class="retry-btn" hidden>Retry loading approvals</button>
           </section>
         </section>
 
