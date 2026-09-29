@@ -4,12 +4,8 @@ Each case submits a hostile action, asserts the expected policy/audit
 decision, and asserts that nothing executed when denied (NOT_EXECUTED
 receipt plus sensitive fixtures byte-identical before/after).
 
-Two cases document REAL findings as KNOWN_GAPs (asserted as current
-behaviour, filed separately as type:bug candidates, fix left for a
-follow-up — this suite tests behaviour, it does not redesign it):
+One case still documents a known gap as current behavior; issue #64 tracks it:
 
-- ``test_bypass_symlink_to_blocked_serves_content_KNOWN_GAP``: a symlink
-  inside an allowed directory that points at blocked content is served.
 - ``test_bypass_approve_after_run_completed_KNOWN_GAP``: resolving a
   pending approval after the run completed executes and flips COMPLETED
   back to ACTIVE (no run-status guard in ``resolve_approval``).
@@ -351,26 +347,181 @@ def test_bypass_symlink_escape_outside_workspace(
 def test_bypass_symlink_to_blocked_serves_content_KNOWN_GAP(
     bypass_workspace: Path, bypass_run: Run, local_backend: None
 ) -> None:
-    """KNOWN GAP (filed as type:bug candidate, fix left for follow-up): a
-    symlink planted inside an allowed directory that points at blocked
-    content is served through the gateway. Lexical blocked-path matching
-    does not follow the link; the executor only checks workspace
-    containment, which the resolved target satisfies.
-
-    Reachability note: no gateway operation creates symlinks (write_text
-    writes regular files), so exploitation needs a pre-existing or
-    externally planted link — but a mounted workspace can contain one.
-    """
+    """An allowed alias must not expose a blocked target."""
     (bypass_workspace / "outputs" / "evil.txt").symlink_to(
-        "../invoices/private/payroll.txt"
+        Path("..") / "invoices" / "private" / "payroll.txt"
     )
     action = _read_action(bypass_run, "outputs/evil.txt")
     decision = evaluate_policy(action, bypass_run, bypass_workspace)
-    assert decision.outcome == PolicyOutcome.ALLOW
+    assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.BLOCKED_PATH
     receipt = execute_action(action, bypass_workspace, policy_decision=decision)
+    assert receipt.status == ExecutionStatus.NOT_EXECUTED
+    assert receipt.sanitized_result is not None
+    assert "CONFIDENTIAL" not in str(receipt.sanitized_result)
+
+
+def test_gateway_denies_symlink_to_blocked_content(svc_env: dict) -> None:
+    service: ScopewatchService = svc_env["service"]
+    workspace: Path = svc_env["workspace"]
+    (workspace / "outputs" / "evil.txt").symlink_to(
+        Path("..") / "invoices" / "private" / "salaries.txt"
+    )
+
+    result = asyncio.run(service.submit_action(
+        svc_env["run"].id,
+        SubmitActionRequest(tool="workspace", operation="read_text", resource="outputs/evil.txt"),
+    ))
+
+    assert result.policy_decision.outcome == PolicyOutcome.DENY
+    assert result.policy_decision.reason_code == ReasonCode.BLOCKED_PATH
+    assert result.execution_receipt is not None
+    assert result.execution_receipt.status == ExecutionStatus.NOT_EXECUTED
+    assert "Confidential" not in str(result.execution_receipt.sanitized_result)
+
+
+@pytest.mark.parametrize("alias", ["directory", "chain"])
+def test_bypass_nested_symlinks_to_blocked_content_rejected(
+    bypass_workspace: Path, bypass_run: Run, alias: str,
+) -> None:
+    if alias == "directory":
+        (bypass_workspace / "outputs" / "private-link").symlink_to(
+            bypass_workspace / "invoices" / "private", target_is_directory=True
+        )
+        resource = "outputs/private-link/payroll.txt"
+    else:
+        (bypass_workspace / "outputs" / "inner.txt").symlink_to(
+            bypass_workspace / "invoices" / "private" / "payroll.txt"
+        )
+        (bypass_workspace / "outputs" / "outer.txt").symlink_to("inner.txt")
+        resource = "outputs/outer.txt"
+    _assert_denied_and_not_executed(
+        _read_action(bypass_run, resource), bypass_run, bypass_workspace, ReasonCode.BLOCKED_PATH
+    )
+
+
+@pytest.mark.parametrize("operation", ["list_directory", "write_text", "delete_path"])
+def test_other_file_operations_reject_blocked_directory_alias(
+    bypass_workspace: Path, bypass_run: Run, operation: str,
+) -> None:
+    (bypass_workspace / "outputs" / "private-link").symlink_to(
+        bypass_workspace / "invoices" / "private", target_is_directory=True
+    )
+    resource = (
+        "outputs/private-link" if operation == "list_directory"
+        else "outputs/private-link/payroll.txt"
+    )
+    _assert_denied_and_not_executed(
+        _read_action(bypass_run, resource, operation),
+        bypass_run, bypass_workspace, ReasonCode.BLOCKED_PATH,
+    )
+
+
+def test_broken_symlink_into_blocked_directory_rejected(
+    bypass_workspace: Path, bypass_run: Run,
+) -> None:
+    (bypass_workspace / "outputs" / "broken.txt").symlink_to(
+        Path("..") / "invoices" / "private" / "missing.txt"
+    )
+    _assert_denied_and_not_executed(
+        _read_action(bypass_run, "outputs/broken.txt"),
+        bypass_run, bypass_workspace, ReasonCode.BLOCKED_PATH,
+    )
+
+
+def test_executor_rechecks_symlink_changed_after_policy(
+    bypass_workspace: Path, bypass_run: Run, local_backend: None,
+) -> None:
+    action = _read_action(bypass_run, "outputs/old.txt")
+    decision = evaluate_policy(action, bypass_run, bypass_workspace)
+    assert decision.outcome == PolicyOutcome.ALLOW
+    (bypass_workspace / "outputs" / "old.txt").unlink()
+    (bypass_workspace / "outputs" / "old.txt").symlink_to(
+        bypass_workspace / "invoices" / "private" / "payroll.txt"
+    )
+
+    receipt = execute_action(
+        action, bypass_workspace, policy_decision=decision, task_scope=bypass_run.task_scope
+    )
+    assert receipt.status == ExecutionStatus.FAILED
+    assert "CONFIDENTIAL" not in str(receipt.sanitized_result)
+    direct_receipt = execute_action(action, bypass_workspace, policy_decision=decision)
+    assert direct_receipt.status == ExecutionStatus.FAILED
+    assert "CONFIDENTIAL" not in str(direct_receipt.sanitized_result)
+
+
+def test_docker_executor_rejects_changed_symlink_before_dispatch(
+    bypass_workspace: Path, bypass_run: Run, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scopewatch.executor_docker import DockerExecutor
+
+    action = _read_action(bypass_run, "outputs/old.txt")
+    decision = evaluate_policy(action, bypass_run, bypass_workspace)
+    assert decision.outcome == PolicyOutcome.ALLOW
+    (bypass_workspace / "outputs" / "old.txt").unlink()
+    (bypass_workspace / "outputs" / "old.txt").symlink_to(
+        bypass_workspace / "invoices" / "private" / "payroll.txt"
+    )
+
+    def fail_if_docker_checked() -> bool:
+        pytest.fail("Docker was reached before path revalidation")
+
+    monkeypatch.setattr("scopewatch.executor_docker.is_docker_available", fail_if_docker_checked)
+    receipt = DockerExecutor().execute(
+        action, bypass_workspace, policy_decision=decision, task_scope=bypass_run.task_scope
+    )
+    assert receipt.status == ExecutionStatus.FAILED
+    assert "CONFIDENTIAL" not in str(receipt.sanitized_result)
+
+
+def test_docker_executor_rechecks_staged_workspace(
+    bypass_workspace: Path, bypass_run: Run, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import shutil
+    from scopewatch.executor_docker import DockerExecutor
+
+    action = _read_action(bypass_run, "outputs/old.txt")
+    decision = evaluate_policy(action, bypass_run, bypass_workspace)
+    assert decision.outcome == PolicyOutcome.ALLOW
+
+    def stage_with_changed_link(root: Path) -> tuple[Path, Path]:
+        staging = tmp_path / "stage"
+        copy = staging / "workspace"
+        shutil.copytree(root, copy, symlinks=True)
+        (copy / "outputs" / "old.txt").unlink()
+        (copy / "outputs" / "old.txt").symlink_to(
+            copy / "invoices" / "private" / "payroll.txt"
+        )
+        return staging, copy
+
+    def reject_dispatch(*args, **kwargs):
+        pytest.fail("Docker was dispatched for a blocked staged symlink")
+
+    monkeypatch.setattr("scopewatch.executor_docker.is_docker_available", lambda: True)
+    monkeypatch.setattr("scopewatch.executor_docker._stage_workspace_copy", stage_with_changed_link)
+    monkeypatch.setattr("scopewatch.executor_docker.build_docker_command", reject_dispatch)
+    monkeypatch.setattr("scopewatch.executor_docker._best_effort_remove", lambda name: None)
+    receipt = DockerExecutor().execute(
+        action, bypass_workspace, policy_decision=decision, task_scope=bypass_run.task_scope
+    )
+    assert receipt.status == ExecutionStatus.FAILED
+    assert "CONFIDENTIAL" not in str(receipt.sanitized_result)
+
+
+def test_allowed_symlink_still_reads_allowed_content(
+    bypass_workspace: Path, bypass_run: Run, local_backend: None,
+) -> None:
+    (bypass_workspace / "outputs" / "alias.txt").symlink_to("old.txt")
+    action = _read_action(bypass_run, "outputs/alias.txt")
+    decision = evaluate_policy(action, bypass_run, bypass_workspace)
+    assert decision.outcome == PolicyOutcome.ALLOW
+    receipt = execute_action(
+        action, bypass_workspace, policy_decision=decision, task_scope=bypass_run.task_scope
+    )
     assert receipt.status == ExecutionStatus.EXECUTED
     assert receipt.sanitized_result is not None
-    assert "CONFIDENTIAL" in str(receipt.sanitized_result.get("preview", ""))
+    assert receipt.sanitized_result["preview"] == "old data"
 
 
 def test_bypass_blocked_prefix_case_variant_KNOWN_GAP(
@@ -575,28 +726,35 @@ def test_bypass_env_var_is_literal_not_expanded(
     assert decision.reason_code == ReasonCode.ALLOWED_TOOL_AND_RESOURCE
 
 
-def test_bypass_very_long_argument_raises_KNOWN_GAP(
+def test_bypass_very_long_command_argument_denied_malformed(
     cmd_workspace: Path, cmd_run: Run, bypass_workspace: Path, bypass_run: Run,
     docker_backend: None,
 ) -> None:
-    """KNOWN GAP (robustness, fail-closed: no execution, but an unhandled
-    500-class error instead of a DENY): a single path component far beyond
-    NAME_MAX makes ``Path.resolve()`` raise ``OSError`` (ENAMETOOLONG) out
-    of the policy engine, for both command arguments and resource paths.
-    Nothing executes — the request errors — but the gateway should answer
-    DENY MALFORMED instead of raising."""
-    with pytest.raises(OSError):
-        evaluate_policy(
-            _run_command_action(cmd_run, argv=["pytest", "A" * 200_000]),
-            cmd_run,
-            cmd_workspace,
-        )
-    with pytest.raises(OSError):
-        evaluate_policy(
-            _read_action(bypass_run, "A" * 200_000),
-            bypass_run,
-            bypass_workspace,
-        )
+    """Over-long command arguments fail closed: DENY MALFORMED, never raise,
+    never execute. (Former KNOWN_GAP: ``Path.is_symlink()`` raised OSError
+    ENAMETOOLONG out of the policy engine; overlong values are now rejected
+    before touching the filesystem.)"""
+    _assert_denied_and_not_executed(
+        _run_command_action(cmd_run, argv=["pytest", "A" * 200_000]),
+        cmd_run,
+        cmd_workspace,
+        ReasonCode.MALFORMED_REQUEST,
+    )
+
+
+def test_bypass_very_long_resource_denied_malformed(
+    cmd_workspace: Path, cmd_run: Run, bypass_workspace: Path, bypass_run: Run,
+    docker_backend: None,
+) -> None:
+    """Over-long resource paths fail closed: DENY MALFORMED, never raise,
+    never execute. Split from the command-argument case above so a half-fix
+    cannot hide behind a single test."""
+    _assert_denied_and_not_executed(
+        _read_action(bypass_run, "A" * 200_000),
+        bypass_run,
+        bypass_workspace,
+        ReasonCode.MALFORMED_REQUEST,
+    )
 
 
 def test_bypass_command_prefix_spoof(

@@ -586,6 +586,7 @@ class ScopewatchService:
                         action,
                         self.workspace_root,
                         policy_decision=decision,
+                        task_scope=run.task_scope,
                     )
                     ScopewatchRepository.create_execution_receipt(conn, receipt)
 
@@ -829,8 +830,9 @@ class ScopewatchService:
 
             action = ScopewatchRepository.get_action_request(conn, approval.action_request_id)
             decision = ScopewatchRepository.get_policy_decision_by_action(conn, approval.action_request_id)
+            run = ScopewatchRepository.get_run(conn, approval.run_id)
 
-            if not action or not decision:
+            if not action or not decision or not run:
                 raise ScopewatchAPIError(
                     code="ENTITY_NOT_FOUND",
                     message="Associated action or policy decision not found.",
@@ -890,6 +892,7 @@ class ScopewatchService:
                         self.workspace_root,
                         policy_decision=decision,
                         approval_request=updated_approval,
+                        task_scope=run.task_scope,
                     )
                     ScopewatchRepository.create_execution_receipt(conn, receipt)
 
