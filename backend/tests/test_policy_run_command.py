@@ -146,6 +146,18 @@ def test_run_command_blocked_arg_denied(
     assert decision.reason_code == ReasonCode.BLOCKED_PATH
 
 
+def test_run_command_symlink_to_blocked_arg_denied(
+    cmd_workspace: Path, cmd_run: Run, docker_backend: None
+) -> None:
+    (cmd_workspace / "outputs" / "alias.txt").symlink_to(
+        cmd_workspace / "secrets" / "notes.txt"
+    )
+    action = _run_command_action(cmd_run, command="ls outputs/alias.txt")
+    decision = evaluate_policy(action, cmd_run, cmd_workspace)
+    assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.BLOCKED_PATH
+
+
 @pytest.mark.parametrize("raw", ["", "   ", "\t  "])
 def test_run_command_empty_malformed(
     cmd_workspace: Path, cmd_run: Run, docker_backend: None, raw: str

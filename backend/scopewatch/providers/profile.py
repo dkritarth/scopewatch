@@ -9,13 +9,13 @@ class ProviderProfile(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    name: str
-    base_url: str
-    model: str
+    name: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+    model: str = Field(min_length=1)
     api_key_env: Optional[str] = None
     reasoning_param: Optional[dict[str, Any]] = Field(default=None, alias="reasoning")
-    timeout_s: float = 30.0
-    max_retries: int = 3
+    timeout_s: float = Field(default=30.0, gt=0)
+    max_retries: int = Field(default=3, ge=0)
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("api_key_env", mode="before")

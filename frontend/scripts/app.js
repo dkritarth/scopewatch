@@ -18,6 +18,7 @@ import {
   getEvents,
   getRuns,
   submitAction,
+  withRetry,
 } from "./api.js";
 
 export const PROVENANCE_LABELS = {
@@ -92,6 +93,107 @@ export const HOLD_ICONS = {
 
 export function getHoldIcon(kind) {
   return HOLD_ICONS[kind] || "";
+}
+
+/**
+ * Malformed-frame-tolerant wrapper around `transformApiEvent`.
+ * Returns the transformed event, or null when the frame is unusable
+ * (null/garbage input, thrown error, or missing id/sequence identity).
+ * Every skip is logged with console.warn so dropped frames stay visible in
+ * diagnostics instead of failing silently — and the timeline never crashes.
+ */
+export function safeTransformApiEvent(ev, context = null) {
+  try {
+    const out = transformApiEvent(ev, context);
+    if (!out || typeof out.id === "undefined" || typeof out.sequence === "undefined") {
+      console.warn("[scopewatch] skipping live frame with missing id/sequence");
+      return null;
+    }
+    return out;
+  } catch (err) {
+    console.warn("[scopewatch] skipping malformed live frame:", err?.message || err);
+    return null;
+  }
+}
+
+/**
+ * Two-step approve/deny state machine. First click arms the chosen action
+ * ("Confirm approve"), second click on the same button fires it. Clicking
+ * the other button switches the arm; `reset` (e.g. blur/timeout) disarms.
+ * While `pending`, all clicks are ignored (disabled-while-pending).
+ *
+ * States: "idle" | "armed-approve" | "armed-deny" | "pending"
+ * Clicks: "approve" | "deny" | "reset"
+ * Returns { next, fire } where fire is "approve" | "deny" | null.
+ */
+export function approvalConfirmStep(state, clicked) {
+  const current = state || "idle";
+  if (current === "pending") return { next: "pending", fire: null };
+  if (clicked === "reset" || clicked == null) {
+    return { next: current === "pending" ? "pending" : "idle", fire: null };
+  }
+  if (clicked === "approve") {
+    if (current === "armed-approve") return { next: "pending", fire: "approve" };
+    return { next: "armed-approve", fire: null };
+  }
+  if (clicked === "deny") {
+    if (current === "armed-deny") return { next: "pending", fire: "deny" };
+    return { next: "armed-deny", fire: null };
+  }
+  return { next: current, fire: null };
+}
+
+export const APPROVAL_CONFIRM_COPY = {
+  approve: "Approve",
+  deny: "Deny",
+  confirmApprove: "Confirm approve",
+  confirmDeny: "Confirm deny",
+  armedNote: "Click again to confirm. This resolution is single-use.",
+};
+
+/**
+ * Panel loading/error/empty status mapping. Pure so unit tests pin the copy:
+ * loading beats error beats empty; a populated panel reports "ready" with
+ * empty text (the panel renders its own content then).
+ */
+export function panelStatus({ loading = false, error = null, count = 0 } = {}, copy = {}) {
+  const loadingText = copy.loadingText || "Loading…";
+  const errorText = copy.errorText || "Could not load. Retry to try again.";
+  const emptyText = copy.emptyText || "No items.";
+  if (loading) return { kind: "loading", text: loadingText };
+  if (error) return { kind: "error", text: error instanceof Error ? `${errorText} (${error.message})` : errorText };
+  if (!count) return { kind: "empty", text: emptyText };
+  return { kind: "ready", text: "" };
+}
+
+/**
+ * Render a `panelStatus` result into a `<p role="status">` region.
+ * Element-lite: works with any `{ hidden, textContent, dataset? }` shape so
+ * unit tests can pass plain objects. Returns the status kind.
+ */
+export function renderPanelStatus(region, status) {
+  if (!region || !status) return status?.kind || "ready";
+  region.textContent = status.text || "";
+  region.hidden = status.kind === "ready";
+  return status.kind;
+}
+
+/**
+ * SSE banner copy. The banner is text + icon, never colour alone: the
+ * reconnecting/stale glyph (↻/⚠) reinforces the sentence, which is the
+ * primary signal. Connected/hidden states carry no banner.
+ */
+export function getSseBannerCopy(status, detail = "") {
+  if (status === "reconnecting") {
+    return { visible: true, glyph: "↻", text: `Live stream reconnecting. ${detail || "Retrying with backoff…"}`.trim() };
+  }
+  if (status === "stale") {
+    return { visible: true, glyph: "⚠", text: detail || "Live stream is stale. Showing last known state." };
+  }
+  if (status === "polling" || status === "polling_error") {
+    return { visible: true, glyph: "⇄", text: detail || "Live stream unavailable. Polling for updates." };
+  }
+  return { visible: false, glyph: "", text: "" };
 }
 
 /**
@@ -317,6 +419,15 @@ const elements = typeof document !== "undefined" ? {
   approvalsPanel: document.getElementById("approvals-panel"),
   pendingApprovalsCount: document.getElementById("pending-approvals-count"),
   approvalsList: document.getElementById("approvals-list"),
+  approvalsStatus: document.getElementById("approvals-status"),
+  approvalsRetry: document.getElementById("approvals-retry"),
+  // Stream + panel status regions (hardening: loading/error/stale states)
+  sseBanner: document.getElementById("sse-banner"),
+  sseBannerText: document.getElementById("sse-banner-text"),
+  sseRetry: document.getElementById("sse-retry"),
+  runsStatus: document.getElementById("runs-status"),
+  runsRetry: document.getElementById("runs-retry"),
+  timelineStatus: document.getElementById("timeline-status"),
 } : {};
 
 let activeRuns = [...fixtureRuns];
@@ -343,9 +454,39 @@ function updateGatewayStatus(text, className) {
   elements.gatewayStatus.className = `gateway-status ${className || ""}`;
 }
 
+/**
+ * Show/hide the SSE reconnect/stale banner from a stream status.
+ * Text + glyph carry the meaning; colour is decorative only.
+ */
+function updateSseBanner(status, detail = "") {
+  if (!elements.sseBanner) return;
+  const copy = getSseBannerCopy(status, detail);
+  elements.sseBanner.hidden = !copy.visible;
+  if (elements.sseBannerText) {
+    elements.sseBannerText.textContent = copy.visible ? `${copy.glyph} ${copy.text}` : "";
+  }
+  if (elements.sseRetry) {
+    elements.sseRetry.hidden = !copy.visible;
+  }
+}
+
 function renderRunButtons() {
   if (!elements.runButtons) return;
   const selectedRun = getSelectedRun();
+
+  if (activeRuns.length === 0) {
+    elements.runButtons.replaceChildren();
+    if (elements.runsStatus) {
+      renderPanelStatus(
+        elements.runsStatus,
+        panelStatus({ count: 0 }, { emptyText: "No runs available. Start the gateway or check the connection." }),
+      );
+    }
+    return;
+  }
+  if (elements.runsStatus) {
+    renderPanelStatus(elements.runsStatus, panelStatus({ count: activeRuns.length }));
+  }
 
   for (const run of activeRuns) {
     const existingButton = elements.runButtons.querySelector(
@@ -797,53 +938,93 @@ function renderApprovals() {
       reasonInput.placeholder = "Reviewer note (optional)";
       reasonInput.className = "approval-reason-input";
 
+      // Double-confirm note: text signal for the armed state (no colour-only).
+      const confirmNote = document.createElement("p");
+      confirmNote.className = "approval-confirm-note";
+      confirmNote.setAttribute("role", "status");
+      confirmNote.hidden = true;
+
+      const errorNote = document.createElement("p");
+      errorNote.className = "approval-error-note";
+      errorNote.setAttribute("role", "alert");
+      errorNote.hidden = true;
+
       const actions = document.createElement("div");
       actions.className = "approval-actions";
 
       const approveBtn = document.createElement("button");
       approveBtn.type = "button";
       approveBtn.className = "btn-approve";
-      approveBtn.textContent = "Approve";
-      approveBtn.addEventListener("click", async () => {
-        approveBtn.disabled = true;
-        denyBtn.disabled = true;
-        try {
-          if (isLiveMode) {
-            await approveAction(appr.id, reasonInput.value || "Approved in reviewer UI");
-          }
-          pendingApprovals = pendingApprovals.filter((a) => a.id !== appr.id);
-          renderApprovals();
-          if (isLiveMode) await refreshApprovals();
-        } catch (err) {
-          alert(`Approval failed: ${err.message}`);
-          approveBtn.disabled = false;
-          denyBtn.disabled = false;
-        }
-      });
+      approveBtn.textContent = APPROVAL_CONFIRM_COPY.approve;
 
       const denyBtn = document.createElement("button");
       denyBtn.type = "button";
       denyBtn.className = "btn-deny";
-      denyBtn.textContent = "Deny";
-      denyBtn.addEventListener("click", async () => {
+      denyBtn.textContent = APPROVAL_CONFIRM_COPY.deny;
+
+      let confirmState = "idle";
+
+      function syncConfirmUi() {
+        approveBtn.textContent =
+          confirmState === "armed-approve" ? APPROVAL_CONFIRM_COPY.confirmApprove : APPROVAL_CONFIRM_COPY.approve;
+        denyBtn.textContent =
+          confirmState === "armed-deny" ? APPROVAL_CONFIRM_COPY.confirmDeny : APPROVAL_CONFIRM_COPY.deny;
+        approveBtn.classList.toggle("armed", confirmState === "armed-approve");
+        denyBtn.classList.toggle("armed", confirmState === "armed-deny");
+        const armed = confirmState === "armed-approve" || confirmState === "armed-deny";
+        confirmNote.hidden = !armed;
+        if (armed) confirmNote.textContent = APPROVAL_CONFIRM_COPY.armedNote;
+      }
+
+      async function resolveApproval(fire) {
+        confirmState = "pending";
         approveBtn.disabled = true;
         denyBtn.disabled = true;
+        syncConfirmUi();
         try {
           if (isLiveMode) {
-            await denyAction(appr.id, reasonInput.value || "Denied in reviewer UI");
+            const note = reasonInput.value || (fire === "approve" ? "Approved in reviewer UI" : "Denied in reviewer UI");
+            if (fire === "approve") {
+              await approveAction(appr.id, note);
+            } else {
+              await denyAction(appr.id, note);
+            }
           }
           pendingApprovals = pendingApprovals.filter((a) => a.id !== appr.id);
           renderApprovals();
           if (isLiveMode) await refreshApprovals();
         } catch (err) {
-          alert(`Denial failed: ${err.message}`);
+          confirmState = "idle";
           approveBtn.disabled = false;
           denyBtn.disabled = false;
+          syncConfirmUi();
+          errorNote.hidden = false;
+          errorNote.textContent = `Resolution failed: ${err.message}. No change was applied; try again.`;
+        }
+      }
+
+      approveBtn.addEventListener("click", () => {
+        const step = approvalConfirmStep(confirmState, "approve");
+        confirmState = step.next;
+        if (step.fire) {
+          resolveApproval(step.fire);
+        } else {
+          syncConfirmUi();
+        }
+      });
+
+      denyBtn.addEventListener("click", () => {
+        const step = approvalConfirmStep(confirmState, "deny");
+        confirmState = step.next;
+        if (step.fire) {
+          resolveApproval(step.fire);
+        } else {
+          syncConfirmUi();
         }
       });
 
       actions.append(approveBtn, denyBtn);
-      card.append(title, meta, reasonInput, actions);
+      card.append(title, meta, reasonInput, confirmNote, errorNote, actions);
       return card;
     }),
   );
@@ -851,16 +1032,35 @@ function renderApprovals() {
 
 async function refreshApprovals() {
   if (!isLiveMode) return;
+  if (elements.approvalsStatus) {
+    renderPanelStatus(elements.approvalsStatus, panelStatus({ loading: true }, { loadingText: "Loading approvals…" }));
+  }
+  if (elements.approvalsRetry) elements.approvalsRetry.hidden = true;
   try {
     const run = getSelectedRun();
     const runId = run?.isLive ? run.id : null;
-    const fetched = await getApprovals("PENDING", runId);
+    const fetched = await withRetry(() => getApprovals("PENDING", runId), { retries: 2, baseDelayMs: 300 });
     if (Array.isArray(fetched)) {
       pendingApprovals = fetched;
       renderApprovals();
     }
-  } catch {
-    // Ignore approvals refresh failure in non-live mode
+    if (elements.approvalsStatus) {
+      renderPanelStatus(
+        elements.approvalsStatus,
+        panelStatus(
+          { count: pendingApprovals.length },
+          { emptyText: "" },
+        ),
+      );
+    }
+  } catch (err) {
+    if (elements.approvalsStatus) {
+      renderPanelStatus(
+        elements.approvalsStatus,
+        panelStatus({ error: err }, { errorText: "Could not load approvals." }),
+      );
+    }
+    if (elements.approvalsRetry) elements.approvalsRetry.hidden = false;
   }
 }
 
@@ -1110,7 +1310,9 @@ function subscribeToRun(runId) {
       const run = activeRuns.find((r) => r.id === runId);
       if (!run) return;
 
-      const formatted = transformApiEvent(apiEvent);
+      // Malformed frames are logged + skipped, never crash the timeline.
+      const formatted = safeTransformApiEvent(apiEvent);
+      if (!formatted) return;
       if (!run.events.some((e) => e.sequence === formatted.sequence)) {
         run.events.push(formatted);
         renderTimeline();
@@ -1124,16 +1326,41 @@ function subscribeToRun(runId) {
     onStatusChange: ({ status, detail }) => {
       if (status === "connected") {
         updateGatewayStatus("Live gateway connected", "connected");
-      } else if (status === "polling") {
+      } else if (status === "polling" || status === "polling_error") {
         updateGatewayStatus("Gateway polling fallback", "polling");
+      } else if (status === "reconnecting") {
+        updateGatewayStatus("Reconnecting live stream…", "polling");
+      } else if (status === "stale") {
+        updateGatewayStatus("Live stream stale", "polling");
       } else {
         updateGatewayStatus("Gateway disconnected", "disconnected");
       }
+      updateSseBanner(status, detail);
     },
   });
 }
 
+function resubscribeLiveRun() {
+  const run = getSelectedRun();
+  if (!isLiveMode || !run?.isLive) return;
+  updateSseBanner("reconnecting", "Manual retry requested…");
+  subscribeToRun(run.id);
+  refreshApprovals();
+}
+
 if (typeof document !== "undefined") {
+  if (elements.sseRetry) {
+    elements.sseRetry.addEventListener("click", resubscribeLiveRun);
+  }
+  if (elements.runsRetry) {
+    elements.runsRetry.addEventListener("click", () => {
+      elements.runsRetry.hidden = true;
+      bootstrap();
+    });
+  }
+  if (elements.approvalsRetry) {
+    elements.approvalsRetry.addEventListener("click", refreshApprovals);
+  }
   // Preset selection
   if (elements.actionPreset) {
     elements.actionPreset.addEventListener("change", () => {
@@ -1431,7 +1658,24 @@ async function bootstrap() {
     updateGatewayStatus("Live gateway connected", "connected");
 
     try {
-      let backendRuns = await getRuns();
+      let backendRuns;
+      if (elements.runsStatus) {
+        renderPanelStatus(elements.runsStatus, panelStatus({ loading: true }, { loadingText: "Loading runs…" }));
+      }
+      try {
+        backendRuns = await withRetry(() => getRuns(), { retries: 2, baseDelayMs: 300 });
+      } catch (err) {
+        if (elements.runsStatus) {
+          renderPanelStatus(
+            elements.runsStatus,
+            panelStatus({ error: err }, { errorText: "Could not load runs from the gateway." }),
+          );
+        }
+        if (elements.runsRetry) elements.runsRetry.hidden = false;
+        updateGatewayStatus("Static replay mode", "disconnected");
+        return;
+      }
+      if (elements.runsRetry) elements.runsRetry.hidden = true;
       if (!backendRuns || backendRuns.length === 0) {
         const created = await createRun("Invoice Processing Run", {
           schema_version: "1",
@@ -1480,4 +1724,19 @@ async function bootstrap() {
 
 if (typeof document !== "undefined") {
   bootstrap();
+}
+
+// Read-only debug surface for browser tests: pure helpers only, no state
+// mutation. Lets Playwright assert malformed-frame tolerance and status copy
+// without reaching into module internals.
+if (typeof window !== "undefined") {
+  window.__scopewatch = {
+    safeTransformApiEvent,
+    approvalConfirmStep,
+    panelStatus,
+    getSseBannerCopy,
+    getHoldKind,
+    getHoldIcon,
+    getProvenanceLabel,
+  };
 }
