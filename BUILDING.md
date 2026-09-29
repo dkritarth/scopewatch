@@ -59,10 +59,25 @@ uv pip compile backend/requirements.txt --generate-hashes --python-version 3.12 
 uv pip compile poc/cot-auditing/requirements.txt --generate-hashes --python-version 3.12 -o poc/cot-auditing/requirements.lock --custom-compile-command "uv pip compile poc/cot-auditing/requirements.txt --generate-hashes --python-version 3.12 -o poc/cot-auditing/requirements.lock"
 ```
 
-CI (`backend.yml`, `cot-auditing.yml`, `reviewer-ui.yml`) reinstalls pinned
-uv 0.12.18, recompiles each input to a temp file with the same command, and
-fails the run when the committed lock differs (`cmp -s`), then installs with
+Compiling onto an existing lock refreshes only what the inputs no longer
+allow. To pull in newer versions of everything the range permits, delete the
+lock first so uv resolves from scratch, then run the command above.
+
+CI (`backend.yml`, `cot-auditing.yml`, `docker-executor.yml`, `reviewer-ui.yml`)
+reinstalls pinned uv 0.12.18, copies the committed lock to a temp file, and
+recompiles `requirements.txt` **into that seeded copy** with the same command,
+then fails the run when the two differ (`cmp -s`) before installing with
 `pip install --require-hashes -r <lockfile>`.
+
+Seeding matters. `uv pip compile` prefers the pins already present in an
+existing output file, so compiling into a seeded copy means "does the lock still
+satisfy `requirements.txt`", which is what the lock is for. Compiling into a
+brand-new path instead would re-resolve from scratch and turn every PyPI release
+of an already-pinned transitive dependency into a red build. The check still
+fails when it should: a new dependency, a dropped dependency, or a constraint
+that the committed pin no longer satisfies all rewrite the seeded output and
+break `cmp -s`.
+
 
 ### Running test suites individually
 

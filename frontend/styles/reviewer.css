@@ -1112,7 +1112,7 @@ select:focus,
   color: var(--text-muted);
   font-size: 0.76rem;
   font-family: var(--font-mono);
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 /* Status Badges with Vibrant Colored Dot */
@@ -1765,4 +1765,126 @@ mark.highlight-excerpt,
 .status-hold-failed .hold-icon,
 .hold-failed .hold-icon {
   color: var(--status-attempted-text);
+}
+
+/* ==========================================================================
+   Hardening: SSE stale banner, panel status regions, double-confirm
+   ========================================================================== */
+
+/* SSE reconnect/stale banner: icon + sentence carry meaning, colour never alone */
+.stale-banner {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--status-pending-dot);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.stale-banner[hidden] {
+  display: none;
+}
+.stale-banner button {
+  margin-left: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-weight: 650;
+  font-size: 0.78rem;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+/* Loading/error/empty lines for runs, timeline, and approvals panels */
+.panel-status {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-subtle);
+  border: 1px dashed var(--border-subtle);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.panel-status[hidden] {
+  display: none;
+}
+
+.retry-btn {
+  margin-top: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-weight: 650;
+  font-size: 0.78rem;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.retry-btn[hidden] {
+  display: none;
+}
+
+/* Double-confirm: armed buttons get outline + bolder label, never colour alone */
+.btn-approve.armed,
+.btn-deny.armed {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.approval-confirm-note {
+  margin: 0;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.approval-confirm-note[hidden] {
+  display: none;
+}
+
+.approval-error-note {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--status-blocked-border);
+  background: var(--status-blocked-bg);
+  color: var(--status-blocked-text);
+  font-size: 0.78rem;
+}
+.approval-error-note[hidden] {
+  display: none;
+}
+
+/* Narrow phones (360px): stack approval actions and keep simulator usable */
+@media (max-width: 380px) {
+  .approval-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .btn-approve,
+  .btn-deny {
+    width: 100%;
+    padding: 9px 12px;
+  }
+  .stale-banner {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .stale-banner button {
+    margin-left: 0;
+    width: 100%;
+  }
+  .approval-card-meta,
+  .event-meta {
+    overflow-wrap: anywhere;
+  }
 }
