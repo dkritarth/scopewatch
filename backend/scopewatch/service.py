@@ -7,13 +7,33 @@ import logging
 import os
 from pathlib import Path
 import sqlite3
+import threading
 from typing import Any, Optional
 import uuid
 
 from fastapi import status
 
-from scopewatch.config import DEFAULT_EXPIRY_SECONDS, DEMO_REVIEWER_ID
+from scopewatch.budget_store import (
+    TokenLedger,
+    daily_token_budget_for,
+    format_rollover,
+    get_ledger,
+    is_mock_profile,
+    reserve_per_audit,
+)
+from scopewatch.config import (
+    DEFAULT_EXPIRY_SECONDS,
+    DEMO_REVIEWER_ID,
+    agent_profile_name,
+    auditor_profile_name,
+)
 from scopewatch.db import db_transaction, get_connection
+from scopewatch.demo_guards import (
+    BUSY_RUN_STATUSES,
+    DemoGuardPolicy,
+    DemoGuardConfig,
+    DemoGuardRefusal,
+)
 from scopewatch.errors import ScopewatchAPIError
 from scopewatch.events import broadcaster
 from scopewatch.executor import ExecutionSecurityError, execute_action
@@ -71,10 +91,27 @@ class ScopewatchService:
         db_path: Path | str,
         workspace_root: Path | str,
         auditor: Optional[ReasoningAuditor] = None,
+        guards: Optional[DemoGuardPolicy] = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.workspace_root = Path(workspace_root)
         self._auditor = auditor
+        # Demo guards (#76): one shared policy per service instance. The app
+        # wires the same object into the token middleware so HTTP and service
+        # checks share rate/budget state.
+        self.guards = guards if guards is not None else DemoGuardPolicy(
+            DemoGuardConfig.from_env()
+        )
+        # Concurrency-cap accounting: DB busy count + in-flight creations,
+        # guarded by one lock so simultaneous creates fail closed to one
+        # winner instead of overshooting the cap.
+        self._creation_lock = threading.Lock()
+        self._pending_creations = 0
+
+    @property
+    def tokens(self) -> TokenLedger:
+        """Process-wide per-profile daily token ledger (#77)."""
+        return get_ledger()
 
     def _get_conn(self) -> sqlite3.Connection:
         return get_connection(self.db_path)
@@ -195,52 +232,140 @@ class ScopewatchService:
                 error_code=_audit_error_code(exc),
             )
 
-    # ---------------- Runs ----------------
+    # ---------------- Demo guards + token budgets (issues #76 / #77) ----------------
+    # Guard checks only: policy DENY remains final, reasoning still only
+    # escalates, and every refusal is sanitized (no provider bodies, keys,
+    # prompts, or traces).
 
-    def create_run(self, name: str, task_scope: TaskScope) -> tuple[Run, list[EvidenceEvent]]:
-        run_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
-        run = Run(
-            id=run_id,
-            name=name,
-            task_scope=task_scope,
-            status=RunStatus.ACTIVE,
-            created_at=now,
-            updated_at=now,
-            synthetic=True,
-            interception_coverage=(
-                "This local baseline mediates only actions submitted through its "
-                "synthetic demo gateway. It does not intercept arbitrary host or agent operations."
-            ),
-            reasoning_availability=(
-                "Provider traces unavailable in local baseline. Agent-authored summaries or "
-                "synthetic fixtures are labeled explicitly."
-            ),
+    def _refuse_token_budget(self, profile: str, used: int, budget: int) -> DemoGuardRefusal:
+        ledger = self.tokens
+        return DemoGuardRefusal(
+            429,
+            "token_budget_exhausted",
+            f"Daily token budget exhausted for profile '{profile}' "
+            f"({used}/{budget} tokens used). No new agent runs until UTC "
+            f"midnight (the UTC day rolls over {format_rollover(ledger.reset_in_seconds())}). "
+            "Scripted (mock) scenarios are unaffected.",
         )
 
-        conn = self._get_conn()
+    def _check_agent_token_budget(self) -> None:
+        """Refuse new runs when the agent profile's daily budget is spent."""
+        profile = agent_profile_name()
+        if is_mock_profile(profile):
+            return
+        budget = daily_token_budget_for(profile)
+        if budget is None:
+            return
+        used = self.tokens.used_today(profile)
+        if used >= budget:
+            raise self._refuse_token_budget(profile, used, budget)
+
+    def _token_budget_snapshot(self) -> dict[str, Any]:
+        """Counts-only budget snapshot for RUN_CREATED event details."""
+        profile = agent_profile_name()
+        budget = None if is_mock_profile(profile) else daily_token_budget_for(profile)
+        return {
+            "agent_profile": profile,
+            "used_today": 0 if is_mock_profile(profile) else self.tokens.used_today(profile),
+            "budget": budget,
+        }
+
+    def _count_busy_runs(self, conn: sqlite3.Connection) -> int:
         try:
-            with db_transaction(conn):
-                ScopewatchRepository.create_run(conn, run)
-                event = ScopewatchRepository.append_event(
-                    conn,
-                    run_id=run.id,
-                    event_type=EventType.RUN_CREATED,
-                    actor="system",
-                    summary=f"Run '{name}' initialized with task scope.",
-                    timestamp=now,
-                    details={
-                        "task_description": task_scope.task_description,
-                        "allowed_paths": task_scope.allowed_paths,
-                        "blocked_paths": task_scope.blocked_paths,
-                        "allowed_tools": task_scope.allowed_tools,
-                        "allowed_operations": task_scope.allowed_operations,
-                        "requires_approval": task_scope.requires_approval,
-                    },
-                )
-            return run, [event]
+            runs = ScopewatchRepository.list_runs(conn)
+        except Exception:
+            # Fail closed: an unreadable run table refuses creation (503),
+            # never lets it through.
+            raise DemoGuardRefusal(
+                503,
+                "demo_guard_misconfigured",
+                "Gateway cannot verify run capacity right now. Please retry shortly.",
+            )
+        return sum(1 for run in runs if run.status.value in BUSY_RUN_STATUSES)
+
+    # ---------------- Runs ----------------
+
+    def create_run(
+        self,
+        name: str,
+        task_scope: TaskScope,
+        client_ip: Optional[str] = None,
+    ) -> tuple[Run, list[EvidenceEvent]]:
+        # #77: cost control first — refuse before any spend is possible.
+        self._check_agent_token_budget()
+
+        # #76: demo-mode rate limit + daily run budget (atomic reserve).
+        if self.guards.config.enabled:
+            self.guards.try_begin_run(client_ip).raise_if_denied()
+            reserved = True
+        else:
+            reserved = False
+
+        pending_added = False
+        try:
+            # #76: concurrent-run cap against DB truth + in-flight creations.
+            if self.guards.config.enabled:
+                with self._creation_lock:
+                    conn = self._get_conn()
+                    try:
+                        busy = self._count_busy_runs(conn) + self._pending_creations
+                        self.guards.check_concurrent(busy).raise_if_denied()
+                        self._pending_creations += 1
+                        pending_added = True
+                    finally:
+                        conn.close()
+            run_id = str(uuid.uuid4())
+            now = datetime.now(timezone.utc).isoformat()
+            run = Run(
+                id=run_id,
+                name=name,
+                task_scope=task_scope,
+                status=RunStatus.ACTIVE,
+                created_at=now,
+                updated_at=now,
+                synthetic=True,
+                interception_coverage=(
+                    "This local baseline mediates only actions submitted through its "
+                    "synthetic demo gateway. It does not intercept arbitrary host or agent operations."
+                ),
+                reasoning_availability=(
+                    "Provider traces unavailable in local baseline. Agent-authored summaries or "
+                    "synthetic fixtures are labeled explicitly."
+                ),
+            )
+
+            conn = self._get_conn()
+            try:
+                with db_transaction(conn):
+                    ScopewatchRepository.create_run(conn, run)
+                    event = ScopewatchRepository.append_event(
+                        conn,
+                        run_id=run.id,
+                        event_type=EventType.RUN_CREATED,
+                        actor="system",
+                        summary=f"Run '{name}' initialized with task scope.",
+                        timestamp=now,
+                        details={
+                            "task_description": task_scope.task_description,
+                            "allowed_paths": task_scope.allowed_paths,
+                            "blocked_paths": task_scope.blocked_paths,
+                            "allowed_tools": task_scope.allowed_tools,
+                            "allowed_operations": task_scope.allowed_operations,
+                            "requires_approval": task_scope.requires_approval,
+                            "token_budget": self._token_budget_snapshot(),
+                        },
+                    )
+                return run, [event]
+            finally:
+                conn.close()
+        except BaseException:
+            if reserved:
+                self.guards.release_run()
+            raise
         finally:
-            conn.close()
+            if pending_added:
+                with self._creation_lock:
+                    self._pending_creations = max(0, self._pending_creations - 1)
 
     def get_run(self, run_id: str) -> Run:
         conn = self._get_conn()
@@ -338,6 +463,11 @@ class ScopewatchService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
+            # #76: demo-mode daily action budget + per-run turn cap (attempt
+            # counted, mirroring the deploy gate).
+            if self.guards.config.enabled:
+                self.guards.try_action(run_id).raise_if_denied()
+
             action_id = str(uuid.uuid4())
             now_iso = datetime.now(timezone.utc).isoformat()
             effective_turn_id = request.turn_id or f"turn-{action_id}"
@@ -394,16 +524,44 @@ class ScopewatchService:
                 )
                 if cached_audit:
                     audit_record = cached_audit
+                    # Cached audits spend nothing new; report zero fresh tokens.
+                    fresh_tokens_used = 0
                 else:
                     recent_actions_list = ScopewatchRepository.list_actions_for_run(conn, run_id)
 
-                    audit_result = await self._run_reasoning_audit(
-                        run=run,
-                        action=action,
-                        turn_id=effective_turn_id,
-                        trace_text=trace_text,
-                        recent_actions_list=recent_actions_list,
-                    )
+                    # #77: check-then-reserve BEFORE spend. The auditor call
+                    # below is the model spend; refuse here when the auditor
+                    # profile's daily budget cannot cover an estimate.
+                    auditor_profile = auditor_profile_name()
+                    estimate = 0
+                    if not is_mock_profile(auditor_profile):
+                        estimate = reserve_per_audit()
+                        verdict = self.tokens.check(auditor_profile, estimate=estimate)
+                        if not verdict.allowed:
+                            budget = verdict.budget or 0
+                            raise self._refuse_token_budget(
+                                auditor_profile, verdict.used, budget
+                            )
+                        self.tokens.add(auditor_profile, estimate)
+                    try:
+                        audit_result = await self._run_reasoning_audit(
+                            run=run,
+                            action=action,
+                            turn_id=effective_turn_id,
+                            trace_text=trace_text,
+                            recent_actions_list=recent_actions_list,
+                        )
+                    finally:
+                        # Actual usage was recorded at spend time by the
+                        # provider hook; release the estimate here so the
+                        # ledger converges to actuals. Never raises.
+                        if estimate:
+                            try:
+                                self.tokens.add(auditor_profile, -estimate)
+                            except Exception:  # noqa: BLE001 - metering is best-effort
+                                logger.debug("Sanitized token-settle skip")
+
+                    fresh_tokens_used = audit_result.total_tokens or 0
 
                     audit_record = ReasoningAuditRecord(
                         id=str(uuid.uuid4()),
@@ -449,6 +607,8 @@ class ScopewatchService:
                     "profile": audit_record.profile,
                     "latency_ms": audit_record.latency_ms,
                     "error_code": audit_record.error_code,
+                    # #77: counts only — never prompts, traces, or keys.
+                    "tokens_used": max(0, int(fresh_tokens_used)),
                 }
 
                 # Escalate-only merge rules from ADR-0001:
@@ -586,6 +746,7 @@ class ScopewatchService:
                         action,
                         self.workspace_root,
                         policy_decision=decision,
+                        task_scope=run.task_scope,
                     )
                     ScopewatchRepository.create_execution_receipt(conn, receipt)
 
@@ -795,12 +956,43 @@ class ScopewatchService:
                     status_code=status.HTTP_409_CONFLICT,
                 )
 
+            def require_resolvable_run() -> None:
+                run = ScopewatchRepository.get_run(conn, approval.run_id)
+                if not run or run.status not in (RunStatus.ACTIVE, RunStatus.WAITING_FOR_APPROVAL):
+                    raise ScopewatchAPIError(
+                        code="RUN_NOT_ACTIVE",
+                        message=f"Cannot resolve approval: run is in status {run.status.value if run else 'MISSING'}.",
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
+
+            action = ScopewatchRepository.get_action_request(conn, approval.action_request_id)
+            decision = ScopewatchRepository.get_policy_decision_by_action(conn, approval.action_request_id)
+            run = ScopewatchRepository.get_run(conn, approval.run_id)
+
+            if not action or not decision or not run:
+                raise ScopewatchAPIError(
+                    code="ENTITY_NOT_FOUND",
+                    message="Associated action or policy decision not found.",
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            # Invariant: Cannot approve if deterministic decision is DENY
+            if approve and decision.outcome == PolicyOutcome.DENY:
+                raise ScopewatchAPIError(
+                    code="DENIED_ACTION_CANNOT_BE_APPROVED",
+                    message="Approval cannot override a deterministic DENY outcome.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+            require_resolvable_run()
+
             # Check expiration
             now = datetime.now(timezone.utc)
             now_iso = now.isoformat()
             expires_at = datetime.fromisoformat(approval.expires_at)
             if now > expires_at:
                 with db_transaction(conn):
+                    require_resolvable_run()
                     ScopewatchRepository.resolve_approval(
                         conn,
                         approval_id=approval_id,
@@ -827,28 +1019,11 @@ class ScopewatchService:
                     status_code=status.HTTP_409_CONFLICT,
                 )
 
-            action = ScopewatchRepository.get_action_request(conn, approval.action_request_id)
-            decision = ScopewatchRepository.get_policy_decision_by_action(conn, approval.action_request_id)
-
-            if not action or not decision:
-                raise ScopewatchAPIError(
-                    code="ENTITY_NOT_FOUND",
-                    message="Associated action or policy decision not found.",
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
-
-            # Invariant: Cannot approve if deterministic decision is DENY
-            if approve and decision.outcome == PolicyOutcome.DENY:
-                raise ScopewatchAPIError(
-                    code="DENIED_ACTION_CANNOT_BE_APPROVED",
-                    message="Approval cannot override a deterministic DENY outcome.",
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                )
-
             receipt: Optional[ExecutionReceipt] = None
             generated_events: list[EvidenceEvent] = []
 
             with db_transaction(conn):
+                require_resolvable_run()
                 if approve:
                     updated_approval = ScopewatchRepository.resolve_approval(
                         conn,
@@ -890,6 +1065,7 @@ class ScopewatchService:
                         self.workspace_root,
                         policy_decision=decision,
                         approval_request=updated_approval,
+                        task_scope=run.task_scope,
                     )
                     ScopewatchRepository.create_execution_receipt(conn, receipt)
 
