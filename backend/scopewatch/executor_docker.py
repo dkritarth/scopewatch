@@ -497,6 +497,16 @@ class DockerExecutor:
 
             raise ExecutionSecurityError("Network requests are forbidden in synthetic executor.")
 
+        from scopewatch.executor import ExecutionSecurityError, _verify_scoped_target
+
+        try:
+            _verify_scoped_target(
+                workspace_root, action.resource, task_scope,
+                require_allowed=action.operation != "run_command",
+            )
+        except (ExecutionSecurityError, OSError, RuntimeError):
+            return _failed("EXECUTION_FAILED", "Resolved path violates the task scope.")
+
         if not is_docker_available():
             return _failed("EXECUTION_FAILED", "Docker daemon unavailable; failing closed.")
 
@@ -513,6 +523,13 @@ class DockerExecutor:
                 )
             except OSError:
                 return _failed("EXECUTION_FAILED", "Workspace staging failed.")
+            try:
+                _verify_scoped_target(
+                    workspace_copy, action.resource, task_scope,
+                    require_allowed=action.operation != "run_command",
+                )
+            except (ExecutionSecurityError, OSError, RuntimeError):
+                return _failed("EXECUTION_FAILED", "Resolved path violates the task scope.")
             # run_command (issue #68): revalidate the path-bearing argv and
             # the cwd against the run scope in the STAGED workspace
             # immediately before dispatch. A symlink swapped between the
