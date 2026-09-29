@@ -32,7 +32,15 @@ def load_scenario(scenario_path: str) -> dict[str, Any]:
 def build_scenario_mock_provider(
     scenario_data: dict[str, Any], model: Optional[str] = None
 ) -> MockProviderClient:
-    """Build a MockProviderClient scripted from the scenario's planned actions.
+    """Build a MockProviderClient that deterministically replays scripted actions.
+
+    Mock-agent mode is deterministic replay, not model choice: one tool call
+    is enqueued per entry in the scenario's ``actions`` list, verbatim
+    (operation, resource, arguments, and reasoning fields). The mock provider
+    never invents, reorders, or skips actions. Use a live provider profile
+    for genuine model choice. Scenario files carry no per-scenario mode key;
+    the global ``--mode`` (scripted vs agent) selects how actions run
+    (see demo/SCENARIOS.md).
 
     The scripted response model label is derived from the active profile, never
     hard-coded: core code carries no model IDs.
