@@ -1,0 +1,49 @@
+# Compose fragment: executor-runner sidecar (issue #78).
+#
+# Merge into the deployment alongside the gateway service from the #42
+# bundle (deploy/compose.yaml). This is the ONLY service that mounts the
+# Docker socket. The gateway, gate, and caddy services MUST NOT mount it
+# (enforced by the socket-grep test in backend/tests/test_executor_remote.py).
+#
+# Required secret (environment only, never committed):
+#   EXECUTOR_RUNNER_TOKEN — pre-shared bearer token, shared with the gateway
+#   via EXECUTOR_RUNNER_TOKEN in the gateway environment.
+#
+# Internal networking only: no `ports:` published to the host. The gateway
+# reaches the runner at http://executor-runner:8091 via the internal
+# network. The socket mount may alternatively point at a rootless daemon
+# socket (e.g. /run/user/1000/docker.sock) — the only change is the source
+# path below.
+
+services:
+  executor-runner:
+    build:
+      context: ./executor-runner
+      dockerfile: Dockerfile
+    image: scopewatch/executor-runner:latest
+    restart: unless-stopped
+    # Internal-only: reachable by the gateway, not by the public internet.
+    networks:
+      - internal
+    environment:
+      EXECUTOR_RUNNER_HOST: "0.0.0.0"
+      EXECUTOR_RUNNER_PORT: "8091"
+      EXECUTOR_RUNNER_WORKSPACE: /workspace
+      EXECUTOR_RUNNER_TOKEN: ${EXECUTOR_RUNNER_TOKEN:?EXECUTOR_RUNNER_TOKEN is required}
+    volumes:
+      # THE socket mount. No other service may add one.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - scopewatch-workspace:/workspace:rw
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+
+networks:
+  internal:
+    driver: bridge
+    internal: true
+
+volumes:
+  scopewatch-workspace:

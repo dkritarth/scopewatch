@@ -3,6 +3,12 @@
 INVARIANT:
 The agent NEVER touches the executor or filesystem directly!
 All operations are mediated strictly through the Scopewatch gateway HTTP API.
+
+NOTE (mock-agent replay honesty):
+In agent mode with the ``mock`` provider, the agent does not choose actions.
+``build_scenario_mock_provider`` (scopewatch.agent.__main__) replays the
+scenario's scripted action list verbatim, one tool call per entry. See
+demo/SCENARIOS.md for the scripted vs mock-agent (replay) vs live distinction.
 """
 
 import json
@@ -96,9 +102,12 @@ GATEWAY_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "name": "run_command",
             "description": (
                 "Run an allowlisted, shell-free command with a workspace directory "
-                "as its working directory. Only pre-approved command prefixes run; "
-                "anything else is denied by the gateway. No shell is used, so shell "
-                "metacharacters are rejected."
+                "as its working directory ('.' for the workspace root). Only "
+                "pre-approved command prefixes run (e.g. 'python -m pytest' when "
+                "the scenario scope allowlists it); anything else is denied by "
+                "the gateway (COMMAND_NOT_ALLOWED or UNSUPPORTED_OPERATION). "
+                "No shell is used, so shell metacharacters are rejected. "
+                "Network tools such as curl are never allowlisted."
             ),
             "parameters": {
                 "type": "object",
