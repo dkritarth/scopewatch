@@ -897,7 +897,7 @@ def test_bypass_approval_from_another_run_rejected(
         )
 
 
-def test_bypass_approve_after_run_completed_KNOWN_GAP(
+def test_bypass_approve_after_run_completed_rejected(
     svc_env: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A pending approval cannot execute or reopen a completed run."""
