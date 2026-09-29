@@ -4,12 +4,6 @@ Each case submits a hostile action, asserts the expected policy/audit
 decision, and asserts that nothing executed when denied (NOT_EXECUTED
 receipt plus sensitive fixtures byte-identical before/after).
 
-One case still documents a known gap as current behavior; issue #64 tracks it:
-
-- ``test_bypass_approve_after_run_completed_KNOWN_GAP``: resolving a
-  pending approval after the run completed executes and flips COMPLETED
-  back to ACTIVE (no run-status guard in ``resolve_approval``).
-
 Docker-daemon tests skip cleanly when no daemon is reachable.
 """
 
@@ -903,27 +897,67 @@ def test_bypass_approval_from_another_run_rejected(
         )
 
 
-def test_bypass_approve_after_run_completed_KNOWN_GAP(svc_env: dict) -> None:
-    """KNOWN GAP (filed as type:bug candidate, fix left for follow-up):
-    ``resolve_approval`` has no run-status guard, so approving a still
-    pending approval after the run COMPLETED executes the action and flips
-    the run back to ACTIVE. A policy DENY still cannot be approved — this
-    is a lifecycle hole, not a policy override."""
+def test_bypass_approve_after_run_completed_rejected(
+    svc_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pending approval cannot execute or reopen a completed run."""
     service: ScopewatchService = svc_env["service"]
     run = svc_env["run"]
     res = _submit_hold(svc_env)
     assert res.approval_request is not None
     service.complete_run(run.id)
     assert service.get_run(run.id).status == RunStatus.COMPLETED
-    resolved = asyncio.run(
-        service.resolve_approval(
-            res.approval_request.id, approve=True, resolved_by="reviewer-1"
+    events_before = service.get_events(run.id)
+
+    def reject_execution(*args, **kwargs):
+        pytest.fail("Executor was called for a completed run")
+
+    monkeypatch.setattr("scopewatch.service.execute_action", reject_execution)
+    with pytest.raises(ScopewatchAPIError) as exc:
+        asyncio.run(
+            service.resolve_approval(
+                res.approval_request.id, approve=True, resolved_by="reviewer-1"
+            )
         )
-    )
-    assert resolved.approval_request.status == ApprovalStatus.CONSUMED
-    assert resolved.execution_receipt is not None
-    assert resolved.execution_receipt.status == ExecutionStatus.EXECUTED
-    assert service.get_run(run.id).status == RunStatus.ACTIVE
+    assert exc.value.code == "RUN_NOT_ACTIVE"
+    action = service.get_action(run.id, res.action_request.id)
+    assert action.approval_request is not None
+    assert action.approval_request.status == ApprovalStatus.PENDING
+    assert action.approval_request.resolved_at is None
+    assert action.execution_receipt is None
+    assert service.get_events(run.id) == events_before
+    assert service.get_run(run.id).status == RunStatus.COMPLETED
+
+    # Repeated attempts cannot use the still-pending approval.
+    with pytest.raises(ScopewatchAPIError) as retry:
+        asyncio.run(
+            service.resolve_approval(
+                res.approval_request.id, approve=True, resolved_by="reviewer-2"
+            )
+        )
+    assert retry.value.code == "RUN_NOT_ACTIVE"
+    assert service.get_action(run.id, res.action_request.id).execution_receipt is None
+    assert service.get_run(run.id).status == RunStatus.COMPLETED
+
+
+def test_bypass_approve_after_run_failed_rejected(svc_env: dict) -> None:
+    service: ScopewatchService = svc_env["service"]
+    run = svc_env["run"]
+    res = _submit_hold(svc_env)
+    assert res.approval_request is not None
+    service.fail_run(run.id)
+    events_before = service.get_events(run.id)
+
+    with pytest.raises(ScopewatchAPIError) as exc:
+        asyncio.run(service.resolve_approval(res.approval_request.id, approve=True))
+
+    assert exc.value.code == "RUN_NOT_ACTIVE"
+    action = service.get_action(run.id, res.action_request.id)
+    assert action.approval_request is not None
+    assert action.approval_request.status == ApprovalStatus.PENDING
+    assert action.execution_receipt is None
+    assert service.get_events(run.id) == events_before
+    assert service.get_run(run.id).status == RunStatus.FAILED
 
 
 def test_bypass_racing_two_approvals_serializes(svc_env: dict) -> None:
