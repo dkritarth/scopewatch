@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import importlib.util
 import json
 from pathlib import Path
+import re
 import uuid
 
 import httpx
@@ -386,6 +387,45 @@ def test_runner_handle_execute_refuses_digest_mismatch(tmp_path: Path) -> None:
 
 # ---------------- Socket isolation + backend matrix ----------------
 
+# Files outside ``deploy/executor-runner/`` that are allowed to *name* the
+# Docker socket, because their entire job is to verify it is NOT mounted and
+# NOT reachable. An entry is still scanned for mount/dial patterns below,
+# and every one of its ``docker.sock`` mentions must sit on an
+# absence-asserting line (see NEGATIVE_CONTEXT_MARKERS).
+SOCKET_VERIFIER_ALLOWLIST = frozenset(
+    {
+        # Static M2 verifier: asserts "docker.sock" not in the executor
+        # source so the image never gains a socket mount.
+        "scripts/check_docker_acceptance.py",
+    }
+)
+
+# Patterns that would actually obtain the socket: spell out the host path,
+# bind-mount it into a container, or dial it. Applied to every scanned file,
+# allowlisted verifiers included, so a verifier may only *inspect source for*
+# the socket string, never reach for the socket itself.
+DANGEROUS_SOCKET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"/(?:var/)?run[^\"'\s]*docker\.sock"), "host socket path"),
+    (re.compile(r"docker\.sock\s*:\s*/"), "bind-mount of the socket"),
+    (re.compile(r"unix://[^\"'\s]*docker\.sock"), "DOCKER_HOST dial"),
+    (re.compile(r"docker\.from_env"), "docker SDK daemon handle"),
+    (re.compile(r"\bAF_UNIX\b|\buds\s*="), "raw unix-socket dial"),
+)
+
+# Markers that keep an allowlisted verifier's ``docker.sock`` mention inside
+# an absence-asserting context (compared against inspected source that must
+# not contain it, or described as unreachable).
+NEGATIVE_CONTEXT_MARKERS = (
+    "not in",
+    "!=",
+    "absent",
+    "absence",
+    "never",
+    "must not",
+    "unreachable",
+    "no-",
+)
+
 
 def test_no_docker_socket_outside_runner() -> None:
     """Gateway/gate/caddy/proxy code must never reference the Docker socket.
@@ -395,6 +435,11 @@ def test_no_docker_socket_outside_runner() -> None:
     ``deploy/executor-runner/``. Test assertions (``backend/tests``) and
     prose docs intentionally mention ``docker.sock`` to assert its absence;
     they are not deployable runtime and are out of scope here.
+
+    Exception: ``SOCKET_VERIFIER_ALLOWLIST`` holds scripts whose job is to
+    prove the socket stays unmounted/unreachable. Those still must not
+    contain any mount/dial pattern, and each of their ``docker.sock``
+    mentions must read as an absence assertion.
     """
     repo_root = Path(__file__).resolve().parents[2]
     scanned = [
@@ -405,6 +450,7 @@ def test_no_docker_socket_outside_runner() -> None:
     ]
     allowed_dir = repo_root / "deploy" / "executor-runner"
     offenders: list[str] = []
+    weak_verifier_mentions: list[str] = []
     for root in scanned:
         if not root.exists():
             continue
@@ -417,8 +463,26 @@ def test_no_docker_socket_outside_runner() -> None:
                 text = path.read_text(encoding="utf-8", errors="strict")
             except Exception:
                 continue
-            if "docker.sock" in text:
-                offenders.append(str(path.relative_to(repo_root)))
+            rel = str(path.relative_to(repo_root))
+            # Nothing outside the runner may mount or dial the socket, not
+            # even an allowlisted verifier.
+            for pattern, label in DANGEROUS_SOCKET_PATTERNS:
+                if pattern.search(text):
+                    offenders.append(f"{rel} ({label})")
+            if "docker.sock" not in text:
+                continue
+            if rel not in SOCKET_VERIFIER_ALLOWLIST:
+                offenders.append(rel)
+                continue
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                if "docker.sock" in line and not any(
+                    marker in line for marker in NEGATIVE_CONTEXT_MARKERS
+                ):
+                    weak_verifier_mentions.append(f"{rel}:{lineno}")
+    assert weak_verifier_mentions == [], (
+        "verifier allowlist entries must mention the socket only to assert "
+        f"its absence: {weak_verifier_mentions}"
+    )
     assert offenders == [], f"socket references outside deploy/executor-runner/: {offenders}"
 
 

@@ -82,8 +82,12 @@ gateway's `SCOPEWATCH_EXECUTOR=remote`,
   `backend/tests/test_executor_remote.py::test_no_docker_socket_outside_runner`,
   which fails the suite if `docker.sock` appears in `backend/scopewatch`,
   `frontend`, `scripts`, or `deploy` outside `deploy/executor-runner/`).
-  The gateway, gate, and caddy images and services must never gain a socket
-  mount; review any deploy change that touches `volumes:` for this.
+  The single exemption is an explicit verifier allowlist
+  (`scripts/check_docker_acceptance.py`, which only asserts the socket is
+  absent from the executor image); those files are still scanned for
+  mount/dial patterns and must mention the socket in an absence-asserting
+  context. The gateway, gate, and caddy images and services must never gain
+  a socket mount; review any deploy change that touches `volumes:` for this.
 - **Token theft window.** The bearer token is a shared secret: anyone who
   can read it (deploy `.env`, process env, internal network capture) can
   submit dispatches — but each dispatch still needs a fresh single-use
