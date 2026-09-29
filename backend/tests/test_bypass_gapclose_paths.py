@@ -103,21 +103,24 @@ def _assert_denied(run: Run, ws: Path, resource: str, reason: ReasonCode) -> Non
 
 
 def test_gapclose_backslash_traversal_is_inert(gap_workspace: Path, gap_run: Run) -> None:
-    """Backslash ``..`` passes the lexical ``..`` screen (POSIX parts do not
-    split on ``\\``) so policy ALLOWs — but on Linux the executor treats the
-    whole string as one literal filename, so execution fails file-not-found
-    and nothing is disclosed. Same inert class as the encoded-traversal cases
-    in ``test_bypass.py`` (which covers ``%2e`` forms, not backslashes)."""
+    """Backslash ``..`` traversal is inert — and since issues #69/#70 it is
+    inert by DENY, not by executor luck. ``normalize_relative_path`` folds
+    ``\\`` to ``/`` before matching, so both variants resolve into the
+    blocked ``invoices/private`` directory and policy returns
+    ``DENY BLOCKED_PATH`` with a ``NOT_EXECUTED`` receipt.
+
+    Inverted from the pre-#69 assertion (ALLOW + executor FAILED): back then
+    the lexical ``..`` screen missed the backslash form (POSIX ``Path.parts``
+    does not split on ``\\``) and only the Linux executor's literal-filename
+    lookup kept the read from succeeding. The guarantee now fails closed at
+    the policy, before any execution attempt. Same inert class as the
+    encoded-traversal cases in ``test_bypass.py`` (which covers ``%2e``
+    forms, not backslashes)."""
     for resource in (
         "invoices\\approved\\..\\private\\payroll.txt",
         "invoices/approved\\..\\private/payroll.txt",
     ):
-        action = _read(gap_run, resource)
-        decision = evaluate_policy(action, gap_run, gap_workspace)
-        assert decision.outcome == PolicyOutcome.ALLOW
-        receipt = execute_action(action, gap_workspace, policy_decision=decision)
-        assert receipt.status == ExecutionStatus.FAILED
-        assert "CONFIDENTIAL" not in str(receipt.sanitized_result)
+        _assert_denied(gap_run, gap_workspace, resource, ReasonCode.BLOCKED_PATH)
     assert (gap_workspace / "invoices" / "private" / "payroll.txt").read_text(
         encoding="utf-8"
     ) == "CONFIDENTIAL"
@@ -232,36 +235,50 @@ def test_gapclose_more_unicode_confusables_denied(
     _assert_denied(gap_run, gap_workspace, resource, ReasonCode.PATH_NOT_ALLOWED)
 
 
-def test_gapclose_symlink_dir_read_serves_blocked_KNOWN_GAP(
+def test_gapclose_symlink_dir_read_of_blocked_is_denied(
     gap_workspace: Path, gap_run: Run,
 ) -> None:
-    """KNOWN GAP, same root cause as issue #63 (file-symlink variant is
+    """Regression for issue #63 (fixed by PR #69; dir-symlink read variant of
     ``test_bypass_symlink_to_blocked_serves_content_KNOWN_GAP``): a symlinked
     *directory* inside an allowed path pointing at a blocked directory is
-    served. Lexical blocked matching sees ``outputs/linkdir/...`` (allowed);
-    the executor only checks workspace containment, which the resolved target
-    satisfies. No new issue filed — #63 owns this class."""
+    DENIED. Policy resolves the link and checks the canonical target, so
+    ``outputs/linkdir/payroll.txt`` matches blocked ``invoices/private``.
+    Inverted from the pre-#69 assertion (ALLOW + EXECUTED + blocked preview
+    served): the alias can no longer authorize a blocked target. Asserts
+    DENY, NOT_EXECUTED, no disclosure, and byte-identical blocked bytes."""
     (gap_workspace / "outputs" / "linkdir").symlink_to(
         "../invoices/private", target_is_directory=True
     )
+    before = (gap_workspace / "invoices" / "private" / "payroll.txt").read_text(
+        encoding="utf-8"
+    )
     action = _read(gap_run, "outputs/linkdir/payroll.txt")
     decision = evaluate_policy(action, gap_run, gap_workspace)
-    assert decision.outcome == PolicyOutcome.ALLOW
+    assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.BLOCKED_PATH
     receipt = execute_action(action, gap_workspace, policy_decision=decision)
-    assert receipt.status == ExecutionStatus.EXECUTED
-    assert "CONFIDENTIAL" in str(receipt.sanitized_result.get("preview", ""))
+    assert receipt.status == ExecutionStatus.NOT_EXECUTED
+    assert "CONFIDENTIAL" not in str(receipt.sanitized_result)
+    assert (gap_workspace / "invoices" / "private" / "payroll.txt").read_text(
+        encoding="utf-8"
+    ) == before
 
 
-def test_gapclose_write_through_symlink_dir_lands_in_blocked_KNOWN_GAP(
+def test_gapclose_write_through_symlink_dir_is_denied(
     gap_workspace: Path, gap_run: Run,
 ) -> None:
-    """KNOWN GAP, issue #63 class (write variant): ``write_text`` through a
-    symlinked directory inside an allowed path lands inside the blocked
-    directory. Policy ALLOWs lexically; executor containment passes because
-    the resolved target is still inside the workspace. Asserts current
-    behaviour; the #63 fix (resolve-then-recheck) must cover write paths too."""
+    """Regression for issue #63 (fixed by PR #69; write variant): ``write_text``
+    through a symlinked directory inside an allowed path no longer lands in
+    the blocked directory. The resolved target resolves to
+    ``invoices/private/evil.txt``, so policy returns ``DENY BLOCKED_PATH``.
+    Inverted from the pre-#69 assertion (ALLOW + EXECUTED + file written into
+    the blocked dir): asserts DENY, NOT_EXECUTED, no file created in the
+    blocked directory, and byte-identical blocked bytes."""
     (gap_workspace / "outputs" / "wlink").symlink_to(
         "../invoices/private", target_is_directory=True
+    )
+    before = (gap_workspace / "invoices" / "private" / "payroll.txt").read_text(
+        encoding="utf-8"
     )
     action = ActionRequest(
         id=str(uuid.uuid4()),
@@ -273,12 +290,14 @@ def test_gapclose_write_through_symlink_dir_lands_in_blocked_KNOWN_GAP(
         requested_at=datetime.now(timezone.utc).isoformat(),
     )
     decision = evaluate_policy(action, gap_run, gap_workspace)
-    assert decision.outcome == PolicyOutcome.ALLOW
+    assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.BLOCKED_PATH
     receipt = execute_action(action, gap_workspace, policy_decision=decision)
-    assert receipt.status == ExecutionStatus.EXECUTED
-    assert (gap_workspace / "invoices" / "private" / "evil.txt").read_text(
+    assert receipt.status == ExecutionStatus.NOT_EXECUTED
+    assert not (gap_workspace / "invoices" / "private" / "evil.txt").exists()
+    assert (gap_workspace / "invoices" / "private" / "payroll.txt").read_text(
         encoding="utf-8"
-    ) == "pwned"
+    ) == before
 
 
 def test_gapclose_allowed_write_creates_regular_file(

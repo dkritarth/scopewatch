@@ -28,6 +28,7 @@ from scopewatch.executor_docker import (
     DOCKER_MEMORY,
     DOCKER_PIDS_LIMIT,
     DOCKER_USER,
+    EXECUTOR_IMAGE_ENV_VAR,
     RUN_COMMAND_MAX_TIMEOUT_S,
     RUN_COMMAND_MIN_TIMEOUT_S,
     RUN_COMMAND_OUTPUT_LIMIT,
@@ -217,12 +218,26 @@ def _snapshot_secret(svc_dict: dict) -> str:
 # --- Executor hardening without a daemon ---
 
 
-def test_gapclose_docker_image_is_digest_pinned() -> None:
-    """The executor image resolves to a digest-pinned reference, never a
-    floating tag — a supply-chain guard assertable without a daemon."""
-    image = resolve_executor_image()
-    assert "@sha256:" in image
+def test_gapclose_docker_image_is_digest_pinned(monkeypatch) -> None:
+    """The executor's *source* image constant is digest-pinned, never a
+    floating tag — a supply-chain guard assertable without a daemon.
+
+    Asserts on ``DOCKER_IMAGE`` rather than ``resolve_executor_image()``
+    because CI exports ``SCOPEWATCH_EXECUTOR_IMAGE=scopewatch-executor:ci``
+    (a locally built test tag), which legitimately overrides the pin at
+    runtime; asserting the runtime value would test the CI environment, not
+    the shipped default. The override itself is asserted separately below so
+    the pin and the escape hatch are both covered."""
     assert DOCKER_IMAGE.startswith("python:3.12-slim-bookworm@sha256:")
+    assert "@sha256:" in DOCKER_IMAGE
+    digest = DOCKER_IMAGE.split("@sha256:", 1)[1]
+    assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+
+    monkeypatch.delenv(EXECUTOR_IMAGE_ENV_VAR, raising=False)
+    assert resolve_executor_image() == DOCKER_IMAGE
+    monkeypatch.setenv(EXECUTOR_IMAGE_ENV_VAR, "scopewatch-executor:ci")
+    assert resolve_executor_image() == "scopewatch-executor:ci"
+    assert resolve_executor_image("explicit:tag") == "explicit:tag"
 
 
 def test_gapclose_docker_isolation_constants() -> None:
