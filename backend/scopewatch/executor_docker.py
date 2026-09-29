@@ -30,6 +30,7 @@ from scopewatch.schemas import (
     ApprovalRequest,
     ExecutionReceipt,
     PolicyDecision,
+    TaskScope,
 )
 
 # Pinned base image digest (Debian bookworm slim Python).
@@ -464,6 +465,7 @@ class DockerExecutor:
         workspace_root: Path,
         policy_decision: Optional[PolicyDecision] = None,
         approval_request: Optional[ApprovalRequest] = None,
+        task_scope: Optional[TaskScope] = None,
     ) -> ExecutionReceipt:
         receipt_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc).isoformat()
@@ -522,6 +524,16 @@ class DockerExecutor:
 
             raise ExecutionSecurityError("Network requests are forbidden in synthetic executor.")
 
+        from scopewatch.executor import ExecutionSecurityError, _verify_scoped_target
+
+        try:
+            _verify_scoped_target(
+                workspace_root, action.resource, task_scope,
+                require_allowed=action.operation != "run_command",
+            )
+        except (ExecutionSecurityError, OSError, RuntimeError):
+            return _failed("EXECUTION_FAILED", "Resolved path violates the task scope.")
+
         if not is_docker_available():
             return _failed("EXECUTION_FAILED", "Docker daemon unavailable; failing closed.")
 
@@ -538,6 +550,13 @@ class DockerExecutor:
                 )
             except OSError:
                 return _failed("EXECUTION_FAILED", "Workspace staging failed.")
+            try:
+                _verify_scoped_target(
+                    workspace_copy, action.resource, task_scope,
+                    require_allowed=action.operation != "run_command",
+                )
+            except (ExecutionSecurityError, OSError, RuntimeError):
+                return _failed("EXECUTION_FAILED", "Resolved path violates the task scope.")
             # run_command (issue #36): normalize argv + timeout on the host so
             # the container always receives the argv list form with no shell.
             # The policy already allowlisted the command; a failure to
@@ -645,6 +664,7 @@ def execute_action_docker(
     policy_decision: Optional[PolicyDecision] = None,
     approval_request: Optional[ApprovalRequest] = None,
     image: Optional[str] = None,
+    task_scope: Optional[TaskScope] = None,
 ) -> ExecutionReceipt:
     """Convenience wrapper used by the gateway entry point and tests."""
     return DockerExecutor(image=image).execute(
@@ -652,4 +672,5 @@ def execute_action_docker(
         workspace_root,
         policy_decision=policy_decision,
         approval_request=approval_request,
+        task_scope=task_scope,
     )

@@ -18,7 +18,8 @@ from scopewatch.models import (
     PolicyOutcome,
     SUPPORTED_OPERATIONS,
 )
-from scopewatch.schemas import ActionRequest, ApprovalRequest, ExecutionReceipt, PolicyDecision
+from scopewatch.path_access import normalize_relative_path, scoped_path_reason
+from scopewatch.schemas import ActionRequest, ApprovalRequest, ExecutionReceipt, PolicyDecision, TaskScope
 
 
 class ExecutionSecurityError(Exception):
@@ -44,11 +45,32 @@ def _verify_workspace_containment(workspace_root: Path, target_path: Path) -> Pa
     return resolved_target
 
 
+def _verify_scoped_target(
+    workspace_root: Path, resource: str, task_scope: Optional[TaskScope],
+    *, require_allowed: bool = True,
+) -> Path:
+    """Re-resolve immediately before execution; use the checked target for I/O."""
+    root = workspace_root.resolve()
+    requested = normalize_relative_path(resource)
+    target = _verify_workspace_containment(root, root / requested)
+    canonical = target.relative_to(root)
+    if task_scope is None:
+        # A direct caller without scope evidence cannot authorize an alias.
+        if canonical != requested:
+            raise ExecutionSecurityError("Symlink target requires task scope evidence.")
+    else:
+        allowed = task_scope.allowed_paths if require_allowed else ["."]
+        if scoped_path_reason(requested, canonical, allowed, task_scope.blocked_paths):
+            raise ExecutionSecurityError("Resolved path violates the task scope.")
+    return target
+
+
 def _execute_local(
     action: ActionRequest,
     workspace_root: Path,
     policy_decision: Optional[PolicyDecision] = None,
     approval_request: Optional[ApprovalRequest] = None,
+    task_scope: Optional[TaskScope] = None,
 ) -> ExecutionReceipt:
     """Execute an authorized action inside the synthetic workspace (local backend)."""
     receipt_id = str(uuid.uuid4())
@@ -98,10 +120,11 @@ def _execute_local(
 
     # Target path resolution
     resolved_workspace = workspace_root.resolve()
-    target_path = resolved_workspace / action.resource
 
     try:
-        _verify_workspace_containment(resolved_workspace, target_path)
+        target_path = _verify_scoped_target(
+            resolved_workspace, action.resource, task_scope
+        )
 
         if action.operation == "list_directory":
             if not target_path.exists():
@@ -278,6 +301,7 @@ def execute_action(
     workspace_root: Path,
     policy_decision: Optional[PolicyDecision] = None,
     approval_request: Optional[ApprovalRequest] = None,
+    task_scope: Optional[TaskScope] = None,
 ) -> ExecutionReceipt:
     """Single gateway entry point; dispatches to the configured backend.
 
@@ -297,6 +321,7 @@ def execute_action(
             workspace_root,
             policy_decision=policy_decision,
             approval_request=approval_request,
+            task_scope=task_scope,
         )
     if backend == "remote":
         from scopewatch.executor_remote import RemoteExecutor
@@ -312,4 +337,5 @@ def execute_action(
         workspace_root,
         policy_decision=policy_decision,
         approval_request=approval_request,
+        task_scope=task_scope,
     )

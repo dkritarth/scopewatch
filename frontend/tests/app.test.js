@@ -1,9 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  APPROVAL_CONFIRM_COPY,
   PROVENANCE_LABELS,
+  approvalConfirmStep,
+  getHoldIcon,
+  getHoldKind,
   getProvenanceLabel,
+  getSseBannerCopy,
+  groupEventsByTurn,
+  panelStatus,
   renderHighlightedText,
+  renderPanelStatus,
+  safeTransformApiEvent,
   transformApiEvent,
 } from "../scripts/app.js";
 
@@ -286,4 +295,140 @@ test("renderHighlightedText is completely XSS-resilient with script and HTML tag
   assert.equal(marks.length, 2);
   assert.equal(marks[0].textContent, "alert(1)");
   assert.equal(marks[1].textContent, "onerror=alert(2)");
+});
+
+test("safeTransformApiEvent never throws and skips malformed frames with a warning", () => {
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    assert.equal(safeTransformApiEvent(null), null);
+    assert.equal(safeTransformApiEvent(undefined), null);
+    assert.equal(safeTransformApiEvent("garbage"), null);
+    assert.equal(safeTransformApiEvent(42), null);
+    assert.equal(safeTransformApiEvent({}), null, "frame without id/sequence is skipped");
+    assert.equal(safeTransformApiEvent({ id: "no-seq" }), null);
+  } finally {
+    console.warn = origWarn;
+  }
+  assert.equal(warnings.length, 6);
+  assert.ok(warnings.every((w) => /skipping/.test(w)));
+});
+
+test("safeTransformApiEvent passes valid frames through unchanged", () => {
+  const raw = {
+    id: "ev-good",
+    sequence: 11,
+    event_type: "POLICY_HELD",
+    details: { reason_code: "APPROVAL_REQUIRED", tool: "workspace", operation: "delete_path" },
+  };
+  const viaSafe = safeTransformApiEvent(raw);
+  const viaDirect = transformApiEvent({ ...raw, details: { ...raw.details } });
+  assert.deepEqual(viaSafe, viaDirect);
+  assert.equal(viaSafe.status, "pending-approval");
+});
+
+test("hold kinds carry distinct icons plus text (never colour alone)", () => {
+  assert.equal(getHoldKind({ status: "pending-approval", reasonCode: "APPROVAL_REQUIRED" }), "policy");
+  assert.equal(getHoldKind({ status: "pending-approval", reasonCode: "REASONING_SCOPE_CONCERN" }), "concern");
+  assert.equal(getHoldKind({ status: "pending-approval", reasonCode: "REASONING_AUDIT_FAILED" }), "failed");
+  assert.equal(getHoldKind({ status: "executed" }), null);
+  assert.equal(getHoldKind(null), null);
+  const icons = new Set([getHoldIcon("policy"), getHoldIcon("concern"), getHoldIcon("failed")]);
+  assert.equal(icons.size, 3, "each hold kind needs its own icon glyph");
+  for (const icon of icons) {
+    assert.ok(icon.length > 0, "icon glyph must be non-empty text");
+  }
+  assert.equal(getHoldIcon("unknown"), "");
+});
+
+test("approval double-confirm arms first, fires on second, blocks while pending", () => {
+  assert.deepEqual(approvalConfirmStep("idle", "approve"), { next: "armed-approve", fire: null });
+  assert.deepEqual(approvalConfirmStep("idle", "deny"), { next: "armed-deny", fire: null });
+  assert.deepEqual(approvalConfirmStep("armed-approve", "approve"), { next: "pending", fire: "approve" });
+  assert.deepEqual(approvalConfirmStep("armed-deny", "deny"), { next: "pending", fire: "deny" });
+  // Switching target re-arms instead of firing
+  assert.deepEqual(approvalConfirmStep("armed-approve", "deny"), { next: "armed-deny", fire: null });
+  assert.deepEqual(approvalConfirmStep("armed-deny", "approve"), { next: "armed-approve", fire: null });
+  // Pending actions are single-use: further clicks are ignored
+  assert.deepEqual(approvalConfirmStep("pending", "approve"), { next: "pending", fire: null });
+  assert.deepEqual(approvalConfirmStep("pending", "deny"), { next: "pending", fire: null });
+  // Reset disarms without firing
+  assert.deepEqual(approvalConfirmStep("armed-approve", "reset"), { next: "idle", fire: null });
+  // Confirm button copy is explicit text, not colour alone
+  assert.match(APPROVAL_CONFIRM_COPY.confirmApprove, /Confirm approve/);
+  assert.match(APPROVAL_CONFIRM_COPY.confirmDeny, /Confirm deny/);
+});
+
+test("panelStatus maps loading/error/empty/ready with explicit copy", () => {
+  const copy = { loadingText: "Loading runs…", errorText: "Could not load runs.", emptyText: "No runs available." };
+  assert.deepEqual(panelStatus({ loading: true }, copy), { kind: "loading", text: "Loading runs…" });
+  // Loading wins over error/empty so spinners never flicker into errors
+  assert.deepEqual(panelStatus({ loading: true, error: new Error("x"), count: 0 }, copy).kind, "loading");
+  const errStatus = panelStatus({ error: new Error("boom") }, copy);
+  assert.equal(errStatus.kind, "error");
+  assert.match(errStatus.text, /Could not load runs\./);
+  assert.match(errStatus.text, /boom/);
+  assert.deepEqual(panelStatus({ count: 0 }, copy), { kind: "empty", text: "No runs available." });
+  assert.deepEqual(panelStatus({ count: 3 }, copy), { kind: "ready", text: "" });
+});
+
+test("renderPanelStatus toggles the region without innerHTML", () => {
+  const region = { hidden: true, textContent: "" };
+  assert.equal(renderPanelStatus(region, { kind: "loading", text: "Loading…" }), "loading");
+  assert.equal(region.hidden, false);
+  assert.equal(region.textContent, "Loading…");
+  assert.equal(renderPanelStatus(region, { kind: "ready", text: "" }), "ready");
+  assert.equal(region.hidden, true);
+});
+
+test("SSE banner copy is visible text with a glyph for reconnecting/stale/polling", () => {
+  const recon = getSseBannerCopy("reconnecting", "Reconnecting live stream (attempt 2, retry in 4s)...");
+  assert.equal(recon.visible, true);
+  assert.ok(recon.glyph.length > 0);
+  assert.match(recon.text, /attempt 2/);
+  const stale = getSseBannerCopy("stale", "No live frames for 45s. Showing last known state.");
+  assert.equal(stale.visible, true);
+  assert.match(stale.text, /last known state/);
+  const polling = getSseBannerCopy("polling", "Live stream unavailable. Polling for updates.");
+  assert.equal(polling.visible, true);
+  assert.equal(getSseBannerCopy("connected").visible, false);
+  assert.equal(getSseBannerCopy("disconnected").visible, false);
+});
+
+test("transformApiEvent keeps attacker-controlled strings as inert data", () => {
+  const payload = '<script>alert(1)</script><img src=x onerror=alert(2)>';
+  const res = transformApiEvent({
+    id: "ev-xss",
+    sequence: 99,
+    event_type: "ACTION_REQUESTED",
+    details: {
+      tool: payload,
+      operation: payload,
+      resource: payload,
+      reasoning_summary: payload,
+      exposed_reasoning_trace: payload,
+    },
+  });
+  // Verbatim preservation as strings: safe for textContent rendering downstream
+  assert.equal(res.tool, payload);
+  assert.equal(res.operation, payload);
+  assert.equal(res.resource, payload);
+  assert.equal(res.reasoningSummary, payload);
+  assert.equal(res.exposedReasoningTrace, payload);
+  assert.equal(typeof res.title, "string");
+});
+
+test("groupEventsByTurn handles empty and snake_case turn ids", () => {
+  assert.deepEqual(groupEventsByTurn([]), []);
+  assert.deepEqual(groupEventsByTurn(null), []);
+  const groups = groupEventsByTurn([
+    { id: "a", turn_id: "t-1" },
+    { id: "b", turnId: "t-1" },
+    { id: "c" },
+  ]);
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].turnId, "t-1");
+  assert.deepEqual(groups[0].events.map((e) => e.id), ["a", "b"]);
+  assert.equal(groups[1].turnId, null);
 });

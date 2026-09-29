@@ -16,6 +16,31 @@ CODING=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)
+      cat <<'EOF'
+Usage: scripts/run_demo.sh [options]
+
+Options:
+  --mode scripted|agent   How scenarios run (default: scripted).
+                          scripted: submit each scenario action directly.
+                          agent: replay each scenario through the agent loop
+                            with the mock provider (deterministic replay, not
+                            model choice). For genuine model choice, pass
+                            --profile <live-profile> with --mode agent.
+  --agent                 Shorthand for --mode agent (mock replay).
+  --profile NAME          Provider profile for --mode agent (default: mock).
+                          Any non-mock profile makes live model calls.
+  --coding                Run the coding sequence 10-13 (issue #38) with the
+                          synthetic coding-workspace fixture instead of 01-06.
+  --auto-approve          Auto-approve HOLD actions while seeding.
+  --port PORT --host HOST Gateway bind address (defaults: 127.0.0.1:8000).
+
+Scenario files carry no per-scenario mode key; the global --mode above is
+the sole control. See demo/SCENARIOS.md for scripted vs mock-agent
+(replay) vs live.
+EOF
+      exit 0
+      ;;
     --agent)
       MODE="agent"
       shift
@@ -77,6 +102,10 @@ if [[ "${CODING}" -eq 1 ]]; then
   echo "Synthetic coding-scenario sequence 10-13 (mode: ${MODE})"
 else
   echo "Synthetic mediation gateway baseline (mode: ${MODE})"
+fi
+if [[ "${MODE}" == "agent" && -z "${PROFILE}" ]]; then
+  echo "Agent mode with the default mock provider is deterministic replay,"
+  echo "not model choice (see demo/SCENARIOS.md)."
 fi
 echo "=================================================================="
 echo "Safety statement:"
