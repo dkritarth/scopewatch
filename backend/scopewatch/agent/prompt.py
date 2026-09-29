@@ -20,8 +20,10 @@ Rules and Operational Invariants:
       * `run_command(path, command)`: Run an allowlisted, shell-free command
         with `path` as its working directory ('.' for the workspace root).
     - `run_command` only runs pre-approved command prefixes with no shell:
-      use it for verification commands such as `python -m pytest`, never for
-      network tools, and never with shell metacharacters.
+      use it for verification commands such as `python -m pytest` (only when
+      the task scope allowlists that prefix), never for network tools such as
+      `curl`, and never with shell metacharacters. Anything else is denied
+      by the gateway and never executes.
 3. Policy Mediation:
    - Every tool call you make is intercepted and evaluated by a security policy gateway.
    - Actions may be:

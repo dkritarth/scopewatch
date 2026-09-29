@@ -1,0 +1,301 @@
+"""Remote executor backend for Scopewatch (issue #78).
+
+Dispatches Docker-isolated execution to the dedicated ``executor-runner``
+sidecar over an internal-only authenticated HTTP API, so the gateway never
+holds the Docker socket. Only the runner mounts the socket (or a rootless
+daemon); the gateway, gate, and caddy containers are provably socket-free
+(see the socket-grep test in ``backend/tests/test_executor_remote.py``).
+
+Trust model (fail closed everywhere):
+
+- Policy checks run on the gateway *before* any network call, mirroring the
+  local and Docker backends: a stored policy decision is required, ``DENY``
+  returns ``NOT_EXECUTED`` without touching the network, ``HOLD`` requires
+  an ``APPROVED``/``CONSUMED`` approval bound to the exact action, and
+  ``network_request`` is refused outright.
+- Auth is a pre-shared bearer token from the environment only
+  (``EXECUTOR_RUNNER_TOKEN``); it is never logged or echoed in errors.
+- Each dispatch carries a single-use dispatch token bound to one approved
+  action digest (SHA-256 over the canonical action + decision identity).
+  The runner enforces one-shot use with a 60s expiry and refuses replays
+  (HTTP 409) or digest mismatches (HTTP 409). The gateway maps any refusal,
+  error, timeout, or malformed runner output to ``FAILED``/``EXECUTION_FAILED``
+  and never falls back to local execution.
+- ``run_command`` argv normalization and timeout clamping reuse the Docker
+  backend limits (no shell, output caps enforced container-side).
+
+Environment (all server-side; never accept these from agent input):
+
+- ``SCOPEWATCH_EXECUTOR=remote`` selects this backend.
+- ``EXECUTOR_RUNNER_URL`` is the internal runner base URL
+  (e.g. ``http://executor-runner:8091``).
+- ``EXECUTOR_RUNNER_TOKEN`` is the pre-shared bearer secret.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import secrets
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+import httpx
+
+from scopewatch.executor_docker import (
+    clamp_run_command_timeout,
+    extract_run_command_argv,
+)
+from scopewatch.models import ApprovalStatus, ExecutionStatus, PolicyOutcome
+from scopewatch.schemas import (
+    ActionRequest,
+    ApprovalRequest,
+    ExecutionReceipt,
+    PolicyDecision,
+)
+
+EXECUTOR_NAME = "remote-executor"
+
+EXECUTOR_RUNNER_URL_ENV_VAR = "EXECUTOR_RUNNER_URL"
+EXECUTOR_RUNNER_TOKEN_ENV_VAR = "EXECUTOR_RUNNER_TOKEN"
+
+# Single-use dispatch tokens expire after 60s on the runner (issue #78).
+DISPATCH_TOKEN_TTL_S = 60
+
+# Upper bound for one remote dispatch: Docker backend timeout (60s) plus the
+# run_command buffer (30s). The runner enforces its own container timeout;
+# this is the gateway-side fail-closed cutoff.
+REMOTE_TIMEOUT_S = 90.0
+
+
+def compute_action_digest(
+    action: ActionRequest,
+    policy_decision: PolicyDecision,
+) -> str:
+    """Bind one dispatch to one approved action (hex SHA-256).
+
+    Canonical JSON covers the action identity (id, run, operation, resource,
+    arguments) plus the stored decision identity and outcome, so a token
+    minted for one action cannot be replayed for another. The runner
+    recomputes the same digest from the request body and refuses mismatches.
+    """
+    canonical = {
+        "action_id": action.id,
+        "run_id": action.run_id,
+        "operation": action.operation,
+        "resource": action.resource,
+        "arguments": action.arguments or {},
+        "policy_decision_id": policy_decision.id,
+        "policy_outcome": policy_decision.outcome.value,
+    }
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _new_dispatch_token() -> str:
+    """Mint one single-use dispatch token (runner enforces one-shot + TTL)."""
+    return secrets.token_urlsafe(32)
+
+
+def resolve_runner_config(
+    runner_url: Optional[str] = None,
+    runner_token: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve runner URL/token: explicit args win, else environment only."""
+    url = (runner_url if runner_url is not None else os.environ.get(EXECUTOR_RUNNER_URL_ENV_VAR, "")).strip()
+    token = runner_token if runner_token is not None else os.environ.get(EXECUTOR_RUNNER_TOKEN_ENV_VAR, "")
+    if token is not None:
+        token = token.strip()
+    return (url or None, token or None)
+
+
+class RemoteExecutor:
+    """Gateway-side client for the executor-runner sidecar."""
+
+    def __init__(
+        self,
+        runner_url: Optional[str] = None,
+        runner_token: Optional[str] = None,
+        timeout_s: float = REMOTE_TIMEOUT_S,
+        transport: Optional[httpx.BaseTransport] = None,
+    ) -> None:
+        url, token = resolve_runner_config(runner_url, runner_token)
+        self.runner_url = url.rstrip("/") if url else None
+        # Held in memory only; never logged or included in error output.
+        self._runner_token = token
+        self.timeout_s = timeout_s
+        self._transport = transport
+
+    def execute(
+        self,
+        action: ActionRequest,
+        workspace_root: Path,
+        policy_decision: Optional[PolicyDecision] = None,
+        approval_request: Optional[ApprovalRequest] = None,
+    ) -> ExecutionReceipt:
+        receipt_id = str(uuid.uuid4())
+        started_at = datetime.now(timezone.utc).isoformat()
+
+        def _failed(error_code: str, message: str) -> ExecutionReceipt:
+            completed_at = datetime.now(timezone.utc).isoformat()
+            return ExecutionReceipt(
+                id=receipt_id,
+                action_request_id=action.id,
+                status=ExecutionStatus.FAILED,
+                started_at=started_at,
+                completed_at=completed_at,
+                executor=EXECUTOR_NAME,
+                sanitized_result={"error": message},
+                error_code=error_code,
+                resource=action.resource,
+                operation=action.operation,
+            )
+
+        # Defence in depth: identical pre-network gates as the other
+        # backends. No decision, no dispatch; DENY never dispatches.
+        if policy_decision is None:
+            from scopewatch.executor import ExecutionSecurityError
+
+            raise ExecutionSecurityError(
+                "Direct execution without policy evidence is prohibited."
+            )
+        if policy_decision.outcome == PolicyOutcome.DENY:
+            completed_at = datetime.now(timezone.utc).isoformat()
+            return ExecutionReceipt(
+                id=receipt_id,
+                action_request_id=action.id,
+                status=ExecutionStatus.NOT_EXECUTED,
+                started_at=started_at,
+                completed_at=completed_at,
+                executor=EXECUTOR_NAME,
+                sanitized_result={"reason": "Policy outcome was DENY; execution blocked."},
+                error_code=policy_decision.reason_code.value,
+                resource=action.resource,
+                operation=action.operation,
+            )
+        if policy_decision.outcome == PolicyOutcome.HOLD:
+            if (
+                approval_request is None
+                or approval_request.status
+                not in (ApprovalStatus.APPROVED, ApprovalStatus.CONSUMED)
+                or approval_request.action_request_id != action.id
+            ):
+                from scopewatch.executor import ExecutionSecurityError
+
+                raise ExecutionSecurityError(
+                    "Held action requires valid approved status to execute."
+                )
+        if action.operation == "network_request":
+            from scopewatch.executor import ExecutionSecurityError
+
+            raise ExecutionSecurityError("Network requests are forbidden in synthetic executor.")
+
+        if not self.runner_url or not self._runner_token:
+            return _failed("EXECUTION_FAILED", "Remote executor unavailable; failing closed.")
+
+        # Normalize run_command on the gateway so the runner always receives
+        # the argv-list form with a clamped timeout (same limits as local
+        # Docker dispatch; the policy already allowlisted the command).
+        if action.operation == "run_command":
+            run_argv = extract_run_command_argv(action)
+            if run_argv is None:
+                return _failed("EXECUTION_FAILED", "Malformed run_command arguments.")
+            run_timeout_s = clamp_run_command_timeout(
+                (action.arguments or {}).get("timeout_s", 60.0)
+            )
+            action_arguments: dict[str, Any] = {"argv": run_argv, "timeout_s": run_timeout_s}
+        else:
+            action_arguments = dict(action.arguments or {})
+
+        dispatch_token = _new_dispatch_token()
+        action_digest = compute_action_digest(action, policy_decision)
+        payload = {
+            "dispatch_token": dispatch_token,
+            "action_digest": action_digest,
+            "action": {
+                "id": action.id,
+                "run_id": action.run_id,
+                "operation": action.operation,
+                "resource": action.resource,
+                "arguments": action_arguments,
+            },
+            "policy_decision": {
+                "id": policy_decision.id,
+                "outcome": policy_decision.outcome.value,
+            },
+            "approval": (
+                {
+                    "id": approval_request.id,
+                    "action_request_id": approval_request.action_request_id,
+                    "status": approval_request.status.value,
+                }
+                if approval_request is not None
+                else None
+            ),
+        }
+
+        try:
+            with httpx.Client(transport=self._transport, timeout=self.timeout_s) as client:
+                response = client.post(
+                    f"{self.runner_url}/execute",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {self._runner_token}"},
+                )
+        except httpx.TimeoutException:
+            return _failed("EXECUTION_FAILED", "Remote execution timed out.")
+        except Exception:
+            return _failed("EXECUTION_FAILED", "Remote execution failed.")
+        # Refusals (401 auth, 409 token-reuse/digest-mismatch, 4xx validation,
+        # 5xx runner errors) all fail closed with a static message: never echo
+        # the runner body (it may contain paths or diagnostics).
+        if response.status_code != 200:
+            if response.status_code == 409:
+                return _failed("EXECUTION_FAILED", "Remote dispatch refused.")
+            return _failed("EXECUTION_FAILED", "Remote execution failed.")
+        try:
+            body: dict[str, Any] = response.json()
+        except Exception:
+            return _failed("EXECUTION_FAILED", "Remote runner returned malformed output.")
+        status = body.get("status")
+        result = body.get("result") or {}
+        error_code = body.get("error_code")
+        if status not in ("EXECUTED", "FAILED") or not isinstance(result, dict):
+            return _failed("EXECUTION_FAILED", "Remote runner returned malformed output.")
+        completed_at = datetime.now(timezone.utc).isoformat()
+        return ExecutionReceipt(
+            id=receipt_id,
+            action_request_id=action.id,
+            status=ExecutionStatus.EXECUTED if status == "EXECUTED" else ExecutionStatus.FAILED,
+            started_at=started_at,
+            completed_at=completed_at,
+            executor=EXECUTOR_NAME,
+            sanitized_result=result,
+            error_code=error_code,
+            resource=action.resource,
+            operation=action.operation,
+        )
+
+
+def execute_action_remote(
+    action: ActionRequest,
+    workspace_root: Path,
+    policy_decision: Optional[PolicyDecision] = None,
+    approval_request: Optional[ApprovalRequest] = None,
+    runner_url: Optional[str] = None,
+    runner_token: Optional[str] = None,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> ExecutionReceipt:
+    """Convenience wrapper used by the gateway entry point and tests."""
+    return RemoteExecutor(
+        runner_url=runner_url,
+        runner_token=runner_token,
+        transport=transport,
+    ).execute(
+        action,
+        workspace_root,
+        policy_decision=policy_decision,
+        approval_request=approval_request,
+    )
