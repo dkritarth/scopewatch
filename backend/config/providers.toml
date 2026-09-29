@@ -1,7 +1,29 @@
 # Provider profiles for Scopewatch agent and auditor models.
-# API keys are read from environment variables specified by api_key_env.
-# Never commit real API keys or credentials to this file.
+#
+# Single source of model IDs: core code never hard-codes a model ID.
+# Use `get_mock_model_name()` / profile.model instead of string literals.
+# See docs/agents/provider-profiles.md for selection, keys, and reasoning fields.
+#
+# Selection (independent per role, may differ simultaneously):
+#   SCOPEWATCH_AGENT_PROFILE   (default: "mock")  -> agent loop model
+#   SCOPEWATCH_AUDITOR_PROFILE (default: "mock")  -> reasoning auditor model
+#   SCOPEWATCH_PROVIDERS_CONFIG                -> override path to this file (tests only)
+#
+# API keys are read ONLY from the environment variable named by `api_key_env`.
+# Never commit real API keys or credentials to this file. `.env.example`
+# lists SCOPEWATCH_AGENT_PROFILE, SCOPEWATCH_AUDITOR_PROFILE,
+# OPENROUTER_API_KEY, and NEBIUS_API_KEY with empty values.
+#
+# Reasoning extraction: the client checks provider-specific response fields
+# (e.g. reasoning_content, reasoning, reasoning_details) and sets provenance
+# to PROVIDER_EXPOSED_TRACE only when a provider field supplied raw reasoning.
+# Absent reasoning -> UNAVAILABLE. Never synthesized from `content`.
+# Retries: bounded exponential backoff on 429/5xx only (never on 400).
+# Errors are sanitized: no provider body or secret ever crosses into messages.
 
+# Offline deterministic profile for tests and CI. No network, no key.
+# `model` here is the single source for mock labels; code resolves it via
+# get_mock_model_name() so "no model ID in code" holds.
 [profiles.mock]
 name = "mock"
 model = "mock-rules-auditor"
@@ -9,6 +31,8 @@ base_url = "mock://localhost"
 timeout_s = 30.0
 max_retries = 0
 
+# Development profile via OpenRouter (OpenAI-compatible). Needs OPENROUTER_API_KEY.
+# Live calls are PENDING verification on machines with keys (#25); CI uses mock only.
 [profiles.openrouter-dev]
 name = "openrouter-dev"
 model = "nvidia/llama-3.1-nemotron-70b-instruct"
@@ -17,9 +41,12 @@ api_key_env = "OPENROUTER_API_KEY"
 timeout_s = 60.0
 max_retries = 3
 
+# How to request reasoning from this provider (forwarded as extra request params).
 [profiles.openrouter-dev.reasoning]
 effort = "high"
 
+# Demo profile via Nebius AI Studio (OpenAI-compatible, Nemotron). Needs NEBIUS_API_KEY.
+# Live calls are PENDING verification on machines with keys (#25); CI uses mock only.
 [profiles.nebius-demo]
 name = "nebius-demo"
 model = "nvidia/llama-3.1-nemotron-70b-instruct"

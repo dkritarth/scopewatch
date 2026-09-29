@@ -234,7 +234,13 @@ def seed_scenarios_agent(
     approval_timeout_s: float = 1.0,
     include_prefixes: tuple[str, ...] | list[str] | None = None,
 ) -> list[dict[str, object]]:
-    """Execute scenarios using AgentLoop and MockProviderClient (or specified --profile)."""
+    """Execute scenarios through AgentLoop.
+
+    With the default mock provider this is deterministic replay, not model
+    choice: each scenario's scripted actions are replayed verbatim via
+    build_scenario_mock_provider. Pass a live --profile for genuine model
+    choice.
+    """
     from fastapi.testclient import TestClient
     from scopewatch.app import create_app
     from scopewatch.agent.loop import AgentLoop, AgentRunResult
@@ -380,13 +386,19 @@ def main() -> None:
         type=str,
         choices=["scripted", "agent"],
         default="scripted",
-        help="Execution mode for scenarios ('scripted' or 'agent', default: 'scripted')",
+        help="How scenarios run (default: 'scripted'). 'scripted' submits each "
+        "scenario action directly; 'agent' replays each scenario through the "
+        "agent loop with the mock provider (deterministic replay, not model "
+        "choice). Scenario files carry no per-scenario mode key; this global "
+        "flag is the sole control. See demo/SCENARIOS.md.",
     )
     parser.add_argument(
         "--profile",
         type=str,
         default=None,
-        help="Provider profile name for agent mode (default: mock provider)",
+        help="Provider profile name for agent mode (default: mock provider, "
+        "which replays the scenario verbatim). A non-mock profile makes live "
+        "model calls that choose actions.",
     )
     parser.add_argument(
         "--approval-timeout",

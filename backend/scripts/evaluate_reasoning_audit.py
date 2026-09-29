@@ -30,6 +30,19 @@ from scopewatch.reasoning_audit import (
 logger = logging.getLogger("scopewatch.evaluate")
 
 
+class HeldoutTuningRefused(ValueError):
+    """Raised when a held-out run is requested with non-default auditor settings.
+
+    The held-out split must only ever be measured with pinned defaults.
+    Tune on `--split dev`, then run held-out clean (fail closed, no bypass).
+    """
+
+
+# Auditor settings that change audit behaviour and are therefore tuning
+# knobs. Any non-default value with `--split heldout` is refused outright.
+TUNING_KNOB_NAMES: tuple[str, ...] = ("max_trace_chars", "audit_timeout_s")
+
+
 def compute_file_hash(path: Path) -> str:
     """Compute SHA-256 hash of a file for cryptographic pinning."""
     sha = hashlib.sha256()
@@ -270,8 +283,31 @@ def evaluate_reasoning_auditor(
     seed: int = 42,
     output_path: Optional[str] = None,
     quiet: bool = False,
+    max_trace_chars: Optional[int] = None,
+    audit_timeout_s: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Run evaluation against the specified dataset split and return report."""
+    """Run evaluation against the specified dataset split and return report.
+
+    `max_trace_chars` and `audit_timeout_s` are dev-only tuning knobs: they
+    change auditor behaviour, so any non-default value with `split="heldout"`
+    raises :class:`HeldoutTuningRefused` instead of running. Tune on `dev`,
+    then measure held-out once with pinned defaults (fail closed, no bypass).
+    """
+    tuned = {
+        "max_trace_chars": max_trace_chars,
+        "audit_timeout_s": audit_timeout_s,
+    }
+    # Self-checking: the guard list and the wired knobs cannot drift apart
+    # silently (KeyError here beats an unguarded knob on held-out).
+    tuned = {name: tuned[name] for name in TUNING_KNOB_NAMES}
+    if split == "heldout" and any(v is not None for v in tuned.values()):
+        set_knobs = ", ".join(f"--{k.replace('_', '-')}={v}" for k, v in tuned.items() if v is not None)
+        raise HeldoutTuningRefused(
+            f"Refusing held-out run with tuning flags ({set_knobs}). "
+            "The held-out split is measured with pinned auditor defaults only; "
+            "tune on --split dev instead (see backend/fixtures/eval/README.md)."
+        )
+
     base_dir = Path(cases_dir) if cases_dir else Path("backend/fixtures/eval")
     if not base_dir.is_dir() and Path("fixtures/eval").is_dir():
         base_dir = Path("fixtures/eval")
@@ -283,7 +319,12 @@ def evaluate_reasoning_auditor(
     shuffled_cases = list(cases)
     rng.shuffle(shuffled_cases)
 
-    auditor = ReasoningAuditor(profile=profile)
+    auditor_kwargs: dict[str, Any] = {}
+    if max_trace_chars is not None:
+        auditor_kwargs["max_trace_chars"] = max_trace_chars
+    if audit_timeout_s is not None:
+        auditor_kwargs["timeout_s"] = audit_timeout_s
+    auditor = ReasoningAuditor(profile=profile, **auditor_kwargs)
     actual_model = auditor.model
 
     last_usage = attach_usage_capture(auditor)
@@ -348,6 +389,13 @@ def evaluate_reasoning_auditor(
             "dataset_hash": dataset_hash,
             "dataset_cases_count": len(cases),
             "seed": seed,
+            # Provenance for the tuning guard: held-out reports always carry
+            # pinned defaults (None = auditor default); dev reports record
+            # whatever knobs were under test.
+            "auditor_settings": {
+                "max_trace_chars": max_trace_chars,
+                "audit_timeout_s": audit_timeout_s,
+            },
         },
         "summary_metrics": metrics,
         "results": case_results,
@@ -404,6 +452,159 @@ def print_evaluation_summary(report: dict[str, Any]) -> None:
     print("=" * 78 + "\n")
 
 
+REQUIRED_METADATA_FIELDS: tuple[str, ...] = (
+    "evaluation_date",
+    "model",
+    "profile",
+    "prompt_version",
+    "dataset_split",
+    "dataset_hash",
+    "dataset_cases_count",
+    "seed",
+)
+
+REQUIRED_RESULT_FIELDS: tuple[str, ...] = (
+    "case_id",
+    "category",
+    "expected_verdict",
+    "actual_verdict",
+    "match",
+    "latency_ms",
+    "error_code",
+    "flagged_excerpts_count",
+    "total_tokens",
+    "prompt_tokens",
+    "completion_tokens",
+)
+
+KNOWN_CATEGORIES: frozenset[str] = frozenset({
+    "clean",
+    "drift",
+    "injection_following",
+    "exfiltration_intent",
+    "policy_evasion",
+    "ambiguous",
+})
+
+EXPECTED_VERDICTS: frozenset[str] = frozenset({"NO_CONCERN", "CONCERN"})
+ACTUAL_VERDICTS: frozenset[str] = frozenset({"NO_CONCERN", "CONCERN", "FAILED"})
+
+# Per-case keys that must never appear in a persisted report. Raw traces and
+# auditor explanations may quote untrusted content, so they stay in
+# console/logs only (see the logger.debug call in evaluate_reasoning_auditor).
+FORBIDDEN_RESULT_KEYS: tuple[str, ...] = (
+    "reasoning_trace",
+    "reasoning_text",
+    "trace",
+    "explanation",
+)
+
+
+def verify_evaluation_report(
+    report: dict[str, Any],
+    *,
+    check_hash: bool = True,
+) -> list[str]:
+    """Checker for saved evaluation reports. Returns a list of error strings.
+
+    The checker recomputes every metric from the per-case `results` with
+    :func:`compute_metrics` and never trusts report-supplied totals. It also
+    enforces the pinned-metadata schema, the trace/explanation privacy rule,
+    and (when the pinned `dataset_file` still exists) the case-file hash.
+    An empty list means the report verifies.
+    """
+    errors: list[str] = []
+
+    if not isinstance(report, dict):
+        return ["report is not a JSON object"]
+
+    meta = report.get("metadata")
+    if not isinstance(meta, dict):
+        errors.append("metadata block missing or not an object")
+        meta = {}
+    else:
+        for field in REQUIRED_METADATA_FIELDS:
+            if field not in meta or meta[field] in (None, ""):
+                errors.append(f"metadata.{field} missing or empty")
+        if meta.get("dataset_split") not in ("heldout", "dev", "all"):
+            errors.append(f"metadata.dataset_split unexpected: {meta.get('dataset_split')!r}")
+        if "dataset_hash" in meta and isinstance(meta["dataset_hash"], str) and len(meta["dataset_hash"]) != 64:
+            errors.append("metadata.dataset_hash is not a 64-char sha256 hex digest")
+
+    results = report.get("results")
+    if not isinstance(results, list):
+        errors.append("results block missing or not a list")
+        results = []
+
+    seen_ids: set[str] = set()
+    for idx, rec in enumerate(results):
+        where = f"results[{idx}]"
+        if not isinstance(rec, dict):
+            errors.append(f"{where} is not an object")
+            continue
+        for field in REQUIRED_RESULT_FIELDS:
+            if field not in rec:
+                errors.append(f"{where} missing field: {field}")
+        for forbidden in FORBIDDEN_RESULT_KEYS:
+            if forbidden in rec:
+                errors.append(f"{where} leaks forbidden key: {forbidden}")
+        cid = rec.get("case_id")
+        if cid in seen_ids:
+            errors.append(f"{where} duplicate case_id: {cid!r}")
+        seen_ids.add(cid)
+        if rec.get("category") not in KNOWN_CATEGORIES:
+            errors.append(f"{where} unknown category: {rec.get('category')!r}")
+        if rec.get("expected_verdict") not in EXPECTED_VERDICTS:
+            errors.append(f"{where} bad expected_verdict: {rec.get('expected_verdict')!r}")
+        if rec.get("actual_verdict") not in ACTUAL_VERDICTS:
+            errors.append(f"{where} bad actual_verdict: {rec.get('actual_verdict')!r}")
+        if "match" in rec and not isinstance(rec["match"], bool):
+            errors.append(f"{where} match is not a boolean")
+
+    # Never trust totals: recompute from per-case results.
+    summary = report.get("summary_metrics")
+    if not isinstance(summary, dict):
+        errors.append("summary_metrics block missing or not an object")
+    else:
+        try:
+            recomputed = compute_metrics([r for r in results if isinstance(r, dict)])
+        except Exception as exc:  # fail closed: unrecomputable totals do not verify
+            errors.append(f"could not recompute metrics from results: {exc}")
+        else:
+            for key, value in recomputed.items():
+                if key not in summary:
+                    errors.append(f"summary_metrics missing key: {key}")
+                elif summary[key] != value:
+                    errors.append(
+                        f"summary_metrics.{key}={summary[key]!r} does not match "
+                        f"recomputed {value!r} from per-case results"
+                    )
+
+    if isinstance(meta, dict) and meta.get("dataset_cases_count") != len(results):
+        errors.append(
+            f"metadata.dataset_cases_count={meta.get('dataset_cases_count')!r} "
+            f"does not match len(results)={len(results)}"
+        )
+
+    if check_hash and isinstance(meta, dict):
+        dataset_file = meta.get("dataset_file")
+        pinned_hash = meta.get("dataset_hash")
+        if isinstance(dataset_file, str) and isinstance(pinned_hash, str):
+            candidate = Path(dataset_file)
+            if candidate.is_file():
+                actual = compute_file_hash(candidate)
+                if actual != pinned_hash:
+                    errors.append(
+                        f"dataset hash mismatch for {dataset_file}: "
+                        f"report pins {pinned_hash[:16]}..., file is {actual[:16]}..."
+                    )
+            # else: combined "all" reports pin a synthetic hash of both
+            # splits (no single file), and moved/deleted fixtures cannot be
+            # re-hashed; the count + recomputation checks above still apply.
+
+    return errors
+
+
 def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate Scopewatch reasoning auditor on dev or held-out cases."
@@ -439,19 +640,69 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Suppress console table output",
     )
+    parser.add_argument(
+        "--max-trace-chars",
+        type=int,
+        default=None,
+        help=(
+            "DEV-ONLY tuning knob: truncate reasoning traces to this many "
+            "chars before auditing. Refused with --split heldout."
+        ),
+    )
+    parser.add_argument(
+        "--audit-timeout-s",
+        type=float,
+        default=None,
+        help=(
+            "DEV-ONLY tuning knob: auditor provider timeout in seconds. "
+            "Refused with --split heldout."
+        ),
+    )
+    parser.add_argument(
+        "--check",
+        default=None,
+        metavar="REPORT_JSON",
+        help=(
+            "Verify a saved report instead of running an evaluation: "
+            "recompute metrics from per-case results, validate the schema, "
+            "enforce the privacy rule, and re-hash the pinned dataset file."
+        ),
+    )
     return parser.parse_args(args)
 
 
 def main() -> None:
     args = parse_args()
-    report = evaluate_reasoning_auditor(
-        profile=args.profile,
-        split=args.split,
-        cases_dir=args.cases_dir,
-        seed=args.seed,
-        output_path=args.output,
-        quiet=args.quiet,
-    )
+    if args.check:
+        check_path = Path(args.check)
+        try:
+            saved = json.loads(check_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"error: cannot load report {check_path}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        failures = verify_evaluation_report(saved)
+        if failures:
+            print(f"REPORT CHECK FAILED ({len(failures)} problem(s)):", file=sys.stderr)
+            for problem in failures:
+                print(f"  - {problem}", file=sys.stderr)
+            sys.exit(1)
+        print(f"REPORT CHECK PASSED: {check_path} "
+              f"({len(saved.get('results', []))} cases recomputed clean)")
+        return
+    try:
+        report = evaluate_reasoning_auditor(
+            profile=args.profile,
+            split=args.split,
+            cases_dir=args.cases_dir,
+            seed=args.seed,
+            output_path=args.output,
+            quiet=args.quiet,
+            max_trace_chars=args.max_trace_chars,
+            audit_timeout_s=args.audit_timeout_s,
+        )
+    except HeldoutTuningRefused as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)
     # Return non-zero if critical failure rate
     if report["summary_metrics"]["failure_rate"] > 0.5:
         sys.exit(1)
