@@ -1,7 +1,8 @@
 """Controlled synthetic executor operating within a restricted workspace.
 
 Single entry point is :func:`execute_action`, which dispatches to the
-backend selected by ``SCOPEWATCH_EXECUTOR=local|docker`` (default ``local``).
+backend selected by ``SCOPEWATCH_EXECUTOR=local|docker|remote``
+(default ``local``).
 """
 
 from datetime import datetime, timezone
@@ -305,11 +306,14 @@ def execute_action(
     """Single gateway entry point; dispatches to the configured backend.
 
     ``SCOPEWATCH_EXECUTOR=docker`` selects the Docker-isolated backend,
-    anything else (including unset) selects the local backend. Docker
-    failures fail closed inside the Docker backend and never fall back to
-    local execution.
+    ``SCOPEWATCH_EXECUTOR=remote`` selects the executor-runner sidecar
+    client (issue #78; the only socket-holding process), and anything else
+    (including unset) selects the local backend. Remote and Docker failures
+    fail closed inside their own backend and never fall back to local
+    execution.
     """
-    if get_executor_backend() == "docker":
+    backend = get_executor_backend()
+    if backend == "docker":
         from scopewatch.executor_docker import DockerExecutor
 
         return DockerExecutor().execute(
@@ -318,6 +322,15 @@ def execute_action(
             policy_decision=policy_decision,
             approval_request=approval_request,
             task_scope=task_scope,
+        )
+    if backend == "remote":
+        from scopewatch.executor_remote import RemoteExecutor
+
+        return RemoteExecutor().execute(
+            action,
+            workspace_root,
+            policy_decision=policy_decision,
+            approval_request=approval_request,
         )
     return _execute_local(
         action,
