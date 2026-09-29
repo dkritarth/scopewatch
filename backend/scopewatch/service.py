@@ -746,6 +746,7 @@ class ScopewatchService:
                         action,
                         self.workspace_root,
                         policy_decision=decision,
+                        task_scope=run.task_scope,
                     )
                     ScopewatchRepository.create_execution_receipt(conn, receipt)
 
@@ -955,12 +956,43 @@ class ScopewatchService:
                     status_code=status.HTTP_409_CONFLICT,
                 )
 
+            def require_resolvable_run() -> None:
+                run = ScopewatchRepository.get_run(conn, approval.run_id)
+                if not run or run.status not in (RunStatus.ACTIVE, RunStatus.WAITING_FOR_APPROVAL):
+                    raise ScopewatchAPIError(
+                        code="RUN_NOT_ACTIVE",
+                        message=f"Cannot resolve approval: run is in status {run.status.value if run else 'MISSING'}.",
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
+
+            action = ScopewatchRepository.get_action_request(conn, approval.action_request_id)
+            decision = ScopewatchRepository.get_policy_decision_by_action(conn, approval.action_request_id)
+            run = ScopewatchRepository.get_run(conn, approval.run_id)
+
+            if not action or not decision or not run:
+                raise ScopewatchAPIError(
+                    code="ENTITY_NOT_FOUND",
+                    message="Associated action or policy decision not found.",
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            # Invariant: Cannot approve if deterministic decision is DENY
+            if approve and decision.outcome == PolicyOutcome.DENY:
+                raise ScopewatchAPIError(
+                    code="DENIED_ACTION_CANNOT_BE_APPROVED",
+                    message="Approval cannot override a deterministic DENY outcome.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+            require_resolvable_run()
+
             # Check expiration
             now = datetime.now(timezone.utc)
             now_iso = now.isoformat()
             expires_at = datetime.fromisoformat(approval.expires_at)
             if now > expires_at:
                 with db_transaction(conn):
+                    require_resolvable_run()
                     ScopewatchRepository.resolve_approval(
                         conn,
                         approval_id=approval_id,
@@ -987,28 +1019,11 @@ class ScopewatchService:
                     status_code=status.HTTP_409_CONFLICT,
                 )
 
-            action = ScopewatchRepository.get_action_request(conn, approval.action_request_id)
-            decision = ScopewatchRepository.get_policy_decision_by_action(conn, approval.action_request_id)
-
-            if not action or not decision:
-                raise ScopewatchAPIError(
-                    code="ENTITY_NOT_FOUND",
-                    message="Associated action or policy decision not found.",
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
-
-            # Invariant: Cannot approve if deterministic decision is DENY
-            if approve and decision.outcome == PolicyOutcome.DENY:
-                raise ScopewatchAPIError(
-                    code="DENIED_ACTION_CANNOT_BE_APPROVED",
-                    message="Approval cannot override a deterministic DENY outcome.",
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                )
-
             receipt: Optional[ExecutionReceipt] = None
             generated_events: list[EvidenceEvent] = []
 
             with db_transaction(conn):
+                require_resolvable_run()
                 if approve:
                     updated_approval = ScopewatchRepository.resolve_approval(
                         conn,
@@ -1050,6 +1065,7 @@ class ScopewatchService:
                         self.workspace_root,
                         policy_decision=decision,
                         approval_request=updated_approval,
+                        task_scope=run.task_scope,
                     )
                     ScopewatchRepository.create_execution_receipt(conn, receipt)
 
