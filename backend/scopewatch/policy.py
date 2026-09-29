@@ -170,9 +170,36 @@ def evaluate_policy(
             deterministic=True,
         )
 
+    # Step 9b: Reject overlong paths without touching the filesystem, so an
+    # unrepresentable name fails closed as DENY instead of raising OSError
+    # (ENAMETOOLONG) out of the policy engine.
+    if len(resource_raw) > 4096:
+        return PolicyDecision(
+            id=decision_id,
+            action_request_id=action.id,
+            outcome=PolicyOutcome.DENY,
+            reason_code=ReasonCode.MALFORMED_REQUEST,
+            explanation="Resource path exceeds length limits.",
+            matched_rule="RULE_MALFORMED_PATH",
+            decided_at=now_iso,
+            deterministic=True,
+        )
+
     # Step 10: Resolve path against the synthetic workspace
-    resolved_workspace = workspace_root.resolve()
-    candidate_path = (resolved_workspace / normalized_rel).resolve()
+    try:
+        resolved_workspace = workspace_root.resolve()
+        candidate_path = (resolved_workspace / normalized_rel).resolve()
+    except (OSError, RuntimeError):
+        return PolicyDecision(
+            id=decision_id,
+            action_request_id=action.id,
+            outcome=PolicyOutcome.DENY,
+            reason_code=ReasonCode.MALFORMED_REQUEST,
+            explanation="Resource path could not be resolved.",
+            matched_rule="RULE_MALFORMED_PATH",
+            decided_at=now_iso,
+            deterministic=True,
+        )
 
     # Step 11: Reject symlink escapes
     try:
@@ -322,8 +349,21 @@ def _check_run_command_path(
             f"{describe} has an invalid path format.",
             "RULE_RUN_COMMAND_MALFORMED_PATH",
         )
-    resolved_workspace = workspace_root.resolve()
-    candidate = (resolved_workspace / normalized).resolve()
+    if len(value) > 4096:
+        return (
+            ReasonCode.MALFORMED_REQUEST,
+            f"{describe} exceeds path length limits.",
+            "RULE_RUN_COMMAND_MALFORMED_PATH",
+        )
+    try:
+        resolved_workspace = workspace_root.resolve()
+        candidate = (resolved_workspace / normalized).resolve()
+    except (OSError, RuntimeError):
+        return (
+            ReasonCode.MALFORMED_REQUEST,
+            f"{describe} could not be resolved.",
+            "RULE_RUN_COMMAND_MALFORMED_PATH",
+        )
     try:
         candidate.relative_to(resolved_workspace)
     except ValueError:
@@ -333,7 +373,15 @@ def _check_run_command_path(
             "RULE_RUN_COMMAND_SYMLINK_ESCAPE_REJECTED",
         )
     test_path = resolved_workspace / normalized
-    if test_path.is_symlink():
+    try:
+        is_link = test_path.is_symlink()
+    except (OSError, RuntimeError):
+        return (
+            ReasonCode.MALFORMED_REQUEST,
+            f"{describe} could not be examined.",
+            "RULE_RUN_COMMAND_MALFORMED_PATH",
+        )
+    if is_link:
         try:
             test_path.resolve().relative_to(resolved_workspace)
         except ValueError:
@@ -341,6 +389,12 @@ def _check_run_command_path(
                 ReasonCode.SYMLINK_ESCAPE,
                 f"{describe} is a symlink escaping the workspace.",
                 "RULE_RUN_COMMAND_SYMLINK_ESCAPE_REJECTED",
+            )
+        except (OSError, RuntimeError):
+            return (
+                ReasonCode.MALFORMED_REQUEST,
+                f"{describe} could not be resolved.",
+                "RULE_RUN_COMMAND_MALFORMED_PATH",
             )
     canonical = candidate.relative_to(resolved_workspace)
     for blocked in scope.blocked_paths:

@@ -726,28 +726,35 @@ def test_bypass_env_var_is_literal_not_expanded(
     assert decision.reason_code == ReasonCode.ALLOWED_TOOL_AND_RESOURCE
 
 
-def test_bypass_very_long_argument_raises_KNOWN_GAP(
+def test_bypass_very_long_command_argument_denied_malformed(
     cmd_workspace: Path, cmd_run: Run, bypass_workspace: Path, bypass_run: Run,
     docker_backend: None,
 ) -> None:
-    """KNOWN GAP (robustness, fail-closed: no execution, but an unhandled
-    500-class error instead of a DENY): a single path component far beyond
-    NAME_MAX makes ``Path.resolve()`` raise ``OSError`` (ENAMETOOLONG) out
-    of the policy engine, for both command arguments and resource paths.
-    Nothing executes — the request errors — but the gateway should answer
-    DENY MALFORMED instead of raising."""
-    with pytest.raises(OSError):
-        evaluate_policy(
-            _run_command_action(cmd_run, argv=["pytest", "A" * 200_000]),
-            cmd_run,
-            cmd_workspace,
-        )
-    with pytest.raises(OSError):
-        evaluate_policy(
-            _read_action(bypass_run, "A" * 200_000),
-            bypass_run,
-            bypass_workspace,
-        )
+    """Over-long command arguments fail closed: DENY MALFORMED, never raise,
+    never execute. (Former KNOWN_GAP: ``Path.is_symlink()`` raised OSError
+    ENAMETOOLONG out of the policy engine; overlong values are now rejected
+    before touching the filesystem.)"""
+    _assert_denied_and_not_executed(
+        _run_command_action(cmd_run, argv=["pytest", "A" * 200_000]),
+        cmd_run,
+        cmd_workspace,
+        ReasonCode.MALFORMED_REQUEST,
+    )
+
+
+def test_bypass_very_long_resource_denied_malformed(
+    cmd_workspace: Path, cmd_run: Run, bypass_workspace: Path, bypass_run: Run,
+    docker_backend: None,
+) -> None:
+    """Over-long resource paths fail closed: DENY MALFORMED, never raise,
+    never execute. Split from the command-argument case above so a half-fix
+    cannot hide behind a single test."""
+    _assert_denied_and_not_executed(
+        _read_action(bypass_run, "A" * 200_000),
+        bypass_run,
+        bypass_workspace,
+        ReasonCode.MALFORMED_REQUEST,
+    )
 
 
 def test_bypass_command_prefix_spoof(
