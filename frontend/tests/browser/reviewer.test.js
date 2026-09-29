@@ -230,11 +230,16 @@ test("escalated hold displays flagged excerpt highlighted, distinct hold badge, 
     // Per-run gateway tools line (#61)
     assert.match(await page.locator(".scope-gateway-tools").innerText(), /Gateway-mediated tools:/);
 
-    // 6. Test approval workflow: Deny action
+    // 6. Test approval workflow: Deny action (double-confirm: arm, then fire)
     assert.equal(await page.locator("#pending-approvals-count").innerText(), "1");
     const approvalCard = page.locator(".approval-card").first();
     assert.ok(await approvalCard.isVisible());
     await approvalCard.locator(".approval-reason-input").fill("Denied due to detected exfiltration attempt.");
+    await approvalCard.locator(".btn-deny").click();
+    // First click arms: explicit confirm text + note, card stays put.
+    assert.equal(await approvalCard.locator(".btn-deny").innerText(), "Confirm deny");
+    assert.equal(await approvalCard.locator(".approval-confirm-note").isVisible(), true);
+    assert.equal(await page.locator("#pending-approvals-count").innerText(), "1");
     await approvalCard.locator(".btn-deny").click();
 
     // Verify approval card removed and count updated
@@ -252,6 +257,8 @@ test("escalated hold displays flagged excerpt highlighted, distinct hold badge, 
     assert.equal(await page.locator("#pending-approvals-count").innerText(), "1");
 
     const polApprovalCard = page.locator(".approval-card").first();
+    await polApprovalCard.locator(".btn-approve").click();
+    assert.equal(await polApprovalCard.locator(".btn-approve").innerText(), "Confirm approve");
     await polApprovalCard.locator(".btn-approve").click();
     await page.locator("#no-approvals-msg").waitFor();
     assert.equal(await page.locator("#pending-approvals-count").innerText(), "0");
@@ -422,6 +429,8 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     const approvalCard = page.locator(".approval-card").first();
     await approvalCard.waitFor({ timeout: 10000 });
     await approvalCard.locator(".approval-reason-input").fill("Reviewer denied exfiltration hold.");
+    await approvalCard.locator(".btn-deny").click();
+    assert.equal(await approvalCard.locator(".btn-deny").innerText(), "Confirm deny");
     await approvalCard.locator(".btn-deny").click();
     await page.locator("#no-approvals-msg").waitFor({ timeout: 10000 });
     assert.equal(await page.locator("#pending-approvals-count").innerText(), "0");
