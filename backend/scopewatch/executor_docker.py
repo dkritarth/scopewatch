@@ -30,6 +30,7 @@ from scopewatch.schemas import (
     ApprovalRequest,
     ExecutionReceipt,
     PolicyDecision,
+    TaskScope,
 )
 
 # Pinned base image digest (Debian bookworm slim Python).
@@ -340,8 +341,68 @@ def build_docker_command(
 
 
 def _sync_copy_back(workspace_copy: Path, workspace_root: Path) -> None:
-    """Copy container-modified files back to the host workspace."""
-    shutil.copytree(workspace_copy, workspace_root, symlinks=True, dirs_exist_ok=True)
+    """Copy container-modified files back to the host workspace.
+
+    Symlink-tolerant (issue #80): the previous
+    ``shutil.copytree(..., symlinks=True, dirs_exist_ok=True)`` raised
+    ``FileExistsError``/``shutil.Error`` when the staged copy contained a
+    symlink that already existed in the destination, turning a legitimate
+    container ``EXECUTED`` into a host-side ``FAILED``. Instead, walk the
+    staged tree entry by entry: missing directories are created, existing
+    symlinks are atomically replaced (never followed), and regular files
+    are overwritten with ``copy2``. Files present in the destination but
+    absent from the staged copy are left alone (same as ``dirs_exist_ok``:
+    container deletes are not propagated). Special files (sockets, fifos,
+    devices) are skipped rather than copied.
+    """
+    staged = Path(workspace_copy)
+    dest_root = Path(workspace_root)
+    for dirpath, dirnames, filenames in os.walk(staged, followlinks=False):
+        staged_dir = Path(dirpath)
+        rel = staged_dir.relative_to(staged)
+        dest_dir = dest_root / rel if str(rel) != "." else dest_root
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for name in list(dirnames):
+            src_entry = staged_dir / name
+            # Symlink-to-dir appears in dirnames when followlinks=False;
+            # replicate the link itself and never descend into it (walk
+            # already refuses to follow, so no pruning is needed).
+            if src_entry.is_symlink():
+                _replace_link(src_entry, dest_dir / name)
+            else:
+                (dest_dir / name).mkdir(parents=True, exist_ok=True)
+        for name in filenames:
+            src_entry = staged_dir / name
+            dest_entry = dest_dir / name
+            if src_entry.is_symlink():
+                _replace_link(src_entry, dest_entry)
+            elif src_entry.is_file():
+                # Remove a conflicting destination link/dir first so a
+                # type change (link -> file) copies cleanly without
+                # following the old link onto its target.
+                if dest_entry.is_symlink():
+                    dest_entry.unlink()
+                elif dest_entry.is_dir() and not dest_entry.is_symlink():
+                    shutil.rmtree(dest_entry)
+                shutil.copy2(src_entry, dest_entry)
+            # Else: socket/fifo/device or vanished mid-walk; skip (fail
+            # closed on the file, not on the whole receipt).
+
+
+def _replace_link(src_link: Path, dest: Path) -> None:
+    """Replicate ``src_link`` at ``dest``, replacing without following.
+
+    Uses ``lexists`` semantics (implemented via ``os.path.lexists``) so a
+    dangling destination link is still detected and replaced. A destination
+    directory that is *not* a link is removed first; anything else
+    (file, link, dangling link) is unlinked before the new link is created.
+    """
+    if os.path.lexists(dest):
+        if dest.is_dir() and not dest.is_symlink():
+            shutil.rmtree(dest)
+        else:
+            dest.unlink()
+    dest.symlink_to(os.readlink(src_link))
 
 
 def _make_world_accessible(root: Path) -> None:
@@ -404,6 +465,7 @@ class DockerExecutor:
         workspace_root: Path,
         policy_decision: Optional[PolicyDecision] = None,
         approval_request: Optional[ApprovalRequest] = None,
+        task_scope: Optional[TaskScope] = None,
     ) -> ExecutionReceipt:
         receipt_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc).isoformat()
@@ -462,6 +524,16 @@ class DockerExecutor:
 
             raise ExecutionSecurityError("Network requests are forbidden in synthetic executor.")
 
+        from scopewatch.executor import ExecutionSecurityError, _verify_scoped_target
+
+        try:
+            _verify_scoped_target(
+                workspace_root, action.resource, task_scope,
+                require_allowed=action.operation != "run_command",
+            )
+        except (ExecutionSecurityError, OSError, RuntimeError):
+            return _failed("EXECUTION_FAILED", "Resolved path violates the task scope.")
+
         if not is_docker_available():
             return _failed("EXECUTION_FAILED", "Docker daemon unavailable; failing closed.")
 
@@ -478,6 +550,13 @@ class DockerExecutor:
                 )
             except OSError:
                 return _failed("EXECUTION_FAILED", "Workspace staging failed.")
+            try:
+                _verify_scoped_target(
+                    workspace_copy, action.resource, task_scope,
+                    require_allowed=action.operation != "run_command",
+                )
+            except (ExecutionSecurityError, OSError, RuntimeError):
+                return _failed("EXECUTION_FAILED", "Resolved path violates the task scope.")
             # run_command (issue #36): normalize argv + timeout on the host so
             # the container always receives the argv list form with no shell.
             # The policy already allowlisted the command; a failure to
@@ -585,6 +664,7 @@ def execute_action_docker(
     policy_decision: Optional[PolicyDecision] = None,
     approval_request: Optional[ApprovalRequest] = None,
     image: Optional[str] = None,
+    task_scope: Optional[TaskScope] = None,
 ) -> ExecutionReceipt:
     """Convenience wrapper used by the gateway entry point and tests."""
     return DockerExecutor(image=image).execute(
@@ -592,4 +672,5 @@ def execute_action_docker(
         workspace_root,
         policy_decision=policy_decision,
         approval_request=approval_request,
+        task_scope=task_scope,
     )
