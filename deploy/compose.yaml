@@ -1,0 +1,165 @@
+# Scopewatch hosted-demo stack (issue #42).
+#
+# Traffic path: internet -> caddy (TLS) -> gate (demo token, rate limit,
+# caps, budget) -> gateway (internal only) -> sqlite + workspace volumes.
+#
+# SECURITY DESIGN (read before changing):
+# * The gateway NEVER gets the Docker socket. No `volumes: [/var/run/...]`
+#   exists anywhere in this file ON PURPOSE. The gateway container cannot
+#   start sibling containers at all: the image has no docker CLI and the
+#   daemon socket is not mounted. Executor mode is pinned to `local`
+#   (SCOPEWATCH_EXECUTOR=local) until the socket-holding executor-runner
+#   sidecar lands (follow-up issue from #42; see RUNBOOK.md "Executor
+#   isolation decision and residual risk").
+# * The gateway is on the INTERNAL network only. The only inbound path from
+#   the internet is caddy -> gate. Even if the agent could reach the
+#   gateway, it still could not reach a container runtime.
+# * Secrets (DEMO_TOKEN, NEBIUS_API_KEY, ...) arrive only via the env_file
+#   on the VM. They are never baked into images and never committed.
+# * Gate enforcement state is in-memory; run ONE gate replica (no scale
+#   directive below). Scaling the gate without shared state would multiply
+#   every budget/cap.
+
+name: scopewatch-demo
+
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: scopewatch-gateway:42
+    env_file:
+      - path: ../.env
+        required: false
+      - path: .env
+        required: false
+    environment:
+      # Pinned on purpose: no socket is mounted, so the docker executor
+      # backend could not reach a daemon anyway; fail-closed stays local.
+      SCOPEWATCH_EXECUTOR: local
+      # Scripted seed at first start makes no model calls (see
+      # deploy/docker-entrypoint.sh). Live agent/auditor profiles are
+      # selected here and need their keys in the VM env file.
+      SCOPEWATCH_AGENT_PROFILE: ${SCOPEWATCH_AGENT_PROFILE:-mock}
+      SCOPEWATCH_AUDITOR_PROFILE: ${SCOPEWATCH_AUDITOR_PROFILE:-mock}
+      SCOPEWATCH_PROVIDERS_CONFIG: /app/backend/config/providers.toml
+      SCOPEWATCH_APPROVAL_TTL: ${SCOPEWATCH_APPROVAL_TTL:-300}
+    volumes:
+      # SQLite evidence database. Named volume so `down` keeps demo state
+      # and `down -v` fully resets it (runbook "Reset demo data").
+      - scopewatch-data:/data
+      # Synthetic agent workspace ONLY. Never mount the repo, the home
+      # directory, or anything containing keys here.
+      - scopewatch-workspace:/workspace
+    networks:
+      - internal
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    # No added capabilities: the gateway listens on 8000 and writes only to
+    # /data and /workspace (owned by its uid from the image build).
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2.0
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import sys,urllib.request,json;d=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health',timeout=4));sys.exit(0 if d.get('status')=='ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  gate:
+    build:
+      context: ..
+      dockerfile: deploy/gate/Dockerfile
+    image: scopewatch-demo-gate:42
+    env_file:
+      - path: ../.env
+        required: false
+      - path: .env
+        required: false
+    environment:
+      GATE_UPSTREAM: http://gateway:8000
+      GATE_PORT: 8080
+      DEMO_TOKEN: ${DEMO_TOKEN:?Set DEMO_TOKEN in the VM env file (see deploy/.env.example).}
+      DEMO_MAX_CONCURRENT_RUNS: ${DEMO_MAX_CONCURRENT_RUNS:-5}
+      DEMO_MAX_TURNS_PER_RUN: ${DEMO_MAX_TURNS_PER_RUN:-40}
+      DEMO_RATE_LIMIT_RUNS_PER_MIN_PER_IP: ${DEMO_RATE_LIMIT_RUNS_PER_MIN_PER_IP:-6}
+      DEMO_MAX_RUNS_PER_DAY: ${DEMO_MAX_RUNS_PER_DAY:-200}
+      DEMO_MAX_ACTIONS_PER_DAY: ${DEMO_MAX_ACTIONS_PER_DAY:-5000}
+    networks:
+      - internal
+      - public
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import sys,urllib.request,json;d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=4));sys.exit(0 if d.get('status')=='ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Do NOT add `deploy:` replicas/scale here: gate budgets live in memory.
+
+  caddy:
+    image: caddy:2-alpine
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in the VM env file (see deploy/.env.example).}
+    networks:
+      - public
+    depends_on:
+      gate:
+        condition: service_healthy
+    restart: unless-stopped
+    # Upstream caddy image defaults are kept (it binds 80/443 itself);
+    # only no-new-privileges is added. No mounts except the read-only
+    # Caddyfile and its own cert/state volumes.
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  public:
+    name: scopewatch-demo-public
+  internal:
+    name: scopewatch-demo-internal
+    # NOTE: this network is NOT marked `internal: true` on purpose: the
+    # gateway needs HTTPS egress to the configured model provider
+    # (Nebius/OpenRouter) for live agent/auditor calls. Inbound reachability
+    # is still least-privilege: only caddy publishes host ports, and the
+    # gateway accepts traffic only from the gate (same internal network).
+
+volumes:
+  scopewatch-data:
+    name: scopewatch-demo-data
+  scopewatch-workspace:
+    name: scopewatch-demo-workspace
+  caddy-data:
+    name: scopewatch-demo-caddy-data
+  caddy-config:
+    name: scopewatch-demo-caddy-config
