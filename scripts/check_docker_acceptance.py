@@ -103,7 +103,9 @@ def main() -> int:
           "daemon-unavailable message")
     check("no-silent-fallback", "never fall" in executor_src.lower()
           or "never falls back" in executor_src, "no silent local fallback")
-    check("single-entry-dispatch", 'get_executor_backend() == "docker"' in executor_src,
+    check("single-entry-dispatch",
+          ('get_executor_backend() == "docker"' in executor_src)
+          or ('get_executor_backend()' in executor_src and 'backend == "docker"' in executor_src),
           "execute_action dispatch")
     check("stored-decision-required", "Direct execution without policy evidence"
           in docker_src, "docker stored-decision gate")

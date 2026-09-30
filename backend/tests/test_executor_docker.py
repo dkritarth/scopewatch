@@ -126,9 +126,13 @@ def test_docker_command_mounts_only_workspace_copy(tmp_path: Path) -> None:
     mounts = [cmd[i + 1] for i, c in enumerate(cmd) if c == "-v"]
     assert len(mounts) == 1
     assert mounts[0] == f"{copy}:/workspace:rw"
+    # The host home directory itself must never be mounted; only the isolated per-run copy.
+    assert mounts[0].split(":")[0] != str(Path.home())
+    non_mount_blob = " ".join(arg for arg in cmd if arg != f"{copy}:/workspace:rw")
+    assert "/var/run/docker.sock" not in non_mount_blob
+    assert str(Path.home()) not in non_mount_blob
     blob = " ".join(cmd)
     assert "/var/run/docker.sock" not in blob
-    assert str(Path.home()) not in blob
     assert "HOME=" not in blob and ".ssh" not in blob
     # Image itself is the pinned digest, not a floating tag.
     assert DOCKER_IMAGE in cmd

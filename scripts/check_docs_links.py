@@ -180,6 +180,13 @@ def check_file_links(root: pathlib.Path, rel: str, errors: list[str]) -> None:
         # Skip bare filenames without a slash (shorthand, e.g. `06_invoice_injection.json`).
         if "/" not in file_part and not file_part.startswith("."):
             continue
+        # Glob patterns (e.g. `demo/scenarios/10_*.json`) resolve against disk via glob.
+        if "*" in file_part:
+            matches = list(root.glob(file_part)) or list(file_dir.glob(file_part))
+            if matches:
+                continue
+            errors.append(f"{rel}: broken glob ref: {target}")
+            continue
         candidate = resolve_doc_ref(root, file_dir, file_part)
         if candidate is None:
             continue
@@ -230,6 +237,9 @@ def check_model_ids(root: pathlib.Path, rel: str, allowed: set[str], errors: lis
         # Bare mock IDs other than the configured one are suspect.
         for m in re.finditer(r"mock-[A-Za-z0-9\-_]+", line):
             mid = m.group(0)
+            # Prose descriptors like "mock-agent", "mock-profile", etc. are not model IDs.
+            if mid in {"mock-agent", "mock-profile", "mock-mode", "mock-transport", "mock-rules"}:
+                continue
             if mid not in allowed:
                 errors.append(f"{rel}:{i}: unknown mock model ID: {mid}")
 
