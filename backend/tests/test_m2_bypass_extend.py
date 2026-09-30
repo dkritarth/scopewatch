@@ -23,9 +23,9 @@ New families (all probed against the real policy before being written):
   ``--rootdir``, ``-o cache_dir=<blocked>`` via ``=``-split, previously
   uncovered unchecked flags (``--maxfail``, ``-x``, ``-q``, ``--tb``),
   env-expansion tokens (``$VAR``, ``%VAR%``, ``$PATH``, ``%HOME%``) staying
-  literal, 1MB single-component OSError (fail-closed, new size), 1MB
-  multi-component blocked-tail still DENY, 1MB benign multi-component
-  ALLOW (documents missing length cap, V1 gap 7);
+  literal, 1MB single-component DENY MALFORMED (fail-closed, V1 gap 3
+  closed), 1MB multi-component blocked-tail still DENY, 1MB benign
+  multi-component ALLOW (documents missing length cap, V1 gap 7);
 - approvals: forced-expiry refusal, deny-path receipt shape + single-use,
   cross-run + cross-operation refusal, and two ``xfail(strict=False)``
   race/lifecycle probes linked to open issues #66/#64;
@@ -450,21 +450,27 @@ def test_m2_env_tokens_stay_literal(
     assert decision.reason_code == ReasonCode.ALLOWED_TOOL_AND_RESOURCE
 
 
-def test_m2_1mb_single_component_raises_fail_closed(
+def test_m2_1mb_single_component_denied_malformed(
     m2_cmd_ws: Path, m2_cmd_run: Run, m2_ws: Path, m2_run: Run, docker_backend: None
 ) -> None:
-    """A 1MB single path component raises ``OSError`` (ENAMETOOLONG) out of
-    the policy engine for both argv and resource paths — fail-closed
-    (nothing executes) but unhandled instead of DENY MALFORMED (V1 gap 3,
-    new size beyond the 200KB probe)."""
-    with pytest.raises(OSError):
-        evaluate_policy(
-            _m2_cmd(m2_cmd_run, argv=["pytest", "A" * 1_000_000]),
-            m2_cmd_run,
-            m2_cmd_ws,
-        )
-    with pytest.raises(OSError):
-        evaluate_policy(_m2_read(m2_run, "A" * 1_000_000), m2_run, m2_ws)
+    """A 1MB single path component fails closed as DENY MALFORMED_REQUEST for
+    both argv and resource paths, with nothing executed. The V1 gap-3 escape
+    (``OSError`` ENAMETOOLONG propagating out of policy as an unhandled HTTP
+    500) is now closed by the fail-closed MALFORMED handling: an overlong
+    pre-check plus ``except (OSError, RuntimeError)`` around resolution, so
+    policy returns a decision instead of raising."""
+    _m2_assert_denied(
+        _m2_cmd(m2_cmd_run, argv=["pytest", "A" * 1_000_000]),
+        m2_cmd_run,
+        m2_cmd_ws,
+        ReasonCode.MALFORMED_REQUEST,
+    )
+    _m2_assert_denied(
+        _m2_read(m2_run, "A" * 1_000_000),
+        m2_run,
+        m2_ws,
+        ReasonCode.MALFORMED_REQUEST,
+    )
 
 
 def test_m2_1mb_multi_component_blocked_still_denied(

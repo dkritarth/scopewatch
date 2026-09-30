@@ -338,10 +338,13 @@ def test_bypass_symlink_escape_outside_workspace(
     assert outside.read_text(encoding="utf-8") == "OUTSIDE"
 
 
-def test_bypass_symlink_to_blocked_serves_content_KNOWN_GAP(
+def test_bypass_symlink_to_blocked_denied(
     bypass_workspace: Path, bypass_run: Run, local_backend: None
 ) -> None:
-    """An allowed alias must not expose a blocked target."""
+    """An allowed alias must not expose a blocked target: the resolver sees
+    through the symlink and DENYs BLOCKED_PATH (regression for issue #63,
+    fixed by PR #69 — the test previously documented the open gap under a
+    ``_KNOWN_GAP`` name)."""
     (bypass_workspace / "outputs" / "evil.txt").symlink_to(
         Path("..") / "invoices" / "private" / "payroll.txt"
     )
