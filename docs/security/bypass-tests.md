@@ -14,12 +14,12 @@ PYTHONPATH=backend python3 -m pytest backend/tests/test_bypass.py -q
 PYTHONPATH=backend python3 -m pytest backend/tests/test_bypass.py backend/tests/test_bypass_gapclose_paths.py backend/tests/test_bypass_gapclose_commands.py backend/tests/test_bypass_gapclose_approvals.py backend/tests/test_bypass_gapclose_reasoning_executor.py -q
 ```
 
-Latest run: **128 passed, 4 skipped, 2 xfailed, 1 xpassed** (skips = Docker-daemon
+Latest run: **128 passed, 4 skipped, 1 xfailed, 2 xpassed** (skips = Docker-daemon
 probes from the base suite; no daemon in this environment — recorded as
-`SKIP`, never as pass. xfails = known gaps owned by issues #66/#68;
-assert the fixed behaviour, fail today, pass when those fixes land.
-The #64 approval-lifecycle xfail now XPASSes — its fix landed on main,
-the marker is `strict=False` so it does not fail the run).
+`SKIP`, never as pass. The one remaining xfail is the #68 argv-TOCTOU
+dispatch window; the #66 single-use and #64 run-status probes now XPASS
+because their fixes landed on main (PR #81, PR #67) — the markers are
+`strict=False`, so an XPASS never fails the run).
 
 Conventions: `DENY → NOT_EXECUTED` means the gateway returned a DENY decision
 and `execute_action` with that decision returned `NOT_EXECUTED` with the
@@ -170,11 +170,11 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
 | `${HOME}` / `$HOME` string + `${HOME}` argv (3) | ALLOW-but-literal | ALLOW; argv + `shell=False` keeps them literal | N/A (policy-level) |
 | `python -m pytest` / `ls` / `pytest` controls (3) | ALLOW | same | N/A (policy-level) |
 
-## H. Approval gap-close (new in `test_bypass_gapclose_approvals.py`, 8 cases: 6 pass, 1 xpass, 1 xfail)
+## H. Approval gap-close (new in `test_bypass_gapclose_approvals.py`, 8 cases: 6 pass, 2 xpass, 0 xfail)
 
 | Case | Expected | Got | Executed? |
 | --- | --- | --- | --- |
-| CONSUMED approval replayed for the *same* action | Refuse (fixed behaviour) | **XFAIL — today EXECUTEs again; KNOWN-GAP owned by #66** | **Yes today — finding, #66 owns the fix** |
+| CONSUMED approval replayed for the *same* action | Refuse (fixed behaviour) | **XPASS — single-use enforcement landed (PR #81, issue #66), so the non-strict xfail now passes: the CONSUMED approval is refused, not replayed** | First approve executes once; the replay does not |
 | Deny after run COMPLETED | Refuse, run stays COMPLETED (fixed) | **XPASS — the run-status guard landed (PR #67), so the non-strict xfail now passes: denied + `RUN_NOT_ACTIVE`, run stays COMPLETED** | No execution (deny path), run lifecycle correct |
 | DENY decision has no approval to grant (control) | DENY + no approval object | same | No |
 | Submit after COMPLETED | Refuse `RUN_NOT_ACTIVE` | same | No |
@@ -219,9 +219,10 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
 12. **Non-path flag values (`-k`, `--deselect`, `-p <anything>`) unchecked**
     extends base gap 6 with two more instances. Containment = Docker sandbox.
 13. **No new real bypass outside #63/#64 scope found.** The `#66` (CONSUMED
-    replay) and `#68` (argv TOCTOU) windows are asserted as xfail with issue
-    links; their fixes belong to the owning threads. Backend suite after the
-    #69/#70 test updates: **517 passed, 24 skipped, 2 xfailed, 1 xpassed**
+    replay) window is now closed by PR #81 — its probe XPASSes. The `#68`
+    (argv TOCTOU) window stays an xfail with an issue link, fixed by its
+    owning thread. Backend suite on this branch after merging main and the
+    #63/#70 test updates: **959 passed, 25 skipped, 1 xfailed, 4 xpassed**
     (`PYTHONPATH=backend python3 -m pytest backend/tests -q`; browser suite
     not run here).
 
