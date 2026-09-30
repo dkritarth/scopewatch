@@ -38,7 +38,7 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
 | Backslash-absolute `\\etc\\passwd` | DENY PATH_OUTSIDE_WORKSPACE | same | No |
 | Drive path `C:/secrets/notes.txt` | DENY PATH_OUTSIDE_WORKSPACE | same | No |
 | Symlink escaping workspace (→ `/tmp/outside.txt`) | DENY SYMLINK_ESCAPE | same | No; outside file untouched |
-| Symlink in allowed dir → blocked content | DENY BLOCKED_PATH | same (issue #63 fixed by PR #69 — resolved target checked, not just the alias) | No |
+| Symlink in allowed dir → blocked content, including a directory alias to workspace-root `.env` | DENY BLOCKED_PATH | same (issue #63 fixed by PR #69 — resolved target checked, not just the alias) | No |
 | Blocked prefix case variant (`invoices/PRIVATE/...`) | Documents behaviour | ALLOW (case-sensitive miss); serves the *variant* dir (`DECOY`), not blocked bytes — KNOWN GAP | Yes, variant content only |
 | Blocked trailing slash (`invoices/private/`) | DENY BLOCKED_PATH | same | No |
 | Allowed trailing slash (`invoices/approved/` read) | No disclosure | ALLOW then FAILED (IsADirectory); no content | Attempted, failed safely |
@@ -57,7 +57,7 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
 | `python -m pytest --confcutdir=/ tests/` | DENY absolute | DENY PATH_OUTSIDE_WORKSPACE | No |
 | Substitution `$(...)`, backticks, `;` (3 variants) | DENY metachar | DENY SHELL_METACHARACTER | No |
 | Bare `$HOME` argv | ALLOW-but-literal (no shell expansion) | ALLOW; executor uses argv + `shell=False` so it stays a literal path | N/A (policy-level) |
-| 200KB single-component argument | DENY MALFORMED_REQUEST | same (issue #70 fixed — `OSError`/`RuntimeError` during resolution is caught and fails closed as DENY, never HTTP 500) | No |
+| 200KB/1MB single-component path value (argv or resource) | DENY MALFORMED_REQUEST | same (issue #70 fixed — oversized values are rejected before filesystem access) | No |
 | `pytest-evil tests/` prefix spoof | DENY not-allowlisted | DENY COMMAND_NOT_ALLOWED | No |
 | `run_command` without Docker backend | DENY requires-docker | DENY UNSUPPORTED_OPERATION | No |
 
@@ -103,7 +103,9 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
    canonical target as well as the submitted alias (file, directory, and
    nested-link variants all DENY `BLOCKED_PATH`); the executor rechecks the
    resolved path too. Regression cover: `test_bypass_symlink_to_blocked_*`
-   in the base suite plus the dir-symlink read/write cases in section F.
+   in the base suite, the workspace-root `.env` dir-symlink case in
+   `test_pr69_symlink_edge.py`, and the dir-symlink read/write cases in
+   section F.
 2. **Approval resolution has no run-status guard** — **FIXED by PR #67.**
    Resolving an approval after the run left `WAITING_FOR_APPROVAL`
    (COMPLETED or FAILED) is refused with `RUN_NOT_ACTIVE` and the run never
@@ -112,7 +114,8 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
    #70.** `Path.resolve()`/`lstat()` failures (`OSError`, `RuntimeError`)
    anywhere in the path checks are caught and returned as DENY
    `MALFORMED_REQUEST`; overlong values are also rejected before touching
-   the filesystem. Never an unhandled exception, never HTTP 500.
+   the filesystem, including 1MB argv/resource regressions. Never an
+   unhandled exception, never HTTP 500.
 4. **Blocked-path matching is case-sensitive.** Safe on case-sensitive
    (Linux) mounts — the variant names a different directory — but would
    over-permit on case-insensitive mounts. Fix direction: document the
@@ -210,7 +213,7 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
    `BLOCKED_PATH`; regression tests in section F). The executor rechecks the
    resolved target at dispatch as well.
 10. **Backslash traversal ALLOWs at policy but is inert at execution on
-    Linux** — **FIXED:** `normalize_relative_path` folds `\` to `/` before
+    Linux** — **FIXED:** `normalize_relative_path` folds `\\` to `/` before
     matching, so both backslash variants resolve into the blocked directory
     and policy returns DENY `BLOCKED_PATH` (nothing reaches the executor).
     The Linux-literal-filename fallback is no longer load-bearing.
