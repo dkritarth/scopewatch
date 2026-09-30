@@ -411,6 +411,192 @@ def _check_run_command_path(
     return None
 
 
+def _check_staged_resolved_target(
+    value: str,
+    *,
+    describe: str,
+    scope: TaskScope,
+    staged_root: Path,
+) -> Union[tuple[ReasonCode, str, str], None]:
+    """Check where a staged path value actually resolves (symlinks followed).
+
+    Lexical rules alone cannot see a symlink swapped after the policy
+    decision: ``link`` looks innocent while resolving into a blocked path.
+    This resolves the value inside the staged workspace and requires the
+    target to stay in-bounds and outside every blocked path. Unresolvable
+    values fail closed. Nonexistent paths resolve non-strictly to their
+    would-be location, so output files that do not exist yet still pass.
+    """
+    normalized = _normalize_relative_path(value)
+    if normalized is None:
+        return (
+            ReasonCode.MALFORMED_REQUEST,
+            f"{describe} has an invalid path format at dispatch.",
+            "RULE_RUN_COMMAND_MALFORMED_PATH",
+        )
+    try:
+        resolved = (staged_root / normalized).resolve()
+    except OSError:
+        return (
+            ReasonCode.MALFORMED_REQUEST,
+            f"{describe} could not be resolved at dispatch.",
+            "RULE_RUN_COMMAND_MALFORMED_PATH",
+        )
+    try:
+        resolved.relative_to(staged_root)
+    except ValueError:
+        return (
+            ReasonCode.SYMLINK_ESCAPE,
+            f"{describe} escapes the workspace boundary at dispatch.",
+            "RULE_RUN_COMMAND_SYMLINK_ESCAPE_REJECTED",
+        )
+    for blocked in scope.blocked_paths:
+        blocked_norm = _normalize_relative_path(blocked)
+        if blocked_norm is None:
+            continue
+        try:
+            blocked_base = (staged_root / blocked_norm).resolve()
+        except OSError:
+            continue
+        try:
+            resolved.relative_to(blocked_base)
+            return (
+                ReasonCode.BLOCKED_PATH,
+                f"{describe} resolves into blocked path '{blocked}' at dispatch.",
+                "RULE_RUN_COMMAND_BLOCKED_PATH_MATCHED",
+            )
+        except ValueError:
+            continue
+    return None
+
+
+def revalidate_run_command_in_workspace(
+    action: ActionRequest,
+    scope: TaskScope,
+    staged_root: Path,
+) -> Union[tuple[ReasonCode, str, str], None]:
+    """Revalidate a run_command action against a staged workspace copy.
+
+    Defence in depth for the Docker executor (issue #68): re-derives the
+    argv from the action (never a shell), re-checks the allowlist prefix,
+    re-applies the lexical path rules rooted at the staged copy, and
+    additionally verifies every path-bearing argument and the cwd resolve
+    to in-bounds, non-blocked targets. Returns a denial triple on the
+    first violation, else None. Never raises for malformed input: every
+    failure mode returns a denial so dispatch fails closed.
+    """
+    arguments = action.arguments or {}
+    raw_command = arguments.get("command")
+    argv_arg = arguments.get("argv")
+    argv: Optional[list[str]] = None
+    if isinstance(raw_command, str):
+        try:
+            argv = shlex.split(raw_command, posix=True)
+        except ValueError:
+            return (
+                ReasonCode.MALFORMED_REQUEST,
+                "Command string could not be parsed at dispatch.",
+                "RULE_RUN_COMMAND_MALFORMED",
+            )
+        if not argv:
+            return (
+                ReasonCode.MALFORMED_REQUEST,
+                "run_command requires a non-empty command at dispatch.",
+                "RULE_RUN_COMMAND_MALFORMED",
+            )
+    elif (
+        isinstance(argv_arg, list)
+        and argv_arg
+        and all(isinstance(item, str) for item in argv_arg)
+    ):
+        argv = list(argv_arg)
+    else:
+        return (
+            ReasonCode.MALFORMED_REQUEST,
+            "run_command requires arguments['command'] or arguments['argv'] at dispatch.",
+            "RULE_RUN_COMMAND_MALFORMED",
+        )
+
+    assert argv is not None and len(argv) > 0
+    for item in argv:
+        if _contains_shell_metacharacter(item):
+            return (
+                ReasonCode.SHELL_METACHARACTER,
+                "Command argument contains a shell metacharacter at dispatch.",
+                "RULE_SHELL_METACHARACTER_REJECTED",
+            )
+
+    matched_len = _match_prefix_len(argv, scope.allowed_commands)
+    if matched_len == 0:
+        return (
+            ReasonCode.COMMAND_NOT_ALLOWED,
+            "Command does not match any allowlisted command prefix at dispatch.",
+            "RULE_COMMAND_NOT_ALLOWED",
+        )
+
+    try:
+        staged = staged_root.resolve()
+    except OSError:
+        return (
+            ReasonCode.MALFORMED_REQUEST,
+            "Staged workspace could not be resolved at dispatch.",
+            "RULE_RUN_COMMAND_MALFORMED_PATH",
+        )
+
+    for item in argv[matched_len:]:
+        candidates = [item]
+        if "=" in item:
+            candidates.append(item.split("=", 1)[1])
+        for candidate in candidates:
+            try:
+                denial = _check_run_command_path(
+                    candidate,
+                    describe=f"Command argument '{candidate}'",
+                    scope=scope,
+                    workspace_root=staged,
+                )
+            except OSError:
+                return (
+                    ReasonCode.MALFORMED_REQUEST,
+                    f"Command argument '{candidate}' could not be resolved at dispatch.",
+                    "RULE_RUN_COMMAND_MALFORMED_PATH",
+                )
+            if denial is not None:
+                return denial
+            resolved_denial = _check_staged_resolved_target(
+                candidate,
+                describe=f"Command argument '{candidate}'",
+                scope=scope,
+                staged_root=staged,
+            )
+            if resolved_denial is not None:
+                return resolved_denial
+
+    cwd_raw = action.resource or ""
+    cwd_value = "." if not cwd_raw.strip() else cwd_raw
+    try:
+        cwd_denial = _check_run_command_path(
+            cwd_value,
+            describe="Working directory",
+            scope=scope,
+            workspace_root=staged,
+        )
+    except OSError:
+        return (
+            ReasonCode.MALFORMED_REQUEST,
+            "Working directory could not be resolved at dispatch.",
+            "RULE_RUN_COMMAND_MALFORMED_PATH",
+        )
+    if cwd_denial is not None:
+        return cwd_denial
+    return _check_staged_resolved_target(
+        cwd_value,
+        describe="Working directory",
+        scope=scope,
+        staged_root=staged,
+    )
+
+
 def _evaluate_run_command(
     action: ActionRequest,
     scope: TaskScope,
