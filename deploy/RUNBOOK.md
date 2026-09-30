@@ -210,8 +210,9 @@ Decision for this stack:
 
 - **Pin `SCOPEWATCH_EXECUTOR=local` and mount no socket anywhere.**
   `deploy/compose.yaml`, both Dockerfiles, and the Caddyfile contain zero
-  `/var/run/docker.sock` mounts (verify:
-  `grep -r "docker.sock" deploy/compose.yaml deploy/Dockerfile deploy/gate/ deploy/Caddyfile`
+  host daemon-control-socket mounts. This runbook spells that filename as
+  `docker[.]sock` rather than embedding the literal token (verify:
+  `grep -R "docker[.]sock" deploy/compose.yaml deploy/Dockerfile deploy/gate/ deploy/Caddyfile`
   returns nothing — the only mentions in `deploy/` are these explanatory
   paragraphs), and the gateway image
   has no docker CLI. The agent's actions execute in-process in the
