@@ -239,7 +239,7 @@ def test_gapclose_symlink_dir_read_of_blocked_is_denied(
     gap_workspace: Path, gap_run: Run,
 ) -> None:
     """Regression for issue #63 (fixed by PR #69; dir-symlink read variant of
-    ``test_bypass_symlink_to_blocked_serves_content_KNOWN_GAP``): a symlinked
+    ``test_bypass_symlink_to_blocked_denied``): a symlinked
     *directory* inside an allowed path pointing at a blocked directory is
     DENIED. Policy resolves the link and checks the canonical target, so
     ``outputs/linkdir/payroll.txt`` matches blocked ``invoices/private``.
