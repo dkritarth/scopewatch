@@ -225,7 +225,7 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
     replay) window is now closed by PR #81 — its probe XPASSes. The `#68`
     (argv TOCTOU) window stays an xfail with an issue link, fixed by its
     owning thread. Backend suite on this branch after merging main and the
-    #63/#70 test updates: **959 passed, 25 skipped, 1 xfailed, 4 xpassed**
+    #63/#70 test updates: **964 passed, 25 skipped, 1 xfailed, 4 xpassed**
     (`PYTHONPATH=backend python3 -m pytest backend/tests -q`; browser suite
     not run here).
 
