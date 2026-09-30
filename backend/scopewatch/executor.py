@@ -16,6 +16,7 @@ from scopewatch.models import (
     ApprovalStatus,
     ExecutionStatus,
     PolicyOutcome,
+    RunStatus,
     SUPPORTED_OPERATIONS,
 )
 from scopewatch.path_access import normalize_relative_path, scoped_path_reason
@@ -45,6 +46,92 @@ def _verify_workspace_containment(workspace_root: Path, target_path: Path) -> Pa
     return resolved_target
 
 
+def _verify_stored_run_not_terminal(
+    action: ActionRequest,
+    db_path: Path | str,
+) -> None:
+    """Refuse execution when the stored run is terminal or unknown.
+
+    Used when the caller supplies a store handle: direct executor calls
+    bypass the service-layer run-status gate, so the executor re-checks the
+    run lifecycle itself. Any store failure fails closed. Messages are
+    static so no stored content leaks into errors.
+    """
+    from scopewatch.db import get_connection
+    from scopewatch.repository import ScopewatchRepository
+
+    try:
+        conn = get_connection(db_path)
+    except Exception as exc:
+        raise ExecutionSecurityError(
+            "Stored run authorization is unavailable; failing closed."
+        ) from exc
+    try:
+        run = ScopewatchRepository.get_run(conn, action.run_id)
+        if run is None:
+            raise ExecutionSecurityError(
+                "Stored run is unknown; execution refused."
+            )
+        if run.status in (RunStatus.COMPLETED, RunStatus.FAILED):
+            raise ExecutionSecurityError(
+                "Stored run is in a terminal state; execution refused."
+            )
+    except ExecutionSecurityError:
+        raise
+    except Exception as exc:
+        raise ExecutionSecurityError(
+            "Stored run authorization could not be verified; failing closed."
+        ) from exc
+    finally:
+        conn.close()
+
+
+def _verify_stored_approval_single_use(
+    action: ActionRequest,
+    approval_request: ApprovalRequest,
+    db_path: Path | str,
+) -> None:
+    """Enforce verifiable single-use against the stored authorization.
+
+    The presented approval must exactly match the stored approval for this
+    action (same approval id), the stored approval must still be APPROVED
+    (not PENDING, CONSUMED, DENIED, or EXPIRED), and no execution receipt
+    may already exist for the action. Any violation or store failure fails
+    closed with a static message.
+    """
+    from scopewatch.db import get_connection
+    from scopewatch.repository import ScopewatchRepository
+
+    _verify_stored_run_not_terminal(action, db_path)
+    try:
+        conn = get_connection(db_path)
+    except Exception as exc:
+        raise ExecutionSecurityError(
+            "Stored approval authorization is unavailable; failing closed."
+        ) from exc
+    try:
+        stored = ScopewatchRepository.get_approval_by_action(conn, action.id)
+        if stored is None or stored.id != approval_request.id:
+            raise ExecutionSecurityError(
+                "No matching stored approval for this action; execution refused."
+            )
+        if stored.status != ApprovalStatus.APPROVED:
+            raise ExecutionSecurityError(
+                "Stored approval is not APPROVED; replay refused."
+            )
+        receipt = ScopewatchRepository.get_execution_receipt_by_action(conn, action.id)
+        if receipt is not None:
+            raise ExecutionSecurityError(
+                "Action was already executed; replay refused."
+            )
+    except ExecutionSecurityError:
+        raise
+    except Exception as exc:
+        raise ExecutionSecurityError(
+            "Stored approval authorization could not be verified; failing closed."
+        ) from exc
+    finally:
+        conn.close()
 def _verify_scoped_target(
     workspace_root: Path, resource: str, task_scope: Optional[TaskScope],
     *, require_allowed: bool = True,
@@ -70,6 +157,7 @@ def _execute_local(
     workspace_root: Path,
     policy_decision: Optional[PolicyDecision] = None,
     approval_request: Optional[ApprovalRequest] = None,
+    db_path: Optional[Path | str] = None,
     task_scope: Optional[TaskScope] = None,
 ) -> ExecutionReceipt:
     """Execute an authorized action inside the synthetic workspace (local backend)."""
@@ -96,16 +184,28 @@ def _execute_local(
             operation=action.operation,
         )
 
-    # Invariant: If policy decision is HOLD, must have an APPROVED or CONSUMED approval request
+    # Invariant: If policy decision is HOLD, must have an APPROVED approval
+    # request bound to this exact action. CONSUMED approvals never execute:
+    # single-use means a consumed approval cannot authorize a replay, and the
+    # service always presents the APPROVED object (it consumes afterwards).
     if policy_decision.outcome == PolicyOutcome.HOLD:
         if (
             approval_request is None
-            or approval_request.status not in (ApprovalStatus.APPROVED, ApprovalStatus.CONSUMED)
+            or approval_request.status != ApprovalStatus.APPROVED
             or approval_request.action_request_id != action.id
         ):
             raise ExecutionSecurityError(
                 "Held action requires valid approved status to execute."
             )
+        # Verifiable single-use: when given a store handle, the executor
+        # consults the stored approval, the execution receipt, and the run
+        # status instead of trusting the in-memory object alone.
+        if db_path is not None:
+            _verify_stored_approval_single_use(action, approval_request, db_path)
+    elif db_path is not None:
+        # Non-held actions carry no approval, but a store handle still binds
+        # them to the run lifecycle: terminal runs execute nothing.
+        _verify_stored_run_not_terminal(action, db_path)
 
     # Invariant: Network operations must never execute
     if action.operation == "network_request":
@@ -301,6 +401,7 @@ def execute_action(
     workspace_root: Path,
     policy_decision: Optional[PolicyDecision] = None,
     approval_request: Optional[ApprovalRequest] = None,
+    db_path: Optional[Path | str] = None,
     task_scope: Optional[TaskScope] = None,
 ) -> ExecutionReceipt:
     """Single gateway entry point; dispatches to the configured backend.
@@ -321,6 +422,7 @@ def execute_action(
             workspace_root,
             policy_decision=policy_decision,
             approval_request=approval_request,
+            db_path=db_path,
             task_scope=task_scope,
         )
     if backend == "remote":
@@ -337,5 +439,6 @@ def execute_action(
         workspace_root,
         policy_decision=policy_decision,
         approval_request=approval_request,
+        db_path=db_path,
         task_scope=task_scope,
     )
