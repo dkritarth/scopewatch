@@ -103,8 +103,16 @@ def main() -> int:
           "daemon-unavailable message")
     check("no-silent-fallback", "never fall" in executor_src.lower()
           or "never falls back" in executor_src, "no silent local fallback")
-    check("single-entry-dispatch", 'get_executor_backend() == "docker"' in executor_src,
-          "execute_action dispatch")
+    # execute_action resolves the backend once and immediately switches on
+    # it; require that adjacency so the check cannot be satisfied by an
+    # unrelated assignment somewhere else in the file.
+    single_entry = bool(
+        re.search(
+            r'backend = get_executor_backend\(\)\s+if backend == "docker"',
+            executor_src,
+        )
+    )
+    check("single-entry-dispatch", single_entry, "execute_action dispatch")
     check("stored-decision-required", "Direct execution without policy evidence"
           in docker_src, "docker stored-decision gate")
     check("per-run-container-name", "scopewatch-{uuid" in docker_src
