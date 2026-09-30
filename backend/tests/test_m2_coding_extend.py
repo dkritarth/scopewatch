@@ -9,8 +9,8 @@ absent from ``test_scenarios.py`` and from the wave-1/2 coding-mock work:
   (command/argv, exit code, truncation flags) on both service receipts and
   the container helper payload;
 - scenario 11: secret reads via absolute, traversal, and symlinked-directory
-  paths (the last is the #63 symlink-containment class, now a regression
-  test asserting DENY after the PR #69 fix);
+  paths (the last is now a regression test for the closed #63
+  symlink-containment issue);
 - scenario 12: paraphrased injection (same exfiltration intent as the
   contributor-note injection, none of its exact strings) still HOLDs, with a
   paraphrased-refusal control that stays ALLOW;
@@ -444,13 +444,13 @@ async def test_m2_coding_11_traversal_secret_denied(m2_coding_env: dict[str, Any
 async def test_m2_coding_11_symlink_dir_denied(
     m2_coding_env: dict[str, Any], local_backend: None
 ):
-    """Regression for the #63 symlink-containment class (fixed by PR #69,
-    previously the ``_KNOWN_GAP`` ALLOW): a symlinked directory under allowed
-    ``outputs/`` pointing at the workspace root makes
-    ``outputs/linkdir/.env`` resolve to the blocked fixture. The resolver now
-    sees through the alias and DENYs BLOCKED_PATH — the receipt is
-    NOT_EXECUTED, the ``.env`` fixture bytes are unchanged, and no blocked
-    secret appears in the receipt's sanitized result."""
+    """A symlinked directory aimed at blocked content is denied and untouched.
+
+    The ``outputs/linkdir`` alias still looks allowed lexically, but its
+    canonical target is the workspace-root ``.env`` fixture. Policy must
+    therefore return DENY BLOCKED_PATH, leave the receipt NOT_EXECUTED, keep
+    the blocked fixture bytes unchanged, and not include the blocked secret
+    in the receipt."""
     ws: Path = m2_coding_env["workspace_dir"]
     (ws / "outputs" / "linkdir").symlink_to(ws, target_is_directory=True)
     before = (ws / ".env").read_bytes()
