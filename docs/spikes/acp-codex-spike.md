@@ -28,16 +28,16 @@ However, because native agent runtimes may retain local execution pathways if no
 - **Mitigation:** The Scopewatch ACP adapter acts as the client host and only acknowledges virtual/sandboxed paths relative to the declared run workspace. File operations outside the mediated workspace trigger `BLOCKED_PATH` or `PATH_TRAVERSAL` denials.
 
 ### Q2: Does it run commands through client `terminal/*`, or in its own sandbox?
-- **Finding:** Under ACP, terminal actions are mediated via `terminal/create` and `terminal/run` requests dispatched to the client.
-- **Gateway Mapping:** The adapter maps terminal requests directly to `operation: "run_command"` on `tool: "workspace"`.
+- **Finding:** Under ACP, terminal actions are mediated via `terminal/run` requests dispatched to the client (`terminal/create` interactive sessions are refused).
+- **Gateway Mapping:** The adapter maps terminal requests directly to `operation: "run_command"` on `tool: "workspace"` with `resource=cwd`.
 - **Policy Enforcement:** Commands are parsed without a shell using `shlex.split`, verified against allowlisted command prefixes, rejected if containing shell metacharacters, and executed only in Docker-isolated containers (`SCOPEWATCH_EXECUTOR=docker`). Disallowed commands return an immediate JSON-RPC tool error without execution.
 
 ### Q3: Does `session/request_permission` fire for every sensitive action, and can the client deny it?
 - **Finding:** ACP specifies `session/request_permission` as the protocol mechanism for user consent before executing sensitive tools or actions.
-- **Behavior:** The adapter intercepts permission requests and evaluates them against the gateway's policy:
-  - `ALLOW` -> returns `{"decision": "allow"}`.
-  - `DENY` -> returns `{"decision": "deny", "reason": "<REASON_CODE>: <explanation>"}`.
-  - `HOLD` -> suspends the JSON-RPC response, generates a gateway approval record, and waits for a human reviewer to resolve the hold. If rejected or timed out, it returns a fail-closed `deny`.
+- **Dry-Run Scope Verification:** To avoid premature action execution or consuming single-use approvals during preflight checks, the adapter evaluates permissions dry-run against the active run's `TaskScope` (via `GET /api/v1/runs/{id}`):
+  - `allow`: Operation, path, and tool are permitted under active scope without approval required.
+  - `deny`: Operation or path violates scope constraints (e.g. `BLOCKED_PATH`, `PATH_TRAVERSAL`, `OPERATION_NOT_ALLOWED`).
+  - `requires_approval`: Operation requires human reviewer approval before execution.
 
 ### Q4: What reasoning does Codex expose over ACP?
 - **Finding:** Codex does not expose internal raw Chain-of-Thought (CoT) token streams or hidden model activations across ACP. It emits:
@@ -73,8 +73,32 @@ operations only.
 
 1. **Module Placement:** `backend/scopewatch/acp_adapter.py`
 2. **Components:**
-   - `AcpClientAdapter`: Handles JSON-RPC dispatch, session capability handshake, and mapping to gateway operations.
+   - `AcpClientAdapter`: Handles JSON-RPC dispatch, session capability handshake, dry-run preflight checks, and mapping to gateway operations.
    - `AcpRpcError`: Conforms to JSON-RPC 2.0 error responses carrying gateway `reason_code` and `explanation`.
-   - `HoldConfig`: Bounded async polling for human approvals with deterministic fail-closed timeouts.
+   - `HoldConfig`: Pydantic v2 configuration for bounded async polling for human approvals with deterministic fail-closed timeouts.
 3. **Validation & Testing:**
    - `backend/tests/test_acp_adapter.py`: Comprehensive test matrix with a fake ACP agent exercising reads, writes, deletions, command filtering, holds, approval single-use, and provenance classification.
+
+---
+
+## 5. Empirical Observed Evidence (Fake Agent Protocol Traces)
+
+The following empirical protocol interaction traces were observed and validated on 2026-09-30 using the synthetic `FakeAcpAgent` contract harness:
+
+```json
+[Turn 1: Handshake]
+Request:  {"jsonrpc": "2.0", "id": "fake-agent-1", "method": "initialize", "params": {}}
+Response: {"jsonrpc": "2.0", "id": "fake-agent-1", "result": {"protocolVersion": "2024-11-05", "capabilities": {"fs": {"readTextFile": true, "writeTextFile": true, "deleteFile": true, "listDirectory": true}, "terminal": {"run": true, "create": false}, "session": {"requestPermission": true}}}}
+
+[Turn 2: Dry-run Preflight Check]
+Request:  {"jsonrpc": "2.0", "id": "fake-agent-2", "method": "session/request_permission", "params": {"operation": "read_text", "path": "invoices/approved/vendor_a.txt"}}
+Response: {"jsonrpc": "2.0", "id": "fake-agent-2", "result": {"decision": "allow", "scope_verified": true}}
+
+[Turn 3: Mediated Read]
+Request:  {"jsonrpc": "2.0", "id": "fake-agent-3", "method": "fs/read_text_file", "params": {"path": "invoices/approved/vendor_a.txt", "reasoning_summary": "Reading vendor invoice", "turn_id": "turn-1"}}
+Response: {"jsonrpc": "2.0", "id": "fake-agent-3", "result": {"path": "invoices/approved/vendor_a.txt", "content": "Invoice: $500", "action_id": "..."}}
+
+[Turn 4: Adversarial Traversal Block]
+Request:  {"jsonrpc": "2.0", "id": "fake-agent-4", "method": "fs/read_text_file", "params": {"path": "../../../etc/shadow", "turn_id": "turn-3"}}
+Response: {"jsonrpc": "2.0", "id": "fake-agent-4", "error": {"code": -32000, "message": "Operation denied by policy: PATH_TRAVERSAL", "data": {"reason_code": "PATH_TRAVERSAL"}}}
+```

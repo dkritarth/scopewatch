@@ -7,8 +7,8 @@ mediating every capability request through the Scopewatch gateway HTTP API.
 
 Design rules (following AGENTS.md and ADR-0001 invariants):
 
-* The adapter NEVER touches the guarded files, subprocesses, or the controlled
-  executor itself. Its sole effect channel is the gateway HTTP API
+* External adapter: The adapter NEVER touches the guarded files, subprocesses,
+  or the controlled executor itself. Its sole effect channel is the gateway HTTP API
   (``POST /api/v1/runs/{id}/actions`` plus approval polling).
 * A policy DENY is final and is surfaced to the ACP agent as a JSON-RPC error
   or a denied permission response. The adapter cannot bypass or relax a denial.
@@ -24,10 +24,10 @@ Design rules (following AGENTS.md and ADR-0001 invariants):
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from scopewatch.models import ReasoningProvenance
 
@@ -40,7 +40,6 @@ MEDIATED_ACP_METHODS = (
     "fs/delete_file",
     "fs/list_directory",
     "terminal/run",
-    "terminal/create",
     "session/request_permission",
 )
 
@@ -82,12 +81,13 @@ class AcpRpcError(Exception):
         return err
 
 
-@dataclass
-class HoldConfig:
+class HoldConfig(BaseModel):
     """Polling configuration for actions held for human approval."""
 
-    timeout_s: float = 30.0
-    poll_interval_s: float = 0.1
+    model_config = ConfigDict(extra="forbid")
+
+    timeout_s: float = Field(default=30.0, gt=0.0)
+    poll_interval_s: float = Field(default=0.1, gt=0.0)
 
 
 class AcpClientAdapter:
@@ -117,6 +117,17 @@ class AcpClientAdapter:
         self.run_id = run_id
         self.requested_by = requested_by
         self.hold = hold or HoldConfig()
+
+        self._dispatch_map: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+            "initialize": self._handle_initialize,
+            "fs/read_text_file": self._handle_read_text_file,
+            "fs/write_text_file": self._handle_write_text_file,
+            "fs/delete_file": self._handle_delete_file,
+            "fs/list_directory": self._handle_list_directory,
+            "terminal/run": self._handle_terminal_run,
+            "terminal/create": self._handle_terminal_create,
+            "session/request_permission": self._handle_request_permission,
+        }
 
     def handle_jsonrpc(self, request: dict[str, Any]) -> dict[str, Any]:
         """Dispatch a single JSON-RPC 2.0 request and return the JSON-RPC response."""
@@ -160,25 +171,21 @@ class AcpClientAdapter:
 
     def dispatch_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Route an ACP method call to its gateway-mediated handler."""
-        if method == "initialize":
-            return self._handle_initialize(params)
-        elif method == "fs/read_text_file":
-            return self._handle_read_text_file(params)
-        elif method == "fs/write_text_file":
-            return self._handle_write_text_file(params)
-        elif method == "fs/delete_file":
-            return self._handle_delete_file(params)
-        elif method == "fs/list_directory":
-            return self._handle_list_directory(params)
-        elif method in ("terminal/run", "terminal/create"):
-            return self._handle_terminal_run(params)
-        elif method == "session/request_permission":
-            return self._handle_request_permission(params)
-        else:
+        handler = self._dispatch_map.get(method)
+        if handler is None:
             raise AcpRpcError(
                 code=-32601,
                 message=f"Method not found or unsupported by Scopewatch ACP adapter: {method}",
             )
+        return handler(params)
+
+    @staticmethod
+    def _extract_path(params: dict[str, Any]) -> str:
+        """Validate and extract a required path string parameter."""
+        path = params.get("path")
+        if not path or not isinstance(path, str):
+            raise AcpRpcError(code=-32602, message="Missing or invalid required parameter: 'path'")
+        return path
 
     def _handle_initialize(self, params: dict[str, Any]) -> dict[str, Any]:
         """Negotiate ACP capabilities, advertising mediated client tools."""
@@ -193,7 +200,7 @@ class AcpClientAdapter:
                 },
                 "terminal": {
                     "run": True,
-                    "create": True,
+                    "create": False,
                 },
                 "session": {
                     "requestPermission": True,
@@ -207,10 +214,7 @@ class AcpClientAdapter:
         }
 
     def _handle_read_text_file(self, params: dict[str, Any]) -> dict[str, Any]:
-        path = params.get("path")
-        if not path or not isinstance(path, str):
-            raise AcpRpcError(code=-32602, message="Missing or invalid required parameter: 'path'")
-
+        path = self._extract_path(params)
         action_resp = self._submit_action(
             operation="read_text",
             resource=path,
@@ -224,14 +228,12 @@ class AcpClientAdapter:
         return {
             "path": path,
             "content": content,
-            "action_id": action_resp.get("action_request", {}).get("id"),
+            "action_id": (action_resp.get("action_request") or {}).get("id"),
         }
 
     def _handle_write_text_file(self, params: dict[str, Any]) -> dict[str, Any]:
-        path = params.get("path")
+        path = self._extract_path(params)
         content = params.get("content")
-        if not path or not isinstance(path, str):
-            raise AcpRpcError(code=-32602, message="Missing or invalid required parameter: 'path'")
         if content is None or not isinstance(content, str):
             raise AcpRpcError(code=-32602, message="Missing or invalid required parameter: 'content'")
 
@@ -247,15 +249,12 @@ class AcpClientAdapter:
         return {
             "path": path,
             "bytes_written": sanitized.get("bytes_written", len(content.encode("utf-8"))),
-            "action_id": action_resp.get("action_request", {}).get("id"),
+            "action_id": (action_resp.get("action_request") or {}).get("id"),
             "status": "success",
         }
 
     def _handle_delete_file(self, params: dict[str, Any]) -> dict[str, Any]:
-        path = params.get("path")
-        if not path or not isinstance(path, str):
-            raise AcpRpcError(code=-32602, message="Missing or invalid required parameter: 'path'")
-
+        path = self._extract_path(params)
         action_resp = self._submit_action(
             operation="delete_path",
             resource=path,
@@ -265,7 +264,7 @@ class AcpClientAdapter:
         )
         return {
             "path": path,
-            "action_id": action_resp.get("action_request", {}).get("id"),
+            "action_id": (action_resp.get("action_request") or {}).get("id"),
             "status": "deleted",
         }
 
@@ -286,7 +285,7 @@ class AcpClientAdapter:
         return {
             "path": path,
             "entries": sanitized.get("entries", []),
-            "action_id": action_resp.get("action_request", {}).get("id"),
+            "action_id": (action_resp.get("action_request") or {}).get("id"),
         }
 
     def _handle_terminal_run(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -294,15 +293,19 @@ class AcpClientAdapter:
         if not command or not isinstance(command, str):
             raise AcpRpcError(code=-32602, message="Missing or invalid required parameter: 'command'")
 
+        cwd = params.get("cwd", "")
+        if not isinstance(cwd, str):
+            cwd = ""
+
         arguments: dict[str, Any] = {"command": command}
-        if "cwd" in params and isinstance(params["cwd"], str):
-            arguments["cwd"] = params["cwd"]
+        if cwd:
+            arguments["cwd"] = cwd
         if "argv" in params and isinstance(params["argv"], list):
             arguments["argv"] = params["argv"]
 
         action_resp = self._submit_action(
             operation="run_command",
-            resource="",
+            resource=cwd,
             arguments=arguments,
             reasoning_summary=params.get("reasoning_summary"),
             turn_id=params.get("turn_id"),
@@ -314,38 +317,90 @@ class AcpClientAdapter:
             "exit_code": sanitized.get("exit_code", 0),
             "stdout": sanitized.get("stdout", ""),
             "stderr": sanitized.get("stderr", ""),
-            "action_id": action_resp.get("action_request", {}).get("id"),
+            "action_id": (action_resp.get("action_request") or {}).get("id"),
         }
 
+    def _handle_terminal_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Reject interactive terminal creation: Scopewatch only mediates isolated commands."""
+        raise AcpRpcError(
+            code=-32601,
+            message=(
+                "Interactive terminal sessions ('terminal/create') are not supported by Scopewatch. "
+                "Use 'terminal/run' for mediated command execution."
+            ),
+        )
+
     def _handle_request_permission(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Evaluate an explicit ACP permission request against the gateway."""
+        """Dry-run permission query against the task scope without premature action execution.
+
+        Evaluates whether the requested operation and path conform to the active
+        run's TaskScope without submitting a stateful ActionRequest that would
+        prematurely execute the command or create phantom single-use approvals.
+        """
         operation = params.get("operation")
         path = params.get("path") or params.get("resource") or ""
         if not operation or not isinstance(operation, str):
             raise AcpRpcError(code=-32602, message="Missing required parameter: 'operation'")
 
-        arguments = params.get("arguments") or {}
-        if not isinstance(arguments, dict):
-            arguments = {}
-
-        try:
-            action_resp = self._submit_action(
-                operation=operation,
-                resource=str(path),
-                arguments=arguments,
-                reasoning_summary=params.get("reasoning_summary"),
-                turn_id=params.get("turn_id"),
-            )
-            return {
-                "decision": "allow",
-                "action_id": action_resp.get("action_request", {}).get("id"),
-            }
-        except AcpRpcError as err:
+        # Fetch active run scope for preflight permission check
+        run_resp = self.http.get(f"/api/v1/runs/{self.run_id}")
+        if run_resp.status_code != 200:
             return {
                 "decision": "deny",
-                "reason": err.message,
-                "error": err.to_rpc_error(),
+                "reason": f"Run not found or unavailable: HTTP {run_resp.status_code}",
             }
+
+        scope = run_resp.json().get("task_scope") or {}
+        allowed_ops = set(scope.get("allowed_operations") or [])
+        requires_approval = set(scope.get("requires_approval") or [])
+        blocked_paths = scope.get("blocked_paths") or []
+        allowed_paths = scope.get("allowed_paths") or []
+
+        if operation not in allowed_ops and operation not in requires_approval:
+            return {
+                "decision": "deny",
+                "reason": f"Operation '{operation}' not permitted in active task scope.",
+                "reason_code": "OPERATION_NOT_ALLOWED",
+            }
+
+        if path:
+            norm_path = str(path).strip().lstrip("/")
+            if ".." in norm_path.split("/") or norm_path.startswith("/"):
+                return {
+                    "decision": "deny",
+                    "reason": f"Path '{path}' outside workspace boundary.",
+                    "reason_code": "PATH_TRAVERSAL",
+                }
+            for blocked in blocked_paths:
+                if norm_path == blocked or norm_path.startswith(f"{blocked}/"):
+                    return {
+                        "decision": "deny",
+                        "reason": f"Path '{path}' matches blocked directory prefix '{blocked}'.",
+                        "reason_code": "BLOCKED_PATH",
+                    }
+            if allowed_paths and allowed_paths != ["."]:
+                in_allowed = any(
+                    norm_path == allow or norm_path.startswith(f"{allow}/")
+                    for allow in allowed_paths
+                )
+                if not in_allowed:
+                    return {
+                        "decision": "deny",
+                        "reason": f"Path '{path}' is not within allowed paths.",
+                        "reason_code": "PATH_NOT_ALLOWED",
+                    }
+
+        if operation in requires_approval:
+            return {
+                "decision": "requires_approval",
+                "reason": f"Operation '{operation}' requires human approval before execution.",
+                "reason_code": "APPROVAL_REQUIRED",
+            }
+
+        return {
+            "decision": "allow",
+            "scope_verified": True,
+        }
 
     def _submit_action(
         self,
@@ -383,7 +438,7 @@ class AcpClientAdapter:
             try:
                 err_data = resp.json()
             except Exception:
-                err_data = {"raw_response": resp.text[:200]}
+                err_data = {"error": "Gateway returned non-JSON HTTP error"}
             raise AcpRpcError(
                 code=-32000,
                 message=f"Gateway HTTP error {resp.status_code}: {err_data.get('detail', 'Action rejected')}",
@@ -443,7 +498,6 @@ class AcpClientAdapter:
                         data={"action_id": action_id, "error_code": receipt.get("error_code")},
                     )
 
-                # Check if approval request was denied/rejected/expired
                 approval = action_data.get("approval_request")
                 if approval and approval.get("status") in ("DENIED", "REJECTED", "EXPIRED"):
                     raise AcpRpcError(

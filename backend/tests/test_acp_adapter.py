@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from scopewatch.acp_adapter import (
     COVERAGE_STATEMENT,
@@ -89,6 +90,7 @@ def test_acp_initialize_capabilities(clean_client: TestClient, active_run_id: st
     assert result["capabilities"]["fs"]["writeTextFile"] is True
     assert result["capabilities"]["fs"]["deleteFile"] is True
     assert result["capabilities"]["terminal"]["run"] is True
+    assert result["capabilities"]["terminal"]["create"] is False
     assert result["capabilities"]["session"]["requestPermission"] is True
     assert result["serverInfo"]["coverageStatement"] == COVERAGE_STATEMENT
 
@@ -112,6 +114,20 @@ def test_acp_unsupported_method(clean_client: TestClient, active_run_id: str) ->
     }
     resp = adapter.handle_jsonrpc(req)
     assert resp["error"]["code"] == -32601
+
+
+def test_acp_terminal_create_unsupported(clean_client: TestClient, active_run_id: str) -> None:
+    """terminal/create returns unsupported method error guiding callers to terminal/run."""
+    adapter = AcpClientAdapter(clean_client, active_run_id)
+    req = {
+        "jsonrpc": "2.0",
+        "id": "term-create-1",
+        "method": "terminal/create",
+        "params": {},
+    }
+    resp = adapter.handle_jsonrpc(req)
+    assert resp["error"]["code"] == -32601
+    assert "Use 'terminal/run'" in resp["error"]["message"]
 
 
 def test_acp_read_allowed(clean_client: TestClient, active_run_id: str) -> None:
@@ -228,7 +244,7 @@ def test_acp_delete_held_and_rejected(clean_client: TestClient, active_run_id: s
     action_id = action_data["action_request"]["id"]
     approval_id = action_data["approval_request"]["id"]
 
-    # Reject the approval
+    # Deny the approval
     rej_resp = clean_client.post(
         f"/api/v1/approvals/{approval_id}/deny",
         json={"resolution_reason": "Unsafe deletion"},
@@ -264,11 +280,11 @@ def test_acp_delete_held_timeout_fails_closed(clean_client: TestClient, active_r
     assert exc_info.value.data["reason_code"] == "HOLD_TIMEOUT"
 
 
-def test_acp_request_permission(clean_client: TestClient, active_run_id: str) -> None:
-    """session/request_permission evaluates policy and returns decision allow/deny."""
+def test_acp_request_permission_dry_run_invariants(clean_client: TestClient, active_run_id: str) -> None:
+    """session/request_permission performs dry-run scope check without executing actions."""
     adapter = AcpClientAdapter(clean_client, active_run_id)
 
-    # Allowed operation permission
+    # Allowed operation permission check
     req_allow = {
         "jsonrpc": "2.0",
         "id": "perm-1",
@@ -280,9 +296,10 @@ def test_acp_request_permission(clean_client: TestClient, active_run_id: str) ->
     }
     resp_allow = adapter.handle_jsonrpc(req_allow)
     assert resp_allow["result"]["decision"] == "allow"
+    assert resp_allow["result"]["scope_verified"] is True
 
-    # Denied operation permission
-    req_deny = {
+    # Denied operation permission check (blocked path)
+    req_deny_path = {
         "jsonrpc": "2.0",
         "id": "perm-2",
         "method": "session/request_permission",
@@ -291,8 +308,30 @@ def test_acp_request_permission(clean_client: TestClient, active_run_id: str) ->
             "path": "invoices/private/salaries.txt",
         },
     }
-    resp_deny = adapter.handle_jsonrpc(req_deny)
-    assert resp_deny["result"]["decision"] == "deny"
+    resp_deny_path = adapter.handle_jsonrpc(req_deny_path)
+    assert resp_deny_path["result"]["decision"] == "deny"
+    assert resp_deny_path["result"]["reason_code"] == "BLOCKED_PATH"
+
+    # Approval required permission check
+    req_approval = {
+        "jsonrpc": "2.0",
+        "id": "perm-3",
+        "method": "session/request_permission",
+        "params": {
+            "operation": "delete_path",
+            "path": "outputs/old.txt",
+        },
+    }
+    resp_appr = adapter.handle_jsonrpc(req_approval)
+    assert resp_appr["result"]["decision"] == "requires_approval"
+    assert resp_appr["result"]["reason_code"] == "APPROVAL_REQUIRED"
+
+    # Crucial dry-run invariant: request_permission must NEVER have submitted action records
+    events_resp = clean_client.get(f"/api/v1/runs/{active_run_id}/events")
+    assert events_resp.status_code == 200
+    events = events_resp.json()
+    action_events = [e for e in events if e.get("event_type") == "ACTION_REQUESTED"]
+    assert len(action_events) == 0, "request_permission must never record stateful ActionRequest"
 
 
 def test_acp_provenance_invariant(clean_client: TestClient, active_run_id: str) -> None:
@@ -368,6 +407,24 @@ def test_acp_terminal_command_disallowed(
     assert resp["error"]["data"]["reason_code"] == ReasonCode.COMMAND_NOT_ALLOWED.value
 
 
+def test_acp_terminal_command_cwd_validation(
+    clean_client: TestClient, active_run_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """terminal/run validating that cwd outside scope is blocked."""
+    monkeypatch.setenv("SCOPEWATCH_EXECUTOR", "docker")
+    adapter = AcpClientAdapter(clean_client, active_run_id)
+    req = {
+        "jsonrpc": "2.0",
+        "id": "term-cwd",
+        "method": "terminal/run",
+        "params": {"command": "pytest tests/", "cwd": "invoices/private"},
+    }
+    resp = adapter.handle_jsonrpc(req)
+    assert "result" not in resp
+    assert resp["error"]["code"] == -32000
+    assert resp["error"]["data"]["reason_code"] == ReasonCode.BLOCKED_PATH.value
+
+
 def test_acp_terminal_shell_metacharacter(
     clean_client: TestClient, active_run_id: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -403,6 +460,74 @@ def test_acp_missing_parameter_validation(clean_client: TestClient, active_run_i
         {"jsonrpc": "2.0", "id": "val-3", "method": "fs/write_text_file", "params": {"path": "outputs/out.txt"}}
     )
     assert resp3["error"]["code"] == -32602
+
+
+def test_acp_hold_config_pydantic_forbid_extra() -> None:
+    """HoldConfig rejects extra attributes and validates bounds via Pydantic v2."""
+    with pytest.raises(ValidationError):
+        HoldConfig(timeout_s=-1.0)
+    with pytest.raises(ValidationError):
+        HoldConfig(timeout_s=5.0, unexpected_field="invalid")  # type: ignore[call-arg]
+
+
+class FakeAcpAgent:
+    """Simulated coding agent speaking ACP JSON-RPC 2.0 protocol over adapter."""
+
+    def __init__(self, adapter: AcpClientAdapter) -> None:
+        self.adapter = adapter
+        self.msg_id = 0
+
+    def rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        self.msg_id += 1
+        req = {
+            "jsonrpc": "2.0",
+            "id": f"fake-agent-{self.msg_id}",
+            "method": method,
+            "params": params,
+        }
+        return self.adapter.handle_jsonrpc(req)
+
+
+def test_fake_acp_agent_full_turn_contract(clean_client: TestClient, active_run_id: str) -> None:
+    """End-to-end multi-turn interaction loop driven by FakeAcpAgent."""
+    adapter = AcpClientAdapter(clean_client, active_run_id)
+    agent = FakeAcpAgent(adapter)
+
+    # Turn 1: initialize and discover capabilities
+    init_res = agent.rpc("initialize", {})
+    assert init_res["result"]["capabilities"]["fs"]["readTextFile"] is True
+
+    # Turn 2: Preflight permission check on allowed read
+    perm_res = agent.rpc("session/request_permission", {
+        "operation": "read_text",
+        "path": "invoices/approved/vendor_a.txt",
+    })
+    assert perm_res["result"]["decision"] == "allow"
+
+    # Turn 3: Execute read
+    read_res = agent.rpc("fs/read_text_file", {
+        "path": "invoices/approved/vendor_a.txt",
+        "reasoning_summary": "Agent reading approved vendor A invoice",
+        "turn_id": "turn-1",
+    })
+    assert "Invoice: $500" in read_res["result"]["content"]
+
+    # Turn 4: Write result
+    write_res = agent.rpc("fs/write_text_file", {
+        "path": "outputs/vendor_summary.txt",
+        "content": "Vendor A: 500",
+        "reasoning_summary": "Agent writing processed summary",
+        "turn_id": "turn-2",
+    })
+    assert write_res["result"]["status"] == "success"
+
+    # Turn 5: Attempt unauthorized traversal
+    deny_res = agent.rpc("fs/read_text_file", {
+        "path": "../../../etc/shadow",
+        "turn_id": "turn-3",
+    })
+    assert deny_res["error"]["code"] == -32000
+    assert deny_res["error"]["data"]["reason_code"] == ReasonCode.PATH_TRAVERSAL.value
 
 
 def test_acp_adapter_ast_invariants() -> None:
