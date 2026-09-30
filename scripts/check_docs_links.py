@@ -280,7 +280,7 @@ def check_secrets_owned(root: pathlib.Path, rel: str, errors: list[str]) -> None
 
 
 def check_deploy_ref(root: pathlib.Path, ref: str, errors: list[str]) -> None:
-    """Read-only: grep deploy/ at <ref> for secrets and docker.sock mounts.
+    """Read-only: grep deploy/ at <ref> for secrets and absent docker.sock mounts.
 
     NEVER edits deploy/ (owned by PR #79). Runs `git show <ref>:<path>`.
     """
@@ -315,12 +315,12 @@ def check_deploy_ref(root: pathlib.Path, ref: str, errors: list[str]) -> None:
         tmp = [e for e in tmp if "change-me" not in e and "demo.example.com" not in e]
         errors.extend(tmp)
         # docker.sock must not be mounted (issue #42 requirement).
-        if "docker.sock" in content and "explanatory" not in content.lower():
-            # RUNBOOK.md legitimately discusses docker.sock in prose ("contain zero
+        if "docker.sock" in content and "explanatory" not in content.lower():  # absence check
+            # RUNBOOK.md legitimately discusses absent docker.sock in prose ("contain zero
             # ... mounts (verify: grep ... returns nothing ...)"). Only flag actual
             # mount syntax.
             if re.search(r"volumes:\s*\n.*docker\.sock|/var/run/docker\.sock\s*:", content):
-                errors.append(f"[{ref}]{f}: docker.sock mount found (issue #42 forbids it)")
+                errors.append(f"[{ref}]{f}: unexpected docker.sock mount found; socket mounts must never be present (issue #42 forbids it)")
 
 
 def main() -> int:
