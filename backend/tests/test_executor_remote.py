@@ -388,15 +388,18 @@ def test_runner_handle_execute_refuses_digest_mismatch(tmp_path: Path) -> None:
 # ---------------- Socket isolation + backend matrix ----------------
 
 # Files outside ``deploy/executor-runner/`` that are allowed to *name* the
-# Docker socket, because their entire job is to verify it is NOT mounted and
-# NOT reachable. An entry is still scanned for mount/dial patterns below,
-# and every one of its ``docker.sock`` mentions must sit on an
-# absence-asserting line (see NEGATIVE_CONTEXT_MARKERS).
+# Docker socket, because they verify it is NOT mounted and NOT reachable.
+# An entry is still scanned for mount/dial patterns below, and every one of
+# its ``docker.sock`` mentions must sit on an absence-asserting line (see
+# NEGATIVE_CONTEXT_MARKERS).
 SOCKET_VERIFIER_ALLOWLIST = frozenset(
     {
         # Static M2 verifier: asserts "docker.sock" not in the executor
         # source so the image never gains a socket mount.
         "scripts/check_docker_acceptance.py",
+        # Docs-submission checker: asserts absent "docker.sock" mounts in
+        # deploy/ read-only output, so the submission bundle cannot gain one.
+        "scripts/check_docs_links.py",
     }
 )
 

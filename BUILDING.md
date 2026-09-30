@@ -24,11 +24,20 @@ npm ci --prefix frontend
 npx --prefix frontend playwright install --with-deps chromium
 
 # 3. Run all test suites and clean-room security verification
-./scripts/validate.sh
+./scripts/validate.sh            # full, incl. Playwright browser suite
+./scripts/validate.sh --quick   # same except the browser suite (use while iterating)
 
-# 4. Launch the integrated demonstration
-./scripts/run_demo.sh
+# 4. Docs consistency (links, model IDs, localhost allowlist, claims, secrets)
+python3 scripts/check_docs_links.py
+
+# 5. Launch the integrated demonstration
+./scripts/run_demo.sh                       # scripted invoice scenarios 01-06
+./scripts/run_demo.sh --agent               # agent loop, offline mock provider
+./scripts/run_demo.sh --coding              # M2 coding scenarios 10-13
+PORT=8001 HOST=127.0.0.1 ./scripts/run_demo.sh   # override defaults (8000/127.0.0.1)
 ```
+
+`backend/requirements.txt` installs the same packages without hashes (used in the 5-minute judge path in `docs/operations/judge-runbook.md`); the lock file above is the reproducible build. Env names match `.env.example` (`SCOPEWATCH_AGENT_PROFILE`, `SCOPEWATCH_AUDITOR_PROFILE`, `OPENROUTER_API_KEY`, `NEBIUS_API_KEY`); `run_demo.sh` also honours `PORT`/`HOST` and writes to `runtime-data/` (gitignored) plus `demo/workspace/` fixtures (created only if missing).
 
 ### Python dependency lock files
 
@@ -74,7 +83,16 @@ break `cmp -s`.
 
 - **Backend tests:**
   ```bash
-  pytest backend/tests -v
+  PYTHONPATH=backend python3 -m pytest backend/tests -q
+  ```
+
+- **Docs link/claim checker (issue #46):**
+  ```bash
+  python3 scripts/check_docs_links.py
+  # PASS on main 2026-09-28: links, model IDs (providers.toml), localhost
+  # allowlist, claims, secrets clean — incl. read-only deploy/ check at
+  # origin/feature/42-vm-deploy (11 files, no secrets, no docker.sock mount).
+  # Checker never edits deploy/ (PR #79) or docs/submission/ (PR #72).
   ```
 
 - **Frontend unit tests:**
