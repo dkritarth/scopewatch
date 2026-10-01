@@ -73,7 +73,7 @@ Required before merging issues labelled `review: second-pass`. Use a different t
 
 ```text
 Claude Code:  /spike 25        or   /spike "Can SSE carry reasoning audit progress?"
-Any tool:     Act as the researcher role (.agents/roles/researcher.md) on issue #25.
+Any tool:     Act as the researcher role (.agents/roles/researcher.md) on issue #101.
 ```
 
 ### Fix the docs

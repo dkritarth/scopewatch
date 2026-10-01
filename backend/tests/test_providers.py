@@ -48,7 +48,7 @@ def test_load_profiles_from_toml() -> None:
 
     nebius_p = profiles["nebius-demo"]
     assert nebius_p.name == "nebius-demo"
-    assert nebius_p.base_url == "https://api.studio.nebius.ai/v1"
+    assert nebius_p.base_url == "https://api.tokenfactory.nebius.com/v1"
     assert nebius_p.api_key_env == "NEBIUS_API_KEY"
     assert nebius_p.max_retries == 3
 

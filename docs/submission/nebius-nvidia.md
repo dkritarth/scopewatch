@@ -9,7 +9,7 @@ live-dependent statement carries its qualifier.
 ### 1. Nebius inference: `nebius-demo` provider profile (configured, live run pending)
 
 - **Profile:** `nebius-demo` in `backend/config/providers.toml:23-29`.
-- **Base URL (as configured):** `https://api.studio.nebius.ai/v1`
+- **Base URL (as configured):** `https://api.tokenfactory.nebius.com/v1`
   (OpenAI-compatible `/chat/completions`).
 - **Model:** `nvidia/llama-3.1-nemotron-70b-instruct`.
 - **Key handling:** read at runtime from the `NEBIUS_API_KEY` environment
@@ -23,14 +23,12 @@ live-dependent statement carries its qualifier.
 - **Status qualifier:** the profile is wired end to end and exercised in CI via
   equivalent paths, but **no live inference call against Nebius has been run
   from this repo yet — it needs `NEBIUS_API_KEY`** (tracked under issues
-  #25/#31/#32). Until a dated live report exists, every accuracy number we
+  #101/#31/#32). Until a dated live report exists, every accuracy number we
   publish is labelled with the profile that produced it (currently `mock`).
-- **URL note:** the early spike (`docs/spikes/2026-09-nemotron-provider-spike.md`)
-  recommended `https://api.tokenfactory.nebius.com/v1`; the implemented config
-  uses `https://api.studio.nebius.ai/v1`. The spike is marked
-  provisional/unverified in `docs/hackathon.md` — re-verify the endpoint
-  against the live Nebius docs before submitting, and update this file if the
-  config moves.
+- **URL note:** Nebius Token Factory documentation currently specifies
+  `https://api.tokenfactory.nebius.com/v1`. The profile now matches that
+  documented endpoint. A keyed request is still required to confirm the model
+  catalog and inference access for this account (issue #101).
 
 ### 2. Nebius AI Cloud VM: hosted demo (PENDING-HUMAN, issue #43)
 
@@ -75,13 +73,13 @@ live-dependent statement carries its qualifier.
 
 ## Feedback for Nebius
 
-1. **Endpoint naming confused us:** Token Factory docs, AI Studio URLs, and
-   community examples disagree on the canonical base URL
-   (`api.tokenfactory.nebius.com` vs `api.studio.nebius.ai`). One canonical
-   OpenAI-compatible URL in the docs header would have saved a spike.
+1. **Product migration confused us:** older AI Studio examples use a different
+   hostname, while current Token Factory documentation uses
+   `api.tokenfactory.nebius.com`. A migration notice beside old examples would
+   make the active endpoint clear.
 2. **Reasoning-trace exposure needs a contract:** our gateway depends on raw
-   reasoning arriving alongside tool calls (`reasoning_content`/`reasoning` or
-   `<think>` tags). Documenting exactly which fields survive on tool-call turns
+   reasoning arriving alongside tool calls in a dedicated provider response
+   field. Documenting exactly which fields survive on tool-call turns
    — per model — would let guardrail builders like us commit to Nebius-only
    inference with confidence. (This is the open question behind our
    OpenRouter fallback profile.)

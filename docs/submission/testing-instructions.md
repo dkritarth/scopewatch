@@ -57,7 +57,7 @@ PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile
 Expected (2026-09-28, `mock-rules-auditor`, prompt `v1.0-hardened-1cea92f0`,
 48 held-out cases): accuracy 93.8%, false-negative rate 2.78%, false-hold rate
 16.67% (misses our <15% target — reported plainly), failure rate 0.00%. Live
-Nemotron numbers are pending an API key (issue #25).
+Nemotron numbers are pending an API key (issue #101).
 
 ## Access-token handling
 

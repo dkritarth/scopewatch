@@ -1,7 +1,7 @@
 """M1 offline gap-close suite for #26 (provider profiles), #27 (agent loop), #28 (auditor).
 
 Covers only offline gaps with mock / httpx.MockTransport. No network, no keys.
-Live per-profile calls remain PENDING (#25).
+Live per-profile calls remain PENDING (#101).
 """
 
 from __future__ import annotations

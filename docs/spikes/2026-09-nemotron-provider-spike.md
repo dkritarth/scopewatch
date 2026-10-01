@@ -2,16 +2,16 @@
 
 **Date:** 2026-09-25
 **Author:** Subagent 1 (Issue #25 Spike)
-**Status:** Provisional / unverified — no live probe has been run; guides Milestone M1 provider profile implementation (#26) once verified.
+**Status:** Provisional / unverified. No live probe has been run. Issue #101 supersedes the original issue #25 and tracks the keyed verification.
 
-> **Honesty note (2026-09-26, defect 12):** This spike is unverified. The recommended `nebius-demo` base URL below (`https://api.tokenfactory.nebius.com/v1`) does not match the shipped `backend/config/providers.toml:26` (`https://api.studio.nebius.ai/v1`). The only cited measurement artifact, `poc/cot-auditing/logs/union_alpha_live_probe.json`, is gitignored (`.gitignore:22`) and absent from the repository. Latency, token, and cost figures in §3 Q6 are literature/estimate placeholders, not live measurements. Do not treat them as observed until the probe harness runs with a provider key.
+> **Honesty note (updated 2026-10-01):** This spike is unverified. Current official Token Factory documentation specifies `https://api.tokenfactory.nebius.com/v1`, and the shipped profile now matches it. The model catalog, reasoning fields, tool calling, structured output, latency, tokens, and cost still need keyed observations under issue #101. The cited `poc/cot-auditing/logs/union_alpha_live_probe.json` artifact is gitignored and absent. Do not treat the figures below as observed.
 
 ## 1. Question and stakes
 
 **Question:** What are the exact model IDs, OpenAI-compatible base URLs, authentication headers, reasoning extraction mechanisms, tool-calling compatibility, and structured-output behaviors for NVIDIA Nemotron models on (a) Nebius Token Factory and (b) OpenRouter?
 
 **What answer changes the plan:**
-If Nebius Token Factory does not return raw reasoning traces (in `message.reasoning_content`, `message.reasoning`, or extracted `<think>` tags) during tool-calling turns, the V1 agent cannot rely exclusively on Nebius Token Factory for the agent loop. In that event, Scopewatch must adopt a split provider fallback: the agent runs via OpenRouter (where reasoning exposure is verified) while the semantic auditor runs on Nebius Token Factory, satisfying both the raw CoT observability invariant and the hackathon's Nebius inference requirement.
+If Nebius Token Factory does not return raw reasoning traces in a dedicated provider response field during tool-calling turns, the V1 agent cannot rely exclusively on Token Factory for the agent loop. Text inside normal message content is agent output, not provider-exposed reasoning. A split-provider fallback remains provisional until live results exist.
 
 ## 2. Sources read
 
@@ -55,10 +55,13 @@ If Nebius Token Factory does not return raw reasoning traces (in `message.reason
 ### Question 3: Raw reasoning fields and prompt directives
 - **Extraction mechanisms:**
   - Modern inference engines (e.g., vLLM with reasoning parser enabled, TensorRT-LLM) return reasoning tokens in `choices[0].message.reasoning_content` or `choices[0].message.reasoning`.
-  - When served via standard OpenAI-compatible wrappers that lack custom reasoning fields, reasoning models emit thought tokens enclosed in tags: `<think>...</think>` or `<thought>...</thought>` within `choices[0].message.content`.
+- **Provenance boundary:** text inside `choices[0].message.content`, including
+  `<think>` tags, is not accepted as provider-exposed reasoning by Scopewatch.
 - **Prompt directives:**
   - Nemotron-70B-Instruct responds well to explicit system prompt instructions requesting chain-of-thought generation prior to tool calls.
-  - Certain community endpoints support the `/think` prompt directive. The recommended robust implementation must check `message.reasoning_content`, `message.reasoning`, and regex match `(?s)<think>(.*?)</think>` inside `content`.
+  - The probe checks `message.reasoning_content`, `message.reasoning`, and
+    `message.reasoning_details`. A keyed run must determine which field, if any,
+    Token Factory and OpenRouter return for the selected model.
 
 ### Question 4: Tool calling with reasoning
 - Both providers support the standard OpenAI `tools` specification (`type: "function"` with `name`, `description`, and `parameters`).

@@ -102,7 +102,7 @@ issue still in flight).
 | --- | --- | --- |
 | Submit by 2026-10-30 10:00 Pacific | pending-human | Issue #47; this package is the paste-ready input |
 | Working app using Nebius inference or compute | done (config) / pending-human (live) | `nebius-demo` profile in `backend/config/providers.toml:23-29`; live inference not yet run — needs `NEBIUS_API_KEY`; VM deploy in issue #43 |
-| Use ≥1 NVIDIA open model + explain role | done (config+docs) / pending-human (live) | `nvidia/llama-3.1-nemotron-70b-instruct` in `backend/config/providers.toml:14,25`; role + license in `docs/submission/nebius-nvidia.md`; live Nemotron run pending key (issue #25) |
+| Use ≥1 NVIDIA open model + explain role | done (config+docs) / pending-human (live) | `nvidia/llama-3.1-nemotron-70b-instruct` in `backend/config/providers.toml`; role + license in `docs/submission/nebius-nvidia.md`; live Nemotron run pending key (issue #101) |
 | Select a track | pending-human | Issue #40; decision due 2026-10-15; draft framing above |
 | Working demo + testing instructions | done (local) / pending-human (hosted) | `./scripts/run_demo.sh`, `./scripts/validate.sh`; judge instructions in `docs/submission/testing-instructions.md`; `<HOSTED_URL>` placeholder until issue #43 lands |
 | Source, assets, setup/run instructions, license | done | This repo; `README.md`, `BUILDING.md`, MIT `LICENSE` |
@@ -118,5 +118,5 @@ issue still in flight).
 - Track choice + rationale (issue #40, due 2026-10-15).
 - Team representative, eligibility confirmations (issue #41).
 - Devpost submit itself (issue #47).
-- Live Nemotron numbers (needs `NEBIUS_API_KEY`, issue #25) — replace the
+- Live Nemotron numbers (needs `NEBIUS_API_KEY`, issue #101) — replace the
   mock-profile figures above once a dated live eval report exists.
