@@ -1,7 +1,8 @@
 # Scopewatch hosted-demo stack (issue #42).
 #
-# Traffic path: internet -> caddy (TLS) -> gate (demo token, rate limit,
-# caps, budget) -> gateway (internal only) -> sqlite + workspace volumes.
+# Traffic path: internet -> caddy (TLS) -> gate (edge token, rate limit,
+# caps, budget) -> gateway (native token + guards, internal only) -> sqlite
+# + workspace volumes.
 #
 # SECURITY DESIGN (read before changing):
 # * The gateway NEVER gets the Docker socket. No `volumes: [/var/run/...]`

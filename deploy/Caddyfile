@@ -3,8 +3,9 @@
 # - Automatic TLS: Caddy obtains and renews a Let's Encrypt certificate for
 #   {$DOMAIN} (requires DNS A/AAAA -> VM IP and ports 80+443 reachable).
 #   For a bare IP or `localhost` Caddy serves plain HTTP automatically.
-# - All demo access control lives in the `gate` service (demo token, rate
-#   limits, caps, budget). Caddy stays dumb: TLS + compression + proxy.
+# - The `gate` applies edge controls, then the gateway independently validates
+#   the forwarded demo token and applies its native guards. Caddy stays dumb:
+#   TLS + compression + proxy.
 # - Caddy adds X-Forwarded-For automatically; the gate trusts its first
 #   entry for per-IP rate limiting (gate only listens on the internal
 #   `public` compose network, so clients cannot spoof it past Caddy).

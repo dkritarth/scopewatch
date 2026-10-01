@@ -195,7 +195,7 @@ Rotate the demo token (e.g. it leaked into a screenshot):
 cd scopewatch/deploy
 python3 -c "import secrets;print(secrets.token_urlsafe(32))"  # new value
 nano .env            # replace DEMO_TOKEN
-docker compose up -d gate   # gate recreates with the new token (~seconds)
+docker compose up -d gateway gate   # both validators load the new token
 # Old token stops working immediately; update the testing instructions.
 ```
 

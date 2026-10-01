@@ -4,11 +4,12 @@ The gateway enforces public-demo controls itself, so they hold for every
 deployment. All values below are synthetic placeholders — never commit real
 tokens or keys.
 
-> Gate redundancy note: the `deploy/gate` sidecar proxy (issue #42) enforced
-> these same limits from HTTP alone. The gateway now enforces them natively
-> with identical semantics (attempt counting, UTC-day rollover, in-memory
-> single-replica state), so the sidecar gate is redundant as an enforcement
-> point and remains only as an optional extra proxy layer.
+> Hosted-stack note: the current `deploy/compose.yaml` keeps the `deploy/gate`
+> sidecar for edge rate and count limits. The gate validates mutating requests
+> and forwards `X-Demo-Token` over the private Compose network. The gateway
+> validates the same token again and applies its native guards and token
+> metering. Other deployments may omit the sidecar and use these gateway
+> controls directly.
 
 ## Demo mode (#76)
 
