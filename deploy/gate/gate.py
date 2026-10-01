@@ -473,11 +473,9 @@ class GateHandler(BaseHTTPRequestHandler):
         forward = {
             k: v for k, v in headers.items() if k.lower() not in HOP_BY_HOP_REQUEST
         }
-        # Never forward the demo token upstream: the gateway does not know it
-        # (extra="forbid" schemas would reject unknown fields if echoed, and
-        # secrets must not travel further than the gate).
-        forward.pop("X-Demo-Token", None)
-        forward.pop("x-demo-token", None)
+        # The gateway independently enforces demo mode when DEMO_TOKEN is set.
+        # Preserve the token after this gate validates it so the internal
+        # gateway guard can authenticate the same mutating request.
 
         request = urllib.request.Request(target, data=body, method=self.command)
         for key, value in forward.items():

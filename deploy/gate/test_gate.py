@@ -1,10 +1,12 @@
-"""Unit tests for the demo access gate (deploy/gate/gate.py).
+"""Tests for the demo access gate (deploy/gate/gate.py).
 
-Pure policy tests: no sockets, no subprocesses, deterministic clock and a
-stubbed upstream run counter.
+Policy tests use a deterministic clock and stubbed run counter. Proxy contract
+tests replace the standard-library transport and use synthetic credentials.
 """
 
+import io
 import sys
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -217,3 +219,80 @@ def test_other_mutating_calls_need_token_only():
     assert not denied.allowed and denied.status == 401
     allowed = policy.decide("POST", "/api/v1/approvals/x/approve", headers(), "10.0.0.1")
     assert allowed.allowed
+
+
+class FakeUpstreamResponse:
+    status = 201
+    headers = {"Content-Type": "application/json", "Content-Length": "2"}
+
+    def __init__(self):
+        self._body = io.BytesIO(b"{}")
+
+    def read(self, size=-1):
+        return self._body.read(size)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+def make_handler(request_headers):
+    from gate import GateHandler
+
+    handler = GateHandler.__new__(GateHandler)
+    handler.command = "POST"
+    handler.path = "/api/v1/runs"
+    handler.headers = request_headers
+    handler.client_address = ("203.0.113.7", 12345)
+    handler.policy = make_policy()[0]
+    handler.upstream = "http://gateway:8000"
+    handler.timeout_s = 2
+    handler.rfile = io.BytesIO()
+    handler.wfile = io.BytesIO()
+    handler.response_statuses = []
+    handler.send_response = handler.response_statuses.append
+    handler.send_header = lambda *_args: None
+    handler.end_headers = lambda: None
+    return handler
+
+
+def test_authenticated_mutation_forwards_demo_token_to_gateway(monkeypatch):
+    forwarded = []
+
+    def record_request(request, timeout):
+        forwarded.append((request, timeout))
+        return FakeUpstreamResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", record_request)
+    handler = make_handler({
+        "Content-Length": "0",
+        "Content-Type": "application/json",
+        "X-Demo-Token": "test-token",
+    })
+
+    handler._handle()
+
+    assert handler.response_statuses == [201]
+    assert len(forwarded) == 1
+    assert forwarded[0][0].get_header("X-demo-token") == "test-token"
+
+
+@pytest.mark.parametrize("token", [None, "wrong-token"], ids=["missing", "invalid"])
+def test_unauthenticated_mutation_is_never_forwarded(monkeypatch, token):
+    forwarded = []
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: forwarded.append(True),
+    )
+    request_headers = {"Content-Length": "0", "Content-Type": "application/json"}
+    if token is not None:
+        request_headers["X-Demo-Token"] = token
+    handler = make_handler(request_headers)
+
+    handler._handle()
+
+    assert handler.response_statuses == [401]
+    assert forwarded == []

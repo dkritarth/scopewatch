@@ -32,7 +32,9 @@ Key properties:
   The only inbound path is `caddy -> gate -> gateway`.
 - Public reads (`GET /api/v1/health`, dashboard, run/approval/event reads)
   need **no token** so judges can browse. Every mutating `/api/*` call needs
-  the `X-Demo-Token` header (otherwise **401**).
+  the `X-Demo-Token` header (otherwise **401**). The gate validates this
+  header, then forwards it over the private Compose network so the gateway's
+  native demo guard can validate the same request independently.
 - Gate budgets/caps are in-memory in a **single** gate replica. Restarting
   the gate resets counters (documented, accepted for a demo).
 - Budget accounting is a **conservative proxy** (run/action counts per UTC
@@ -193,7 +195,7 @@ Rotate the demo token (e.g. it leaked into a screenshot):
 cd scopewatch/deploy
 python3 -c "import secrets;print(secrets.token_urlsafe(32))"  # new value
 nano .env            # replace DEMO_TOKEN
-docker compose up -d gate   # gate recreates with the new token (~seconds)
+docker compose up -d gateway gate   # both validators load the new token
 # Old token stops working immediately; update the testing instructions.
 ```
 
