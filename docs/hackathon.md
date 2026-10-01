@@ -38,8 +38,8 @@ Status key: **done** (evidence linked), **open-work** (agent issue in flight), *
 ## Submission requirements
 
 - [ ] Submit by October 30, 2026, at 10:00 a.m. Pacific Time. — PENDING-HUMAN (issue #47; owner: team representative TBD, issue #41; target 2026-10-28; screenshot saved privately, not in repo).
-- [x] Build a working application using a Nebius Token Factory runtime inference call or Nebius AI Cloud compute — done (config) / PENDING-HUMAN (live). Evidence: profile `nebius-demo` in `backend/config/providers.toml:23-29`; live inference not yet run — needs `NEBIUS_API_KEY` (issues #25/#31/#32); VM deploy in issue #43.
-- [x] Use at least one NVIDIA open source model and explain its role — done (config+docs) / PENDING-HUMAN (live). Evidence: `nvidia/llama-3.1-nemotron-70b-instruct` in `backend/config/providers.toml:14,25`; role + license notes in PR #72 `docs/submission/nebius-nvidia.md` (license second-hand from provisional spike — human must re-confirm, issue #41); live Nemotron run pending key.
+- [x] Build a working application using a Nebius Token Factory runtime inference call or Nebius AI Cloud compute — done (config) / PENDING-HUMAN (live). Evidence: profile `nebius-demo` in `backend/config/providers.toml`; live inference not yet run — needs `NEBIUS_API_KEY` (issues #101/#31/#32); VM deploy in issue #43.
+- [x] Use at least one NVIDIA open source model and explain its role — live Nebius call verified 2026-10-01 with `nvidia/Nemotron-3_5-Lightning`; tool calling worked, but raw reasoning and bounded JSON output did not. License still needs human confirmation under issue #41.
 - [ ] Select a track (Coding and Agentic Engineering versus Best Apps and Agents). — PENDING-HUMAN (issue #40; owners @nawailkhan @atshalahmedkhan; decision due 2026-10-15; draft in PR #72 leans Coding, track-neutral fallback noted).
 - [x] Provide a working demo, hosted application, or test build with testing instructions — done (local) / PENDING-HUMAN (hosted). Evidence: `./scripts/run_demo.sh`, `./scripts/validate.sh`, `docs/operations/judge-runbook.md`; judge instructions in PR #72 `docs/submission/testing-instructions.md` (`<HOSTED_URL>` placeholder until issue #43 lands).
 - [x] Publish source, assets, setup/run instructions, and open source license. — done. Evidence: this repo; `README.md`, `BUILDING.md`, MIT `LICENSE`.
@@ -57,4 +57,4 @@ Status key: **done** (evidence linked), **open-work** (agent issue in flight), *
 | Provision Nebius VM + hosted URL + billing alert | human with Nebius account | before recording, target 2026-10-28 | #43 |
 | Record + publish video | human with hosted URL | after #43/#44, target 2026-10-28 | #45 |
 | Devpost submit | team representative | target 2026-10-28, deadline 2026-10-30 10:00 Pacific | #47 |
-| Live Nemotron eval numbers | human with `NEBIUS_API_KEY` | before Devpost (or report divergence honestly) | #25/#32 |
+| Live Nemotron eval numbers | human with `NEBIUS_API_KEY` | before Devpost (or report divergence honestly) | #101/#32 |

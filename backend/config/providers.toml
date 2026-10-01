@@ -32,10 +32,10 @@ timeout_s = 30.0
 max_retries = 0
 
 # Development profile via OpenRouter (OpenAI-compatible). Needs OPENROUTER_API_KEY.
-# Live calls are PENDING verification on machines with keys (#25); CI uses mock only.
+# Live calls are PENDING verification on machines with keys (#101); CI uses mock only.
 [profiles.openrouter-dev]
 name = "openrouter-dev"
-model = "nvidia/llama-3.1-nemotron-70b-instruct"
+model = "nvidia/nemotron-3.5-lightning"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 timeout_s = 60.0
@@ -45,12 +45,12 @@ max_retries = 3
 [profiles.openrouter-dev.reasoning]
 effort = "high"
 
-# Demo profile via Nebius AI Studio (OpenAI-compatible, Nemotron). Needs NEBIUS_API_KEY.
-# Live calls are PENDING verification on machines with keys (#25); CI uses mock only.
+# Demo profile via Nebius Token Factory (OpenAI-compatible). Needs NEBIUS_API_KEY.
+# The endpoint is documented by Token Factory; live calls remain pending (#101).
 [profiles.nebius-demo]
 name = "nebius-demo"
-model = "nvidia/llama-3.1-nemotron-70b-instruct"
-base_url = "https://api.studio.nebius.ai/v1"
+model = "nvidia/Nemotron-3_5-Lightning"
+base_url = "https://api.tokenfactory.nebius.com/v1"
 api_key_env = "NEBIUS_API_KEY"
 timeout_s = 60.0
 max_retries = 3

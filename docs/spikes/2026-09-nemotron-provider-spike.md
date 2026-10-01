@@ -2,16 +2,31 @@
 
 **Date:** 2026-09-25
 **Author:** Subagent 1 (Issue #25 Spike)
-**Status:** Provisional / unverified — no live probe has been run; guides Milestone M1 provider profile implementation (#26) once verified.
+**Status:** Partially verified on 2026-10-01. Nebius catalog and four bounded synthetic calls completed. OpenRouter inference returned HTTP 401. Issue #101 tracks the remaining work.
 
-> **Honesty note (2026-09-26, defect 12):** This spike is unverified. The recommended `nebius-demo` base URL below (`https://api.tokenfactory.nebius.com/v1`) does not match the shipped `backend/config/providers.toml:26` (`https://api.studio.nebius.ai/v1`). The only cited measurement artifact, `poc/cot-auditing/logs/union_alpha_live_probe.json`, is gitignored (`.gitignore:22`) and absent from the repository. Latency, token, and cost figures in §3 Q6 are literature/estimate placeholders, not live measurements. Do not treat them as observed until the probe harness runs with a provider key.
+> **Honesty note (updated 2026-10-01):** Only the dated result below is observed. Earlier model, latency, and cost claims remain provisional. The cited `poc/cot-auditing/logs/union_alpha_live_probe.json` artifact is gitignored and absent.
+
+## 2026-10-01 live result
+
+- Nebius catalog contained `nvidia/Nemotron-3_5-Lightning`; the configured
+  legacy Llama 3.1 Nemotron ID was absent. OpenRouter listed the corresponding
+  ID as `nvidia/nemotron-3.5-lightning`.
+- Four Nebius calls used 535 prompt tokens and 830 completion tokens. The basic
+  call exposed only `content` and `role`; usage reported 128 reasoning tokens.
+- The tool request succeeded with `read_file`, 417 prompt tokens, 30 completion
+  tokens, and no exposed reasoning field.
+- JSON mode returned no valid JSON. Hidden reasoning consumed the full 256-token
+  limit, then the full 512-token limit even with low reasoning effort.
+- OpenRouter returned HTTP 401 on the first inference request. No further
+  OpenRouter calls were made.
+- These calls do not establish latency percentiles, accuracy, or pricing.
 
 ## 1. Question and stakes
 
 **Question:** What are the exact model IDs, OpenAI-compatible base URLs, authentication headers, reasoning extraction mechanisms, tool-calling compatibility, and structured-output behaviors for NVIDIA Nemotron models on (a) Nebius Token Factory and (b) OpenRouter?
 
 **What answer changes the plan:**
-If Nebius Token Factory does not return raw reasoning traces (in `message.reasoning_content`, `message.reasoning`, or extracted `<think>` tags) during tool-calling turns, the V1 agent cannot rely exclusively on Nebius Token Factory for the agent loop. In that event, Scopewatch must adopt a split provider fallback: the agent runs via OpenRouter (where reasoning exposure is verified) while the semantic auditor runs on Nebius Token Factory, satisfying both the raw CoT observability invariant and the hackathon's Nebius inference requirement.
+If Nebius Token Factory does not return raw reasoning traces in a dedicated provider response field during tool-calling turns, the V1 agent cannot rely exclusively on Token Factory for the agent loop. Text inside normal message content is agent output, not provider-exposed reasoning. A split-provider fallback remains provisional until live results exist.
 
 ## 2. Sources read
 
@@ -27,17 +42,17 @@ If Nebius Token Factory does not return raw reasoning traces (in `message.reason
 ## 3. Observed vs Claimed Findings (Questions 1–7)
 
 ### Question 1: Available Nemotron models and licenses
-- **`nvidia/llama-3.1-nemotron-70b-instruct`:**
+- **Legacy `nvidia/llama-3.1-nemotron-70b-instruct`:**
   - *Base architecture:* Fine-tuned Meta Llama 3.1 70B Instruct with NVIDIA RLHF/DPO.
   - *License:* Dual-governed by the NVIDIA Open Model License Agreement and the Meta Llama 3.1 Community License. Permissive for academic, commercial, and hackathon use (within Meta's 700M active user threshold).
-  - *Availability:*
-    - **Nebius Token Factory:** Hosted under `nvidia/llama-3.1-nemotron-70b-instruct` (or `meta-llama/Llama-3.1-70B-Instruct` deployment variants).
-    - **OpenRouter:** Available under `nvidia/llama-3.1-nemotron-70b-instruct`.
+  - *Availability:* absent from both catalogs checked on 2026-10-01.
 - **`nvidia/nemotron-4-340b-instruct`:**
   - *Base architecture:* 340B parameter dense model built from scratch by NVIDIA.
   - *License:* NVIDIA Open Model License Agreement.
   - *Availability:* Available on OpenRouter as `nvidia/nemotron-4-340b-instruct`. Typically requires dedicated multi-GPU capacity due to size (340B).
-- **Recommendation:** `nvidia/llama-3.1-nemotron-70b-instruct` is the primary model for both agent and auditor roles due to high reasoning benchmarks, fast inference speed, and wide multi-provider availability.
+- **Current profile IDs:** `nvidia/Nemotron-3_5-Lightning` on Nebius and
+  `nvidia/nemotron-3.5-lightning` on OpenRouter. The old model was absent from
+  both authenticated catalogs.
 
 ### Question 2: Base URLs and authentication
 - **Nebius Token Factory:**
@@ -55,10 +70,13 @@ If Nebius Token Factory does not return raw reasoning traces (in `message.reason
 ### Question 3: Raw reasoning fields and prompt directives
 - **Extraction mechanisms:**
   - Modern inference engines (e.g., vLLM with reasoning parser enabled, TensorRT-LLM) return reasoning tokens in `choices[0].message.reasoning_content` or `choices[0].message.reasoning`.
-  - When served via standard OpenAI-compatible wrappers that lack custom reasoning fields, reasoning models emit thought tokens enclosed in tags: `<think>...</think>` or `<thought>...</thought>` within `choices[0].message.content`.
+- **Provenance boundary:** text inside `choices[0].message.content`, including
+  `<think>` tags, is not accepted as provider-exposed reasoning by Scopewatch.
 - **Prompt directives:**
   - Nemotron-70B-Instruct responds well to explicit system prompt instructions requesting chain-of-thought generation prior to tool calls.
-  - Certain community endpoints support the `/think` prompt directive. The recommended robust implementation must check `message.reasoning_content`, `message.reasoning`, and regex match `(?s)<think>(.*?)</think>` inside `content`.
+  - The probe checks `message.reasoning_content`, `message.reasoning`, and
+    `message.reasoning_details`. A keyed run must determine which field, if any,
+    Token Factory and OpenRouter return for the selected model.
 
 ### Question 4: Tool calling with reasoning
 - Both providers support the standard OpenAI `tools` specification (`type: "function"` with `name`, `description`, and `parameters`).
@@ -69,7 +87,8 @@ If Nebius Token Factory does not return raw reasoning traces (in `message.reason
   - The provider probe script validates whether `reasoning_content` is delivered concurrently with `tool_calls`.
 
 ### Question 5: JSON-mode structured output for auditor
-- Both Nebius Token Factory and OpenRouter support `response_format: {"type": "json_object"}`.
+- Nebius accepted `response_format: {"type": "json_object"}`, but both bounded
+  live attempts returned no valid JSON because reasoning consumed the limit.
 - For the reasoning auditor, the hardened prompt (`poc/cot-auditing/src/hardened_prompt.py`) strictly bounds the output to a JSON object containing:
   - `status`: `IN_SCOPE`, `DRIFTING`, `OUT_OF_SCOPE`, or `HOLD`
   - `confidence`: float between 0.0 and 1.0
@@ -99,7 +118,7 @@ If Nebius Token Factory does not return raw reasoning traces (in `message.reason
 
 ### 1. `nebius-demo` (Submission & Production)
 - **Base URL:** `https://api.tokenfactory.nebius.com/v1`
-- **Model:** `nvidia/llama-3.1-nemotron-70b-instruct`
+- **Model:** `nvidia/Nemotron-3_5-Lightning`
 - **API Key Env:** `NEBIUS_API_KEY`
 - **Parameters:**
   - `temperature`: 0.0
@@ -108,7 +127,7 @@ If Nebius Token Factory does not return raw reasoning traces (in `message.reason
 
 ### 2. `openrouter-dev` (Local Development & Fallback)
 - **Base URL:** `https://openrouter.ai/api/v1`
-- **Model:** `nvidia/llama-3.1-nemotron-70b-instruct`
+- **Model:** `nvidia/nemotron-3.5-lightning`
 - **API Key Env:** `OPENROUTER_API_KEY`
 - **Headers:** `HTTP-Referer: https://github.com/dkritarth/scopewatch`, `X-Title: Scopewatch`
 - **Parameters:**
@@ -126,7 +145,8 @@ If Nebius Token Factory does not return raw reasoning traces (in `message.reason
 If testing against Nebius Token Factory reveals that raw reasoning tokens are suppressed on turns containing `tool_calls`:
 
 1. **Hybrid Architecture:**
-   - **Agent Loop Profile:** Point to `openrouter-dev` using `nvidia/llama-3.1-nemotron-70b-instruct` to extract the full raw reasoning trace alongside tool calls.
+   - **Agent Loop Profile:** OpenRouter remains a candidate only after its key
+     authenticates and a tool-call response exposes a dedicated reasoning field.
    - **Reasoning Auditor Profile:** Point to `nebius-demo` on Nebius Token Factory to perform the semantic evaluation of the trace using JSON structured output.
 2. **Compliance:**
    - The hackathon requirement of using Nebius AI Cloud compute/inference and NVIDIA Nemotron is fully met by hosting the gateway and running the security auditor on Nebius.

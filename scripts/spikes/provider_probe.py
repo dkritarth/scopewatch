@@ -3,7 +3,7 @@
 
 Verifies:
 1. Basic chat completion connectivity.
-2. Raw reasoning extraction (reasoning_content, reasoning, or <think> tags).
+2. Provider-exposed reasoning extraction from dedicated response fields.
 3. Tool calling combined with reasoning.
 4. Structured JSON output for the scope auditor.
 
@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import time
 import urllib.error
@@ -64,6 +63,14 @@ class ProbeResult:
     has_tool_calls: bool
     is_valid_json: bool
     error: Optional[str] = None
+
+
+def extract_provider_reasoning(message: Dict[str, Any]) -> tuple[bool, Optional[str]]:
+    """Report reasoning only when the provider exposes a dedicated field."""
+    for field in ("reasoning_content", "reasoning", "reasoning_details"):
+        if message.get(field):
+            return True, field
+    return False, None
 
 
 def make_request(
@@ -175,17 +182,7 @@ def run_live_probes(
         choice = data.get("choices", [{}])[0]
         msg = choice.get("message", {})
 
-        reasoning_field = None
-        has_reasoning = False
-        if "reasoning_content" in msg and msg["reasoning_content"]:
-            has_reasoning = True
-            reasoning_field = "reasoning_content"
-        elif "reasoning" in msg and msg["reasoning"]:
-            has_reasoning = True
-            reasoning_field = "reasoning"
-        elif "<think>" in msg.get("content", ""):
-            has_reasoning = True
-            reasoning_field = "<think>_tag_in_content"
+        has_reasoning, reasoning_field = extract_provider_reasoning(msg)
 
         results.append(
             ProbeResult(
@@ -243,17 +240,7 @@ def run_live_probes(
         msg = choice.get("message", {})
 
         has_tool_calls = bool(msg.get("tool_calls"))
-        reasoning_field = None
-        has_reasoning = False
-        if "reasoning_content" in msg and msg["reasoning_content"]:
-            has_reasoning = True
-            reasoning_field = "reasoning_content"
-        elif "reasoning" in msg and msg["reasoning"]:
-            has_reasoning = True
-            reasoning_field = "reasoning"
-        elif "<think>" in (msg.get("content") or ""):
-            has_reasoning = True
-            reasoning_field = "<think>_tag_in_content"
+        has_reasoning, reasoning_field = extract_provider_reasoning(msg)
 
         results.append(
             ProbeResult(
@@ -378,9 +365,9 @@ def main() -> int:
     if args.mock:
         print("[MOCK MODE] Simulating probe execution for both providers...")
         if args.provider in ("nebius", "all"):
-            all_results.extend(run_mock_probes("nebius", "nvidia/llama-3.1-nemotron-70b-instruct"))
+            all_results.extend(run_mock_probes("nebius", "nvidia/Nemotron-3_5-Lightning"))
         if args.provider in ("openrouter", "all"):
-            all_results.extend(run_mock_probes("openrouter", "nvidia/llama-3.1-nemotron-70b-instruct"))
+            all_results.extend(run_mock_probes("openrouter", "nvidia/nemotron-3.5-lightning"))
     else:
         # Check keys
         if args.provider in ("nebius", "all"):
@@ -391,7 +378,7 @@ def main() -> int:
                 nebius_results = run_live_probes(
                     provider="nebius",
                     base_url="https://api.tokenfactory.nebius.com/v1",
-                    model="nvidia/llama-3.1-nemotron-70b-instruct",
+                    model="nvidia/Nemotron-3_5-Lightning",
                     api_key=nebius_key,
                 )
                 all_results.extend(nebius_results)
@@ -404,7 +391,7 @@ def main() -> int:
                 openrouter_results = run_live_probes(
                     provider="openrouter",
                     base_url="https://openrouter.ai/api/v1",
-                    model="nvidia/llama-3.1-nemotron-70b-instruct",
+                    model="nvidia/nemotron-3.5-lightning",
                     api_key=openrouter_key,
                     extra_headers={
                         "HTTP-Referer": "https://github.com/dkritarth/scopewatch",

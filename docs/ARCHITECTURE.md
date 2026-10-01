@@ -92,7 +92,7 @@ The reasoning auditor (`backend/scopewatch/reasoning_audit.py`) audits agent rea
 
 Model routing is centralized in `backend/scopewatch/providers/` configured via `backend/config/providers.toml`:
 - `mock`: Deterministic offline execution for fast CI and tests.
-- `openrouter-dev`: Developer profile supporting open-weight models (e.g. `nvidia/llama-3.1-nemotron-70b-instruct`) with raw reasoning extraction.
+- `openrouter-dev`: Developer profile configured for `nvidia/nemotron-3.5-lightning`; live inference remains blocked by provider authentication.
 - `nebius-demo`: Production demo profile targeting Nebius Token Factory.
 - Normalized extraction distinguishes `PROVIDER_EXPOSED_TRACE` from `AGENT_AUTHORED_SUMMARY` or `UNAVAILABLE`.
 
