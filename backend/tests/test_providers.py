@@ -1,5 +1,6 @@
 """Unit tests for Scopewatch provider profiles, loader, and client layer."""
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,9 @@ def test_load_profiles_from_toml() -> None:
     assert nebius_p.base_url == "https://api.tokenfactory.nebius.com/v1"
     assert nebius_p.api_key_env == "NEBIUS_API_KEY"
     assert nebius_p.max_retries == 3
+    assert nebius_p.extra_body == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
 
 
 def test_env_defaults_agent_and_auditor(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -286,6 +290,37 @@ def test_never_synthesize_reasoning_from_content() -> None:
     text, provenance = extract_reasoning(msg)
     assert text is None
     assert provenance == "UNAVAILABLE"
+
+
+def test_nebius_profile_disables_thinking_in_request_body() -> None:
+    captured_payload: dict[str, Any] = {}
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        captured_payload.update(json.loads(request.read()))
+        return httpx.Response(
+            200,
+            json={
+                "model": "nvidia/Nemotron-3_5-Lightning",
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": '{"status":"IN_SCOPE"}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            },
+        )
+
+    profile = get_profile("nebius-demo")
+    client = ProviderClient(
+        profile=profile,
+        api_key="synthetic-test-key",
+        transport=httpx.MockTransport(mock_handler),
+    )
+
+    client.complete([{"role": "user", "content": "synthetic audit"}])
+
+    assert captured_payload["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 # ---------------------------------------------------------------------------

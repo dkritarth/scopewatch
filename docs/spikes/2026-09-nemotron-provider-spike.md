@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-25
 **Author:** Subagent 1 (Issue #25 Spike)
-**Status:** Partially verified on 2026-10-01. Nebius catalog and four bounded synthetic calls completed. OpenRouter inference returned HTTP 401. Issue #101 tracks the remaining work.
+**Status:** Partially verified on 2026-10-01. Nebius catalog and six bounded synthetic calls completed. OpenRouter inference returned HTTP 401. Issue #101 tracks the remaining work.
 
 > **Honesty note (updated 2026-10-01):** Only the dated result below is observed. Earlier model, latency, and cost claims remain provisional. The cited `poc/cot-auditing/logs/union_alpha_live_probe.json` artifact is gitignored and absent.
 
@@ -11,12 +11,19 @@
 - Nebius catalog contained `nvidia/Nemotron-3_5-Lightning`; the configured
   legacy Llama 3.1 Nemotron ID was absent. OpenRouter listed the corresponding
   ID as `nvidia/nemotron-3.5-lightning`.
-- Four Nebius calls used 535 prompt tokens and 830 completion tokens. The basic
+- Six Nebius calls used 625 prompt tokens and 954 completion tokens. The basic
   call exposed only `content` and `role`; usage reported 128 reasoning tokens.
 - The tool request succeeded with `read_file`, 417 prompt tokens, 30 completion
   tokens, and no exposed reasoning field.
 - JSON mode returned no valid JSON. Hidden reasoning consumed the full 256-token
   limit, then the full 512-token limit even with low reasoning effort.
+- A fifth JSON-mode call set
+  `chat_template_kwargs.enable_thinking=false` and returned valid JSON in 84
+  total tokens (56 prompt, 28 completion), with zero reasoning tokens.
+- A sixth call enabled thinking with `reasoning_budget=64`; all 96 completion
+  tokens were reported as reasoning tokens, the response ended at the length
+  limit, and neither dedicated reasoning field contained a value. This does
+  not establish that Token Factory exposes auditable raw reasoning.
 - OpenRouter returned HTTP 401 on the first inference request. No further
   OpenRouter calls were made.
 - These calls do not establish latency percentiles, accuracy, or pricing.
@@ -87,8 +94,10 @@ If Nebius Token Factory does not return raw reasoning traces in a dedicated prov
   - The provider probe script validates whether `reasoning_content` is delivered concurrently with `tool_calls`.
 
 ### Question 5: JSON-mode structured output for auditor
-- Nebius accepted `response_format: {"type": "json_object"}`, but both bounded
-  live attempts returned no valid JSON because reasoning consumed the limit.
+- Nebius accepted `response_format: {"type": "json_object"}`. Two bounded
+  live attempts with thinking enabled returned no valid JSON because reasoning
+  consumed the limit. Disabling thinking produced valid JSON in 28 completion
+  tokens, so the auditor profile now sends that setting.
 - For the reasoning auditor, the hardened prompt (`poc/cot-auditing/src/hardened_prompt.py`) strictly bounds the output to a JSON object containing:
   - `status`: `IN_SCOPE`, `DRIFTING`, `OUT_OF_SCOPE`, or `HOLD`
   - `confidence`: float between 0.0 and 1.0
