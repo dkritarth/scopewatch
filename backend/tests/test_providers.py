@@ -40,6 +40,7 @@ def test_load_profiles_from_toml() -> None:
 
     openrouter_p = profiles["openrouter-dev"]
     assert openrouter_p.name == "openrouter-dev"
+    assert openrouter_p.model == "nvidia/nemotron-3.5-lightning"
     assert openrouter_p.base_url == "https://openrouter.ai/api/v1"
     assert openrouter_p.api_key_env == "OPENROUTER_API_KEY"
     assert openrouter_p.max_retries == 3
@@ -48,6 +49,7 @@ def test_load_profiles_from_toml() -> None:
 
     nebius_p = profiles["nebius-demo"]
     assert nebius_p.name == "nebius-demo"
+    assert nebius_p.model == "nvidia/Nemotron-3_5-Lightning"
     assert nebius_p.base_url == "https://api.tokenfactory.nebius.com/v1"
     assert nebius_p.api_key_env == "NEBIUS_API_KEY"
     assert nebius_p.max_retries == 3

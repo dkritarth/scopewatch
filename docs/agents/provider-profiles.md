@@ -10,8 +10,8 @@ secrets). Core code never hard-codes a model ID — use `profile.model` or
 | Profile | Endpoint | Model | Key env | Use |
 | --- | --- | --- | --- | --- |
 | `mock` | `mock://localhost` | `mock-rules-auditor` | none | Tests and CI. Deterministic queues, no network. |
-| `openrouter-dev` | `https://openrouter.ai/api/v1` | `nvidia/llama-3.1-nemotron-70b-instruct` | `OPENROUTER_API_KEY` | Dev runs via OpenRouter. |
-| `nebius-demo` | `https://api.tokenfactory.nebius.com/v1` | `nvidia/llama-3.1-nemotron-70b-instruct` | `NEBIUS_API_KEY` | Demo runs via Nebius Token Factory. Model availability is pending a keyed catalog check. |
+| `openrouter-dev` | `https://openrouter.ai/api/v1` | `nvidia/nemotron-3.5-lightning` | `OPENROUTER_API_KEY` | Current catalog ID; inference is blocked by a 401 from the supplied key. |
+| `nebius-demo` | `https://api.tokenfactory.nebius.com/v1` | `nvidia/Nemotron-3_5-Lightning` | `NEBIUS_API_KEY` | Catalog and inference verified 2026-10-01; see the provider spike for limits. |
 
 Model IDs appear only in `providers.toml` and tests. `mock-rules-auditor`
 is the single mock label resolved via `get_mock_model_name()`.

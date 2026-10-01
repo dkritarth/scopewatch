@@ -365,9 +365,9 @@ def main() -> int:
     if args.mock:
         print("[MOCK MODE] Simulating probe execution for both providers...")
         if args.provider in ("nebius", "all"):
-            all_results.extend(run_mock_probes("nebius", "nvidia/llama-3.1-nemotron-70b-instruct"))
+            all_results.extend(run_mock_probes("nebius", "nvidia/Nemotron-3_5-Lightning"))
         if args.provider in ("openrouter", "all"):
-            all_results.extend(run_mock_probes("openrouter", "nvidia/llama-3.1-nemotron-70b-instruct"))
+            all_results.extend(run_mock_probes("openrouter", "nvidia/nemotron-3.5-lightning"))
     else:
         # Check keys
         if args.provider in ("nebius", "all"):
@@ -378,7 +378,7 @@ def main() -> int:
                 nebius_results = run_live_probes(
                     provider="nebius",
                     base_url="https://api.tokenfactory.nebius.com/v1",
-                    model="nvidia/llama-3.1-nemotron-70b-instruct",
+                    model="nvidia/Nemotron-3_5-Lightning",
                     api_key=nebius_key,
                 )
                 all_results.extend(nebius_results)
@@ -391,7 +391,7 @@ def main() -> int:
                 openrouter_results = run_live_probes(
                     provider="openrouter",
                     base_url="https://openrouter.ai/api/v1",
-                    model="nvidia/llama-3.1-nemotron-70b-instruct",
+                    model="nvidia/nemotron-3.5-lightning",
                     api_key=openrouter_key,
                     extra_headers={
                         "HTTP-Referer": "https://github.com/dkritarth/scopewatch",

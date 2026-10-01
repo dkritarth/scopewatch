@@ -6,12 +6,12 @@ live-dependent statement carries its qualifier.
 
 ## Nebius — what we use
 
-### 1. Nebius inference: `nebius-demo` provider profile (configured, live run pending)
+### 1. Nebius inference: `nebius-demo` provider profile
 
 - **Profile:** `nebius-demo` in `backend/config/providers.toml:23-29`.
 - **Base URL (as configured):** `https://api.tokenfactory.nebius.com/v1`
   (OpenAI-compatible `/chat/completions`).
-- **Model:** `nvidia/llama-3.1-nemotron-70b-instruct`.
+- **Model:** `nvidia/Nemotron-3_5-Lightning`.
 - **Key handling:** read at runtime from the `NEBIUS_API_KEY` environment
   variable (`api_key_env`, never committed; see `.env.example`). No key exists
   in this repository.
@@ -20,11 +20,11 @@ live-dependent statement carries its qualifier.
   reasoning auditor (`backend/scopewatch/reasoning_audit.py`, JSON structured
   output verdicts). Routing is centralized in `backend/scopewatch/providers/`
   so core code never hard-codes a model ID.
-- **Status qualifier:** the profile is wired end to end and exercised in CI via
-  equivalent paths, but **no live inference call against Nebius has been run
-  from this repo yet — it needs `NEBIUS_API_KEY`** (tracked under issues
-  #101/#31/#32). Until a dated live report exists, every accuracy number we
-  publish is labelled with the profile that produced it (currently `mock`).
+- **Observed 2026-10-01:** the authenticated catalog and four bounded synthetic
+  calls succeeded. Tool calling returned `read_file` with `finish_reason` set
+  to `tool_calls`. Basic and tool-call responses exposed no dedicated reasoning
+  field. Two JSON-mode auditor calls exhausted 256 and 512 completion tokens
+  on hidden reasoning and returned no valid JSON. Live accuracy is not claimed.
 - **URL note:** Nebius Token Factory documentation currently specifies
   `https://api.tokenfactory.nebius.com/v1`. The profile now matches that
   documented endpoint. A keyed request is still required to confirm the model
@@ -45,24 +45,20 @@ live-dependent statement carries its qualifier.
 
 ### Developer fallback profile (context for judges)
 
-- `openrouter-dev` (`backend/config/providers.toml:12-21`) serves the same
-  model ID (`nvidia/llama-3.1-nemotron-70b-instruct`) via OpenRouter for local
-  development; `mock` (`mock-rules-auditor`, no network, no key) drives CI and
-  all reported numbers to date.
+- `openrouter-dev` uses the current catalog ID
+  `nvidia/nemotron-3.5-lightning`. The supplied key returned HTTP 401 on the
+  first inference attempt, so no OpenRouter behavior is claimed. `mock`
+  (`mock-rules-auditor`, no network, no key) drives CI accuracy numbers.
 
 ## NVIDIA — what we use
 
-- **Model:** `nvidia/llama-3.1-nemotron-70b-instruct` — a fine-tune of Meta
-  Llama 3.1 70B Instruct with NVIDIA RLHF/DPO, used for **both** roles:
+- **Model:** `nvidia/Nemotron-3_5-Lightning`, used for both configured roles:
   (a) the agent, whose provider-exposed reasoning trace is the evidence the
   auditor reads; (b) the auditor, which returns a bounded JSON verdict with
   verbatim flagged excerpts (`backend/scopewatch/reasoning_audit.py`).
-- **Why this model:** it is open-weight with visible chain-of-thought output,
-  so the gateway can observe reasoning instead of trusting a black box. That
-  observability is load-bearing for the headline demo (scenario 06): without
-  an exposed trace there is nothing to ground excerpts against, and the audit
-  correctly records `UNAVAILABLE` instead of escalating
-  (`frontend/scripts/app.js`, provenance labels).
+- **Observed limitation:** Nebius did not expose a reasoning field in these
+  calls. Scopewatch therefore records reasoning as `UNAVAILABLE`; the live
+  profile cannot support the reasoning-escalation demo as currently served.
 - **License (to be re-verified before submission):** per the provisional spike,
   dual-governed by the **NVIDIA Open Model License Agreement** and the **Meta
   Llama 3.1 Community License**, permissive for academic/commercial/hackathon
@@ -89,22 +85,18 @@ live-dependent statement carries its qualifier.
 
 ## Feedback for NVIDIA
 
-1. **Nemotron 70B Instruct is the right shape for agent-safety work:**
-   instruction-following plus inspectable reasoning is exactly what a
-   pre-execution auditor consumes. Keep publishing the RLHF/DPO lineage notes —
-   they informed our model choice.
-2. **Please keep one stable instruct ID across catalogs:** the same
-   `nvidia/llama-3.1-nemotron-70b-instruct` string resolving on both Nebius and
-   OpenRouter is what makes our swappable-profile design (`nebius-demo` vs
-   `openrouter-dev`) one line apart. Don't fragment it per host.
+1. **Nemotron 3.5 Lightning followed the tool schema correctly:** the bounded
+   synthetic tool request returned the requested `read_file` call.
+2. **Provider-specific IDs add configuration risk:** Nebius and OpenRouter use
+   different spelling for the same model family. Profiles must pin each ID.
 3. **Ask:** a short official note on reasoning-trace fidelity (when emitted
    traces can be truncated or suppressed, e.g. on tool-call turns) would help
    every team building evidence-grade auditing on open models.
 
 ## Pre-submit re-verification list (human)
 
-- [ ] Confirm the live Nebius base URL and that `NEBIUS_API_KEY` inference
-      returns reasoning on tool-call turns; record model ID + date in the issue.
+- [x] Confirm the live Nebius base URL, model ID, tool-call behavior, and
+      reasoning-field absence; recorded 2026-10-01 under issue #101.
 - [ ] Run `python backend/scripts/evaluate_reasoning_audit.py --profile
       nebius-demo --split heldout` and replace the mock figures in
       `description.md` with the dated live report (or report the divergence honestly).

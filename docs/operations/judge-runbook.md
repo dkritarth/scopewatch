@@ -38,7 +38,7 @@ PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile
 python3 scripts/check_docs_links.py
 ```
 
-Expected (2026-09-28, `mock-rules-auditor`, prompt `v1.0-hardened-1cea92f0`, 48 held-out cases): accuracy 93.8%, FNR 2.78%, FHR 16.67% (misses our <15% target — reported plainly), failure 0.00%. Live Nemotron numbers pending a key (issue #101).
+Expected (2026-09-28, `mock-rules-auditor`, prompt `v1.0-hardened-1cea92f0`, 48 held-out cases): accuracy 93.8%, FNR 2.78%, FHR 16.67% (misses our <15% target — reported plainly), failure 0.00%. A bounded Nebius capability probe ran on 2026-10-01, but no live accuracy evaluation exists (issue #101).
 
 ## Scope honesty (read before judging)
 

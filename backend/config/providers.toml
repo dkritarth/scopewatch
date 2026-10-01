@@ -35,7 +35,7 @@ max_retries = 0
 # Live calls are PENDING verification on machines with keys (#101); CI uses mock only.
 [profiles.openrouter-dev]
 name = "openrouter-dev"
-model = "nvidia/llama-3.1-nemotron-70b-instruct"
+model = "nvidia/nemotron-3.5-lightning"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 timeout_s = 60.0
@@ -49,7 +49,7 @@ effort = "high"
 # The endpoint is documented by Token Factory; live calls remain pending (#101).
 [profiles.nebius-demo]
 name = "nebius-demo"
-model = "nvidia/llama-3.1-nemotron-70b-instruct"
+model = "nvidia/Nemotron-3_5-Lightning"
 base_url = "https://api.tokenfactory.nebius.com/v1"
 api_key_env = "NEBIUS_API_KEY"
 timeout_s = 60.0
