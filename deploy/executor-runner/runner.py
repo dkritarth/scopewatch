@@ -513,6 +513,16 @@ def handle_execute(
     if not hmac.compare_digest(str(body.get("action_digest") or ""), expected_digest):
         return 409, {"error": "action digest mismatch"}
 
+    # Only an outcome that authorizes execution may reach Docker (issue
+    # #104). The digest is forgeable by anyone holding the bearer token
+    # because the canonicalization is public, so the gateway's DENY is not
+    # by itself a sufficient check: the runner refuses it as well. An
+    # unrecognised or missing outcome is refused for the same reason, since
+    # the fail-closed answer to "may this execute?" is no unless known yes.
+    outcome = decision.get("outcome")
+    if outcome not in ("ALLOW", "HOLD"):
+        return 403, {"error": "policy outcome does not authorize execution"}
+
     operation = action.get("operation")
     resource = action.get("resource")
     run_id = action.get("run_id") or "unknown-run"

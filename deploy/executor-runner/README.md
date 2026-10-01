@@ -23,13 +23,15 @@ EXECUTOR_RUNNER_TOKEN=<pre-shared bearer secret>  # same value as the runner's
 
 The gateway client is `backend/scopewatch/executor_remote.py`. It enforces
 the same pre-network policy gates as the local/Docker backends (stored
-decision required, `DENY` never dispatches, `HOLD` needs an
-`APPROVED`/`CONSUMED` approval bound to the exact action,
-`network_request` refused), then sends one JSON dispatch per approved
-action with a fresh single-use `dispatch_token` bound to the SHA-256
-`action_digest` of that action. Any refusal, error, timeout, or malformed
-runner output fails closed to `FAILED`/`EXECUTION_FAILED` with no fallback
-to local execution and no secret in the error.
+decision required, `DENY` never dispatches, `HOLD` needs an `APPROVED`
+approval bound to the exact action, `network_request` refused), then sends
+one JSON dispatch per approved action with a fresh single-use
+`dispatch_token` bound to the SHA-256 `action_digest` of that action. The
+payload and its digest are produced together by `prepare_dispatch`, so the
+digest always describes the arguments the runner receives. Any refusal,
+error, timeout, or malformed runner output fails closed to
+`FAILED`/`EXECUTION_FAILED` with no fallback to local execution and no
+secret in the error.
 
 ## Runner contract
 
@@ -50,9 +52,12 @@ Validation order (all fail closed with static messages):
 1. Bearer via constant-time compare → `401` otherwise.
 2. Dispatch token unseen and unexpired (60s TTL, one-shot) → `409` on replay.
 3. Digest recomputed with the gateway's canonicalization → `409` on mismatch.
-4. Operation allowlisted, resource relative and inside `/workspace`
+4. Policy outcome must be `ALLOW` or `HOLD` → `403` otherwise. The
+   canonicalization is public, so a token holder can forge a matching
+   digest; this check is what stops a forged `DENY` from executing.
+5. Operation allowlisted, resource relative and inside `/workspace`
    (symlink escapes refused) → `400`/`403`.
-5. Hardened `docker run` (no network, read-only rootfs, `nobody`,
+6. Hardened `docker run` (no network, read-only rootfs, `nobody`,
    cap-drop, pids/mem caps, workspace-only mount). Container output caps
    (64 KiB/stream) and per-command timeouts (1–300s, default 60s) match the
    gateway Docker backend. Copy-back after `write_text`/`run_command` is

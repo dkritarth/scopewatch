@@ -11,18 +11,26 @@ Trust model (fail closed everywhere):
 - Policy checks run on the gateway *before* any network call, mirroring the
   local and Docker backends: a stored policy decision is required, ``DENY``
   returns ``NOT_EXECUTED`` without touching the network, ``HOLD`` requires
-  an ``APPROVED``/``CONSUMED`` approval bound to the exact action, and
-  ``network_request`` is refused outright.
+  an ``APPROVED`` approval bound to the exact action, and
+  ``network_request`` is refused outright. ``CONSUMED`` authorizes nothing,
+  because single-use means a spent approval cannot authorize a replay.
+  ``backend/tests/test_executor_gate_consistency.py`` asserts that all three
+  gateway backends agree on these rules, since the copies previously drifted.
 - Auth is a pre-shared bearer token from the environment only
   (``EXECUTOR_RUNNER_TOKEN``); it is never logged or echoed in errors.
 - Each dispatch carries a single-use dispatch token bound to one approved
   action digest (SHA-256 over the canonical action + decision identity).
-  The runner enforces one-shot use with a 60s expiry and refuses replays
-  (HTTP 409) or digest mismatches (HTTP 409). The gateway maps any refusal,
-  error, timeout, or malformed runner output to ``FAILED``/``EXECUTION_FAILED``
-  and never falls back to local execution.
+  The payload and its digest are produced together by
+  :func:`prepare_dispatch`, so the digest always describes the normalized
+  arguments the runner actually receives. The runner enforces one-shot use
+  with a 60s expiry and refuses replays (HTTP 409), digest mismatches
+  (HTTP 409), and any policy outcome other than ``ALLOW`` or ``HOLD``
+  (HTTP 403, issue #104). The gateway maps any refusal, error, timeout, or
+  malformed runner output to ``FAILED``/``EXECUTION_FAILED`` and never falls
+  back to local execution.
 - ``run_command`` argv normalization and timeout clamping reuse the Docker
-  backend limits (no shell, output caps enforced container-side).
+  backend limits (no shell, output caps enforced container-side), and happen
+  before the digest is computed so the two sides agree.
 
 Environment (all server-side; never accept these from agent input):
 
@@ -74,6 +82,7 @@ REMOTE_TIMEOUT_S = 90.0
 def compute_action_digest(
     action: ActionRequest,
     policy_decision: PolicyDecision,
+    arguments: Optional[dict[str, Any]] = None,
 ) -> str:
     """Bind one dispatch to one approved action (hex SHA-256).
 
@@ -81,13 +90,18 @@ def compute_action_digest(
     arguments) plus the stored decision identity and outcome, so a token
     minted for one action cannot be replayed for another. The runner
     recomputes the same digest from the request body and refuses mismatches.
+
+    ``arguments`` defaults to the action's own arguments. A caller that
+    normalizes arguments before sending must pass the normalized form here
+    too, so the digest describes the payload the runner receives. Prefer
+    :func:`prepare_dispatch`, which cannot be called inconsistently.
     """
     canonical = {
         "action_id": action.id,
         "run_id": action.run_id,
         "operation": action.operation,
         "resource": action.resource,
-        "arguments": action.arguments or {},
+        "arguments": (action.arguments or {}) if arguments is None else arguments,
         "policy_decision_id": policy_decision.id,
         "policy_outcome": policy_decision.outcome.value,
     }
@@ -98,6 +112,71 @@ def compute_action_digest(
 def _new_dispatch_token() -> str:
     """Mint one single-use dispatch token (runner enforces one-shot + TTL)."""
     return secrets.token_urlsafe(32)
+
+
+def _normalize_dispatch_arguments(action: ActionRequest) -> dict[str, Any]:
+    """Return the exact argument form the runner will receive.
+
+    ``run_command`` is normalized to the argv-list form with a clamped
+    timeout so the runner never has to guess. Every other operation passes
+    its arguments through unchanged.
+    """
+    if action.operation != "run_command":
+        return dict(action.arguments or {})
+    run_argv = extract_run_command_argv(action)
+    if run_argv is None:
+        raise ValueError("Malformed run_command arguments.")
+    run_timeout_s = clamp_run_command_timeout(
+        (action.arguments or {}).get("timeout_s", 60.0)
+    )
+    return {"argv": run_argv, "timeout_s": run_timeout_s}
+
+
+def prepare_dispatch(
+    action: ActionRequest,
+    policy_decision: PolicyDecision,
+    dispatch_token: Optional[str] = None,
+    approval_request: Optional[ApprovalRequest] = None,
+) -> tuple[dict[str, Any], str]:
+    """Build the runner request body and the digest that describes it.
+
+    Returns ``(payload, digest)`` as a pair. The digest is computed over
+    the normalized arguments that appear in the payload, so the runner's
+    recomputation always matches; a caller cannot send one form and hash
+    the other. That mistake previously made every remote ``run_command``
+    fail with HTTP 409, because the gateway hashed the original arguments
+    and sent the normalized ones.
+    """
+    action_arguments = _normalize_dispatch_arguments(action)
+    payload: dict[str, Any] = {
+        "dispatch_token": (
+            dispatch_token if dispatch_token is not None else _new_dispatch_token()
+        ),
+        "action_digest": "",
+        "action": {
+            "id": action.id,
+            "run_id": action.run_id,
+            "operation": action.operation,
+            "resource": action.resource,
+            "arguments": action_arguments,
+        },
+        "policy_decision": {
+            "id": policy_decision.id,
+            "outcome": policy_decision.outcome.value,
+        },
+        "approval": (
+            {
+                "id": approval_request.id,
+                "action_request_id": approval_request.action_request_id,
+                "status": approval_request.status.value,
+            }
+            if approval_request is not None
+            else None
+        ),
+    }
+    digest = compute_action_digest(action, policy_decision, action_arguments)
+    payload["action_digest"] = digest
+    return payload, digest
 
 
 def resolve_runner_config(
@@ -177,10 +256,13 @@ class RemoteExecutor:
                 operation=action.operation,
             )
         if policy_decision.outcome == PolicyOutcome.HOLD:
+            # Single-use (issue #66): only a live APPROVED approval bound to
+            # this exact action executes. A CONSUMED approval must never
+            # authorize a replay, so this backend now matches the local and
+            # Docker backends instead of accepting APPROVED or CONSUMED.
             if (
                 approval_request is None
-                or approval_request.status
-                not in (ApprovalStatus.APPROVED, ApprovalStatus.CONSUMED)
+                or approval_request.status != ApprovalStatus.APPROVED
                 or approval_request.action_request_id != action.id
             ):
                 from scopewatch.executor import ExecutionSecurityError
@@ -196,46 +278,15 @@ class RemoteExecutor:
         if not self.runner_url or not self._runner_token:
             return _failed("EXECUTION_FAILED", "Remote executor unavailable; failing closed.")
 
-        # Normalize run_command on the gateway so the runner always receives
-        # the argv-list form with a clamped timeout (same limits as local
-        # Docker dispatch; the policy already allowlisted the command).
-        if action.operation == "run_command":
-            run_argv = extract_run_command_argv(action)
-            if run_argv is None:
-                return _failed("EXECUTION_FAILED", "Malformed run_command arguments.")
-            run_timeout_s = clamp_run_command_timeout(
-                (action.arguments or {}).get("timeout_s", 60.0)
-            )
-            action_arguments: dict[str, Any] = {"argv": run_argv, "timeout_s": run_timeout_s}
-        else:
-            action_arguments = dict(action.arguments or {})
-
+        # Build the body and its digest together so the digest always
+        # describes the arguments the runner receives (#104).
         dispatch_token = _new_dispatch_token()
-        action_digest = compute_action_digest(action, policy_decision)
-        payload = {
-            "dispatch_token": dispatch_token,
-            "action_digest": action_digest,
-            "action": {
-                "id": action.id,
-                "run_id": action.run_id,
-                "operation": action.operation,
-                "resource": action.resource,
-                "arguments": action_arguments,
-            },
-            "policy_decision": {
-                "id": policy_decision.id,
-                "outcome": policy_decision.outcome.value,
-            },
-            "approval": (
-                {
-                    "id": approval_request.id,
-                    "action_request_id": approval_request.action_request_id,
-                    "status": approval_request.status.value,
-                }
-                if approval_request is not None
-                else None
-            ),
-        }
+        try:
+            payload, _digest = prepare_dispatch(
+                action, policy_decision, dispatch_token, approval_request
+            )
+        except ValueError:
+            return _failed("EXECUTION_FAILED", "Malformed run_command arguments.")
 
         try:
             with httpx.Client(transport=self._transport, timeout=self.timeout_s) as client:
