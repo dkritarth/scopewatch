@@ -1,10 +1,14 @@
-"""Unit tests for the demo access gate (deploy/gate/gate.py).
+"""Tests for the demo access gate (deploy/gate/gate.py).
 
-Pure policy tests: no sockets, no subprocesses, deterministic clock and a
-stubbed upstream run counter.
+Policy tests use a deterministic clock and stubbed run counter. The proxy
+contract test uses loopback-only HTTP servers with synthetic credentials.
 """
 
+import json
 import sys
+import threading
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -18,6 +22,7 @@ from gate import (  # noqa: E402
     denial_body,
     is_mutating_api_call,
     is_run_creation,
+    serve,
     token_matches,
 )
 
@@ -44,6 +49,28 @@ def make_policy(now=1_000_000.0, busy_runs=0, **overrides):
 
 def headers(token="test-token", ip="203.0.113.7"):
     return {"X-Demo-Token": token, "X-Forwarded-For": ip}
+
+
+class RecordingUpstream(BaseHTTPRequestHandler):
+    received_headers: dict[str, str] = {}
+
+    def do_POST(self) -> None:  # noqa: N802
+        type(self).received_headers = dict(self.headers.items())
+        body = json.dumps({"accepted": True}).encode()
+        self.send_response(201)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        pass
+
+
+def start_server(server: ThreadingHTTPServer) -> threading.Thread:
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return thread
 
 
 # -- routing helpers -------------------------------------------------------
@@ -217,3 +244,37 @@ def test_other_mutating_calls_need_token_only():
     assert not denied.allowed and denied.status == 401
     allowed = policy.decide("POST", "/api/v1/approvals/x/approve", headers(), "10.0.0.1")
     assert allowed.allowed
+
+
+def test_authenticated_mutation_forwards_demo_token_to_gateway():
+    RecordingUpstream.received_headers = {}
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), RecordingUpstream)
+    upstream_thread = start_server(upstream)
+    upstream_url = f"http://127.0.0.1:{upstream.server_port}"
+
+    config = GateConfig.from_env({
+        "GATE_UPSTREAM": upstream_url,
+        "GATE_PORT": "0",
+        "DEMO_TOKEN": "test-token",
+    })
+    policy = DemoGatePolicy(config, count_busy_runs=lambda: 0)
+    gate = serve(config, policy)
+    gate_thread = start_server(gate)
+
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{gate.server_port}/api/v1/runs",
+        data=b"{}",
+        method="POST",
+        headers={"Content-Type": "application/json", "X-Demo-Token": "test-token"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            assert response.status == 201
+        assert RecordingUpstream.received_headers["X-Demo-Token"] == "test-token"
+    finally:
+        gate.shutdown()
+        upstream.shutdown()
+        gate.server_close()
+        upstream.server_close()
+        gate_thread.join(timeout=2)
+        upstream_thread.join(timeout=2)
