@@ -17,6 +17,7 @@ class ProviderProfile(BaseModel):
     timeout_s: float = Field(default=30.0, gt=0)
     max_retries: int = Field(default=3, ge=0)
     extra_body: dict[str, Any] = Field(default_factory=dict)
+    auditor_body: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("api_key_env", mode="before")
     @classmethod

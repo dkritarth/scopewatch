@@ -11,7 +11,7 @@ secrets). Core code never hard-codes a model ID — use `profile.model` or
 | --- | --- | --- | --- | --- |
 | `mock` | `mock://localhost` | `mock-rules-auditor` | none | Tests and CI. Deterministic queues, no network. |
 | `openrouter-dev` | `https://openrouter.ai/api/v1` | `nvidia/nemotron-3.5-lightning` | `OPENROUTER_API_KEY` | Current catalog ID; inference is blocked by a 401 from the supplied key. |
-| `nebius-demo` | `https://api.tokenfactory.nebius.com/v1` | `nvidia/Nemotron-3_5-Lightning` | `NEBIUS_API_KEY` | Catalog and inference verified 2026-10-01; see the provider spike for limits. |
+| `nebius-demo` | `https://api.tokenfactory.nebius.com/v1` | `nvidia/Nemotron-3_5-Lightning` | `NEBIUS_API_KEY` | Auditor profile; thinking is disabled so bounded JSON output completes. |
 
 Model IDs appear only in `providers.toml` and tests. `mock-rules-auditor`
 is the single mock label resolved via `get_mock_model_name()`.
@@ -64,9 +64,15 @@ model judgments.
 - Trace cap 16,000 chars with explicit truncation marker; recent actions
   capped at 10.
 
-## Live verification (PENDING, #101)
+## Live verification (#101)
 
-No live calls were made from machines without keys. Live per-profile calls
-(one call per profile, recording date/model/latency) remain PENDING and must
-use synthetic content only. CI uses `mock` / `httpx.MockTransport` with no
-network.
+On 2026-10-01, Nebius served the configured model and completed tool calls.
+With thinking enabled, reasoning tokens consumed bounded output budgets but no
+non-empty dedicated reasoning field was returned. With
+`chat_template_kwargs.enable_thinking=false`, the synthetic auditor probe
+returned valid JSON in 84 total tokens (56 prompt, 28 completion) and reported
+zero reasoning tokens. The committed `nebius-demo` profile therefore disables
+thinking for reliable bounded auditor output.
+
+OpenRouter inference remains unverified because the supplied key returned HTTP
+401. CI continues to use `mock` / `httpx.MockTransport` with no network.

@@ -337,6 +337,19 @@ class ProviderClient:
                     f"Provider '{self.profile.name}' network connection failed.",
                 ) from None
 
+    def audit_chat(
+        self,
+        messages: list[dict[str, Any]],
+        **_: Any,
+    ) -> ChatResult:
+        """Request a bounded JSON verdict using auditor-only provider options."""
+        request_options: dict[str, Any] = {
+            "response_format": {"type": "json_object"},
+            "max_tokens": 256,
+        }
+        request_options.update(self.profile.auditor_body)
+        return self.complete(messages, **request_options)
+
     def _parse_chat_response(self, data: dict[str, Any], latency_ms: float) -> ChatResult:
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices:

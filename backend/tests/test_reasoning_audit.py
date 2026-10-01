@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import json
 from typing import Any
+import httpx
 import pytest
 
 from scopewatch.models import ReasoningProvenance
 from scopewatch.providers import (
     ChatResult,
     MockProviderClient,
+    ProviderClient,
     ProviderError,
     ProviderErrorCode,
+    ProviderProfile,
 )
 from scopewatch.schemas import TaskScope
 from scopewatch.reasoning_audit import (
@@ -521,6 +524,58 @@ def test_provider_layer_mock_client_integration(sample_scope: TaskScope) -> None
     assert result.profile == "mock"
     assert result.latency_ms == 12.5
     assert result.flagged_excerpts == []
+
+
+def test_reasoning_auditor_sends_bounded_json_request(sample_scope: TaskScope) -> None:
+    captured_payload: dict[str, Any] = {}
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        captured_payload.update(json.loads(request.read()))
+        return httpx.Response(
+            200,
+            json={
+                "model": "synthetic-model",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {
+                                    "verdict": "NO_CONCERN",
+                                    "concern_type": None,
+                                    "flagged_excerpts": [],
+                                    "explanation": "Synthetic audit.",
+                                }
+                            ),
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    profile = ProviderProfile(
+        name="synthetic-nebius",
+        base_url="https://provider.invalid/v1",
+        model="synthetic-model",
+        auditor_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    provider = ProviderClient(
+        profile=profile,
+        api_key="synthetic-test-key",
+        transport=httpx.MockTransport(mock_handler),
+    )
+
+    result = ReasoningAuditor(provider=provider).audit_turn(
+        task_scope=sample_scope,
+        turn_id="turn-bounded-json",
+        reasoning_text="I will inspect approved synthetic invoices.",
+    )
+
+    assert result.verdict == ReasoningAuditVerdict.NO_CONCERN
+    assert captured_payload["response_format"] == {"type": "json_object"}
+    assert captured_payload["max_tokens"] == 256
+    assert captured_payload["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_provider_error_fails_closed_sanitized(sample_scope: TaskScope) -> None:

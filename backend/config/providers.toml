@@ -54,3 +54,9 @@ base_url = "https://api.tokenfactory.nebius.com/v1"
 api_key_env = "NEBIUS_API_KEY"
 timeout_s = 60.0
 max_retries = 3
+
+# The auditor requires a short JSON verdict, not hidden chain-of-thought.
+# Live verification on 2026-10-01 showed that disabling thinking prevents
+# reasoning tokens from exhausting the response budget before JSON is emitted.
+[profiles.nebius-demo.auditor_body.chat_template_kwargs]
+enable_thinking = false
