@@ -20,9 +20,10 @@ Latest Linux run before this change: **128 passed, 4 skipped, 1 xfailed, 2 xpass
 probes from the base suite; no daemon in this environment — recorded as
 `SKIP`, never as pass. The remaining xfail is the #68 argv TOCTOU window;
 it asserts the fixed behaviour and fails today). The #66 CONSUMED-replay and
-#64 approval-lifecycle cases now run as ordinary regression tests. Including
-the eight added runner cases, the expected Linux tally is 138 passed, 4 skipped,
-1 xfailed; it needs a Linux rerun.
+#64 approval-lifecycle cases now run as ordinary regression tests. The five bypass
+suites therefore expect 130 passed, 4 skipped, 1 xfailed; running the separate
+24-case gate-consistency suite with them gives 154 passed, 4 skipped, 1 xfailed.
+Both tallies need a Linux rerun.
 
 Conventions: `DENY → NOT_EXECUTED` means the gateway returned a DENY decision
 and `execute_action` with that decision returned `NOT_EXECUTED` with the
