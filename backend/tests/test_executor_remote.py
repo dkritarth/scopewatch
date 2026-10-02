@@ -11,6 +11,7 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import time
 import uuid
 
 import httpx
@@ -18,10 +19,12 @@ import pytest
 
 from scopewatch.executor import execute_action
 from scopewatch.executor_remote import (
+    EXECUTOR_RUNNER_SIGNING_KEY_ENV_VAR,
     EXECUTOR_RUNNER_TOKEN_ENV_VAR,
     EXECUTOR_RUNNER_URL_ENV_VAR,
     RemoteExecutor,
     compute_action_digest,
+    sign_dispatch_payload,
 )
 from scopewatch.models import ApprovalStatus, ExecutionStatus, PolicyOutcome, ReasonCode
 from scopewatch.schemas import ActionRequest, PolicyDecision
@@ -88,6 +91,7 @@ def _remote_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SCOPEWATCH_EXECUTOR", "remote")
     monkeypatch.setenv(EXECUTOR_RUNNER_URL_ENV_VAR, "http://runner.internal:8091")
     monkeypatch.setenv(EXECUTOR_RUNNER_TOKEN_ENV_VAR, "synthetic-test-token")
+    monkeypatch.setenv(EXECUTOR_RUNNER_SIGNING_KEY_ENV_VAR, "synthetic-independent-signing-key")
 
 
 # ---------------- Gateway client: mocked-transport dispatch ----------------
@@ -121,8 +125,13 @@ def test_remote_sends_bearer_and_digest(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert isinstance(body, dict)
     assert body["dispatch_token"]
     assert body["action_digest"] == compute_action_digest(action, decision)
+    assert body["dispatch_signature"] == sign_dispatch_payload(
+        body, "synthetic-independent-signing-key"
+    )
+    assert body["policy_decision"]["action_request_id"] == action.id
     # The secret value never appears anywhere except the header.
     assert "synthetic-test-token" not in json.dumps(body)
+    assert "synthetic-independent-signing-key" not in json.dumps(body)
 
 
 def test_remote_token_reuse_refused_fail_closed(
@@ -346,15 +355,17 @@ def test_runner_handle_execute_refuses_reused_token(tmp_path: Path) -> None:
     """
     config = runner_mod.RunnerConfig()
     config.token = "synthetic"
+    config.signing_key = "synthetic-independent-signing-key"
     config.workspace = tmp_path / "ws"
     config.workspace.mkdir()
     store = runner_mod.DispatchTokenStore()
     action = {"id": "a1", "run_id": "r1", "operation": "read_text",
               "resource": "docs/a.txt", "arguments": {}}
-    decision = {"id": "d1", "outcome": "ALLOW"}
+    decision = {"id": "d1", "action_request_id": "a1", "outcome": "ALLOW"}
     digest = runner_mod.canonical_action_digest(action, decision)
-    body = {"dispatch_token": "once-only", "action_digest": digest,
-            "action": action, "policy_decision": decision}
+    body = {"issued_at": time.time(), "dispatch_token": "once-only", "action_digest": digest,
+            "action": action, "policy_decision": decision, "approval": None}
+    body["dispatch_signature"] = sign_dispatch_payload(body, config.signing_key)
     # First consume reserves the token; the digest check then passes and the
     # runner proceeds to Docker (no daemon here -> 502, which still proves
     # the token/digest gates passed rather than refusing 409/400).
@@ -370,16 +381,20 @@ def test_runner_handle_execute_refuses_reused_token(tmp_path: Path) -> None:
 def test_runner_handle_execute_refuses_digest_mismatch(tmp_path: Path) -> None:
     config = runner_mod.RunnerConfig()
     config.token = "synthetic"
+    config.signing_key = "synthetic-independent-signing-key"
     config.workspace = tmp_path / "ws"
     config.workspace.mkdir()
     store = runner_mod.DispatchTokenStore()
     body = {
+        "issued_at": time.time(),
         "dispatch_token": "fresh-token",
         "action_digest": "0" * 64,
         "action": {"id": "a1", "run_id": "r1", "operation": "read_text",
                    "resource": "docs/a.txt", "arguments": {}},
-        "policy_decision": {"id": "d1", "outcome": "ALLOW"},
+        "policy_decision": {"id": "d1", "action_request_id": "a1", "outcome": "ALLOW"},
+        "approval": None,
     }
+    body["dispatch_signature"] = sign_dispatch_payload(body, config.signing_key)
     status, payload = runner_mod.handle_execute(body, config, store)
     assert status == 409
     assert payload == {"error": "action digest mismatch"}

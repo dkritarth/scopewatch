@@ -480,6 +480,7 @@ class RunnerConfig:
 
     def __init__(self) -> None:
         self.token = os.environ.get("EXECUTOR_RUNNER_TOKEN", "")
+        self.signing_key = os.environ.get("EXECUTOR_RUNNER_SIGNING_KEY", "")
         self.host = os.environ.get("EXECUTOR_RUNNER_HOST", "127.0.0.1")
         self.port = int(os.environ.get("EXECUTOR_RUNNER_PORT", "8091"))
         self.workspace = Path(os.environ.get("EXECUTOR_RUNNER_WORKSPACE", "/workspace"))
@@ -504,6 +505,31 @@ def handle_execute(
     decision = body.get("policy_decision")
     if not isinstance(action, dict) or not isinstance(decision, dict):
         return 400, {"error": "malformed dispatch"}
+    signature = body.get("dispatch_signature")
+    if (
+        not config.signing_key
+        or config.signing_key == config.token
+        or not isinstance(signature, str)
+    ):
+        return 403, {"error": "dispatch signature required"}
+    unsigned = {key: value for key, value in body.items() if key != "dispatch_signature"}
+    try:
+        encoded = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError):
+        return 400, {"error": "malformed dispatch"}
+    expected_signature = hmac.new(
+        config.signing_key.encode("utf-8"), encoded, hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected_signature):
+        return 403, {"error": "invalid dispatch signature"}
+    issued_at = body.get("issued_at")
+    at = time.time() if now is None else now
+    if (
+        isinstance(issued_at, bool)
+        or not isinstance(issued_at, (int, float))
+        or not 0 <= at - issued_at <= DISPATCH_TOKEN_TTL_S
+    ):
+        return 403, {"error": "dispatch expired"}
     outcome = token_store.consume(body.get("dispatch_token"), body.get("action_digest"), now=now)
     if outcome == "reused":
         return 409, {"error": "dispatch token already used"}
@@ -513,15 +539,25 @@ def handle_execute(
     if not hmac.compare_digest(str(body.get("action_digest") or ""), expected_digest):
         return 409, {"error": "action digest mismatch"}
 
-    # Only an outcome that authorizes execution may reach Docker (issue
-    # #104). The digest is forgeable by anyone holding the bearer token
-    # because the canonicalization is public, so the gateway's DENY is not
-    # by itself a sufficient check: the runner refuses it as well. An
-    # unrecognised or missing outcome is refused for the same reason, since
-    # the fail-closed answer to "may this execute?" is no unless known yes.
+    # A signed dispatch still needs an authorizing decision and exact approval.
     outcome = decision.get("outcome")
     if outcome not in ("ALLOW", "HOLD"):
         return 403, {"error": "policy outcome does not authorize execution"}
+    if decision.get("action_request_id") != action.get("id"):
+        return 403, {"error": "policy decision does not match action"}
+    approval = body.get("approval")
+    if outcome == "HOLD":
+        if (
+            not isinstance(approval, dict)
+            or approval.get("status") != "APPROVED"
+            or not approval.get("id")
+            or approval.get("action_request_id") != action.get("id")
+            or approval.get("run_id") != action.get("run_id")
+            or approval.get("policy_decision_id") != decision.get("id")
+        ):
+            return 403, {"error": "valid approval required"}
+    elif approval is not None:
+        return 403, {"error": "unexpected approval"}
 
     operation = action.get("operation")
     resource = action.get("resource")
@@ -678,6 +714,10 @@ def serve(config: Optional[RunnerConfig] = None) -> None:
     cfg = config or RunnerConfig()
     if not cfg.token:
         raise SystemExit("EXECUTOR_RUNNER_TOKEN is required (environment only).")
+    if not cfg.signing_key:
+        raise SystemExit("EXECUTOR_RUNNER_SIGNING_KEY is required (environment only).")
+    if cfg.signing_key == cfg.token:
+        raise SystemExit("EXECUTOR_RUNNER_SIGNING_KEY must differ from EXECUTOR_RUNNER_TOKEN.")
     _Handler.config = cfg
     server = HTTPServer((cfg.host, cfg.port), _Handler)
     print(f"executor-runner listening on {cfg.host}:{cfg.port} (internal only)", flush=True)

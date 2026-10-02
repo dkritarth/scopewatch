@@ -43,9 +43,11 @@ Environment (all server-side; never accept these from agent input):
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import secrets
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,6 +71,7 @@ EXECUTOR_NAME = "remote-executor"
 
 EXECUTOR_RUNNER_URL_ENV_VAR = "EXECUTOR_RUNNER_URL"
 EXECUTOR_RUNNER_TOKEN_ENV_VAR = "EXECUTOR_RUNNER_TOKEN"
+EXECUTOR_RUNNER_SIGNING_KEY_ENV_VAR = "EXECUTOR_RUNNER_SIGNING_KEY"
 
 # Single-use dispatch tokens expire after 60s on the runner (issue #78).
 DISPATCH_TOKEN_TTL_S = 60
@@ -114,6 +117,13 @@ def _new_dispatch_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def sign_dispatch_payload(payload: dict[str, Any], signing_key: str) -> str:
+    """Authenticate the complete dispatch, including approval and one-use token."""
+    unsigned = {key: value for key, value in payload.items() if key != "dispatch_signature"}
+    encoded = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hmac.new(signing_key.encode("utf-8"), encoded, hashlib.sha256).hexdigest()
+
+
 def _normalize_dispatch_arguments(action: ActionRequest) -> dict[str, Any]:
     """Return the exact argument form the runner will receive.
 
@@ -149,6 +159,7 @@ def prepare_dispatch(
     """
     action_arguments = _normalize_dispatch_arguments(action)
     payload: dict[str, Any] = {
+        "issued_at": time.time(),
         "dispatch_token": (
             dispatch_token if dispatch_token is not None else _new_dispatch_token()
         ),
@@ -162,12 +173,15 @@ def prepare_dispatch(
         },
         "policy_decision": {
             "id": policy_decision.id,
+            "action_request_id": policy_decision.action_request_id,
             "outcome": policy_decision.outcome.value,
         },
         "approval": (
             {
                 "id": approval_request.id,
+                "run_id": approval_request.run_id,
                 "action_request_id": approval_request.action_request_id,
+                "policy_decision_id": approval_request.policy_decision_id,
                 "status": approval_request.status.value,
             }
             if approval_request is not None
@@ -205,6 +219,7 @@ class RemoteExecutor:
         self.runner_url = url.rstrip("/") if url else None
         # Held in memory only; never logged or included in error output.
         self._runner_token = token
+        self._signing_key = os.environ.get(EXECUTOR_RUNNER_SIGNING_KEY_ENV_VAR, "").strip()
         self.timeout_s = timeout_s
         self._transport = transport
 
@@ -275,7 +290,12 @@ class RemoteExecutor:
 
             raise ExecutionSecurityError("Network requests are forbidden in synthetic executor.")
 
-        if not self.runner_url or not self._runner_token:
+        if (
+            not self.runner_url
+            or not self._runner_token
+            or not self._signing_key
+            or self._runner_token == self._signing_key
+        ):
             return _failed("EXECUTION_FAILED", "Remote executor unavailable; failing closed.")
 
         # Build the body and its digest together so the digest always
@@ -285,6 +305,7 @@ class RemoteExecutor:
             payload, _digest = prepare_dispatch(
                 action, policy_decision, dispatch_token, approval_request
             )
+            payload["dispatch_signature"] = sign_dispatch_payload(payload, self._signing_key)
         except ValueError:
             return _failed("EXECUTION_FAILED", "Malformed run_command arguments.")
 

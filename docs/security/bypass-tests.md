@@ -7,8 +7,8 @@ second-pass`):
 `backend/tests/test_bypass_gapclose_commands.py` (34),
 `backend/tests/test_bypass_gapclose_approvals.py` (8),
 `backend/tests/test_bypass_gapclose_reasoning_executor.py` (15),
-plus the cross-backend agreement suite `backend/tests/test_executor_gate_consistency.py` (16).
-Total new: 71 bypass cases plus 16 gate-consistency cases. Run:
+plus the cross-backend agreement suite `backend/tests/test_executor_gate_consistency.py` (24).
+Total new: 71 bypass cases plus 24 gate-consistency cases. Run:
 
 ```bash
 PYTHONPATH=backend python3 -m pytest backend/tests/test_bypass.py -q
@@ -16,12 +16,13 @@ PYTHONPATH=backend python3 -m pytest backend/tests/test_bypass.py backend/tests/
 PYTHONPATH=backend python3 -m pytest backend/tests/test_executor_gate_consistency.py -q
 ```
 
-Latest run: **128 passed, 4 skipped, 1 xfailed, 2 xpassed** (skips = Docker-daemon
+Latest Linux run before this change: **128 passed, 4 skipped, 1 xfailed, 2 xpassed** (skips = Docker-daemon
 probes from the base suite; no daemon in this environment — recorded as
 `SKIP`, never as pass. The remaining xfail is the #68 argv TOCTOU window;
-it asserts the fixed behaviour and fails today. The #66 CONSUMED-replay and
-#64 approval-lifecycle xfails now XPASS, because their fixes landed; the
-markers are `strict=False` so they do not fail the run).
+it asserts the fixed behaviour and fails today). The #66 CONSUMED-replay and
+#64 approval-lifecycle cases now run as ordinary regression tests. Including
+the eight added runner cases, the expected Linux tally is 138 passed, 4 skipped,
+1 xfailed; it needs a Linux rerun.
 
 Conventions: `DENY → NOT_EXECUTED` means the gateway returned a DENY decision
 and `execute_action` with that decision returned `NOT_EXECUTED` with the

@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 import importlib.util
 import json
 from pathlib import Path
+import time
 import uuid
 
 import httpx
@@ -34,9 +35,11 @@ import pytest
 from scopewatch.executor import ExecutionSecurityError, execute_action
 from scopewatch.executor_docker import DockerExecutor
 from scopewatch.executor_remote import (
+    EXECUTOR_RUNNER_SIGNING_KEY_ENV_VAR,
     EXECUTOR_RUNNER_TOKEN_ENV_VAR,
     EXECUTOR_RUNNER_URL_ENV_VAR,
     RemoteExecutor,
+    sign_dispatch_payload,
 )
 from scopewatch.models import ApprovalStatus, ExecutionStatus, PolicyOutcome, ReasonCode
 from scopewatch.schemas import ActionRequest, ApprovalRequest, PolicyDecision
@@ -115,6 +118,7 @@ def _remote_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SCOPEWATCH_EXECUTOR", "remote")
     monkeypatch.setenv(EXECUTOR_RUNNER_URL_ENV_VAR, "http://runner.internal:8091")
     monkeypatch.setenv(EXECUTOR_RUNNER_TOKEN_ENV_VAR, "synthetic-consistency-token")
+    monkeypatch.setenv(EXECUTOR_RUNNER_SIGNING_KEY_ENV_VAR, "synthetic-independent-signing-key")
 
 
 def _ok_handler(request: httpx.Request) -> httpx.Response:
@@ -290,6 +294,7 @@ def test_prepare_dispatch_leaves_non_command_arguments_untouched() -> None:
 def _runner_env(monkeypatch: pytest.MonkeyPatch, workspace: Path) -> None:
     monkeypatch.setenv("EXECUTOR_RUNNER_WORKSPACE", str(workspace))
     monkeypatch.setenv("EXECUTOR_RUNNER_TOKEN", "synthetic-consistency-token")
+    monkeypatch.setenv("EXECUTOR_RUNNER_SIGNING_KEY", "synthetic-independent-signing-key")
 
 
 def _dispatch_body(
@@ -302,14 +307,29 @@ def _dispatch_body(
         "resource": resource,
         "arguments": {},
     }
-    decision = {"id": "d", "outcome": outcome}
-    return {
+    decision = {"id": "d", "action_request_id": "a", "outcome": outcome}
+    body = {
+        "issued_at": time.time(),
         "dispatch_token": "single-use-token",
         "action_digest": runner_mod.canonical_action_digest(action, decision),
         "action": action,
         "policy_decision": decision,
-        "approval": None,
+        "approval": (
+            {
+                "id": "p",
+                "run_id": "r",
+                "action_request_id": "a",
+                "policy_decision_id": "d",
+                "status": "APPROVED",
+            }
+            if outcome == "HOLD"
+            else None
+        ),
     }
+    body["dispatch_signature"] = sign_dispatch_payload(
+        body, "synthetic-independent-signing-key"
+    )
+    return body
 
 
 @pytest.mark.parametrize("outcome", ["DENY", "UNKNOWN", "deny", ""])
@@ -318,10 +338,8 @@ def test_runner_refuses_non_authorizing_outcomes(
 ) -> None:
     """Only ALLOW and HOLD may reach Docker dispatch.
 
-    The runner performed no outcome check, so a correctly-digested DENY
-    reached the container. Canonicalization is public, so the digest is
-    forgeable by anyone holding the bearer token; this gate is what makes
-    that harmless.
+    The runner previously sent a correctly digested DENY to the container.
+    Signed dispatches still require an authorizing policy outcome.
     """
     workspace = tmp_path / "ws"
     (workspace / "docs").mkdir(parents=True)
@@ -378,6 +396,9 @@ def test_runner_deny_refusal_precedes_dispatch_token_check(
 
     body = _dispatch_body("DENY")
     body["action_digest"] = "0" * 64
+    body["dispatch_signature"] = sign_dispatch_payload(
+        body, "synthetic-independent-signing-key"
+    )
     status, payload = runner_mod.handle_execute(
         body,
         config=runner_mod.RunnerConfig(),
@@ -385,3 +406,90 @@ def test_runner_deny_refusal_precedes_dispatch_token_check(
     )
     assert status == 409
     assert payload == {"error": "action digest mismatch"}
+
+
+def test_runner_refuses_bearer_only_forged_allow(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A caller with only the bearer token cannot mint an ALLOW decision."""
+    workspace = tmp_path / "ws"
+    (workspace / "docs").mkdir(parents=True)
+    (workspace / "docs" / "a.txt").write_text("synthetic\n")
+    _runner_env(monkeypatch, workspace)
+
+    status, _ = runner_mod.handle_execute(
+        {key: value for key, value in _dispatch_body("ALLOW").items() if key != "dispatch_signature"},
+        config=runner_mod.RunnerConfig(),
+        token_store=runner_mod.DispatchTokenStore(),
+    )
+    assert status == 403
+
+
+@pytest.mark.parametrize(
+    "approval",
+    [
+        None,
+        {"id": "p", "run_id": "r", "action_request_id": "a", "policy_decision_id": "d", "status": "CONSUMED"},
+        {"id": "p", "run_id": "r", "action_request_id": "other", "policy_decision_id": "d", "status": "APPROVED"},
+        {"id": "p", "run_id": "other", "action_request_id": "a", "policy_decision_id": "d", "status": "APPROVED"},
+        {"id": "p", "run_id": "r", "action_request_id": "a", "policy_decision_id": "other", "status": "APPROVED"},
+    ],
+    ids=["missing", "consumed", "wrong-action", "wrong-run", "wrong-decision"],
+)
+def test_runner_refuses_hold_without_exact_approved_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, approval: dict | None
+) -> None:
+    workspace = tmp_path / "ws"
+    (workspace / "docs").mkdir(parents=True)
+    (workspace / "docs" / "a.txt").write_text("synthetic\n")
+    _runner_env(monkeypatch, workspace)
+    body = _dispatch_body("HOLD")
+    body["approval"] = approval
+    body["dispatch_signature"] = sign_dispatch_payload(
+        body, "synthetic-independent-signing-key"
+    )
+
+    status, _ = runner_mod.handle_execute(
+        body,
+        config=runner_mod.RunnerConfig(),
+        token_store=runner_mod.DispatchTokenStore(),
+    )
+    assert status == 403
+
+
+def test_runner_rejects_recomputed_digest_without_gateway_signature(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    _runner_env(monkeypatch, workspace)
+    body = _dispatch_body("DENY")
+    body["policy_decision"]["outcome"] = "ALLOW"
+    body["action_digest"] = runner_mod.canonical_action_digest(
+        body["action"], body["policy_decision"]
+    )
+
+    status, payload = runner_mod.handle_execute(
+        body,
+        config=runner_mod.RunnerConfig(),
+        token_store=runner_mod.DispatchTokenStore(),
+    )
+    assert status == 403
+    assert payload == {"error": "invalid dispatch signature"}
+
+
+def test_runner_rejects_captured_signed_dispatch_after_ttl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    _runner_env(monkeypatch, workspace)
+    body = _dispatch_body("ALLOW")
+    status, payload = runner_mod.handle_execute(
+        body,
+        config=runner_mod.RunnerConfig(),
+        token_store=runner_mod.DispatchTokenStore(),
+        now=body["issued_at"] + runner_mod.DISPATCH_TOKEN_TTL_S + 1,
+    )
+    assert status == 403
+    assert payload == {"error": "dispatch expired"}

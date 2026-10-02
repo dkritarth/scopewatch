@@ -6,11 +6,8 @@ two-approval race are already covered there — this file adds the
 same-action replay (#66), deny-after-completed (#64), DENY-is-unapprovable,
 submit-after-completed, and deny-path single-use controls.
 
-Ownership: issues #64/#66/#68 are owned by other overnight threads. Tests
-for their bugs assert the FIXED behaviour and are marked
-``xfail(strict=False)`` with issue links — they XPASS-or-FAIL today without
-breaking the suite, and flip to pass when the fix lands. No source is edited
-here.
+The #64 and #66 cases are regression tests. The remaining #68 known gap
+keeps its xfail marker in the command suite.
 """
 
 import asyncio
@@ -86,18 +83,10 @@ def _submit_hold(svc_dict: dict, resource: str = "outputs/old.txt"):
     return res
 
 
-@pytest.mark.xfail(
-    reason="KNOWN-GAP #66: local executor replays a CONSUMED approval for the same action",
-    strict=False,
-)
 def test_gapclose_consumed_approval_same_action_replay_refused(
     gap_svc: dict, local_backend: None
 ) -> None:
-    """Issue #66 (owned by the executor-hardening thread — no fix here):
-    presenting the CONSUMED approval for the *same* action id must refuse.
-    ``test_bypass.py`` covers only the different-action-id variant. Today the
-    executor EXECUTEs again (replay accepted); this test expects the fixed
-    behaviour and xfails until #66 lands."""
+    """A CONSUMED approval for the same action cannot execute again (#66)."""
     service: ScopewatchService = gap_svc["service"]
     res = _submit_hold(gap_svc)
     assert res.approval_request is not None
@@ -131,15 +120,8 @@ def test_gapclose_consumed_approval_same_action_replay_refused(
         )
 
 
-@pytest.mark.xfail(
-    reason="KNOWN-GAP #64: resolve_approval has no run-status guard (deny path too)",
-    strict=False,
-)
 def test_gapclose_deny_after_run_completed_refused(gap_svc: dict) -> None:
-    """Issue #64 (owned by the completed-run thread — no fix here):
-    denying a pending approval after the run COMPLETED must be rejected and
-    must not flip the run back to ACTIVE. Today it succeeds (DENIED +
-    run → ACTIVE). Expects the fixed behaviour; xfails until #64 lands."""
+    """A completed run rejects approval denial and stays completed (#64)."""
     service: ScopewatchService = gap_svc["service"]
     run = gap_svc["run"]
     res = _submit_hold(gap_svc)
