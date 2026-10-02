@@ -6,20 +6,24 @@ second-pass`):
 `backend/tests/test_bypass_gapclose_paths.py` (14),
 `backend/tests/test_bypass_gapclose_commands.py` (34),
 `backend/tests/test_bypass_gapclose_approvals.py` (8),
-`backend/tests/test_bypass_gapclose_reasoning_executor.py` (15).
-Total new: 71 cases. Run:
+`backend/tests/test_bypass_gapclose_reasoning_executor.py` (15),
+plus the cross-backend agreement suite `backend/tests/test_executor_gate_consistency.py` (24).
+Total new: 71 bypass cases plus 24 gate-consistency cases. Run:
 
 ```bash
 PYTHONPATH=backend python3 -m pytest backend/tests/test_bypass.py -q
 PYTHONPATH=backend python3 -m pytest backend/tests/test_bypass.py backend/tests/test_bypass_gapclose_paths.py backend/tests/test_bypass_gapclose_commands.py backend/tests/test_bypass_gapclose_approvals.py backend/tests/test_bypass_gapclose_reasoning_executor.py -q
+PYTHONPATH=backend python3 -m pytest backend/tests/test_executor_gate_consistency.py -q
 ```
 
-Latest run: **128 passed, 4 skipped, 2 xfailed, 1 xpassed** (skips = Docker-daemon
+Latest Linux run before this change: **128 passed, 4 skipped, 1 xfailed, 2 xpassed** (skips = Docker-daemon
 probes from the base suite; no daemon in this environment — recorded as
-`SKIP`, never as pass. xfails = known gaps owned by issues #66/#68;
-assert the fixed behaviour, fail today, pass when those fixes land.
-The #64 approval-lifecycle xfail now XPASSes — its fix landed on main,
-the marker is `strict=False` so it does not fail the run).
+`SKIP`, never as pass. The remaining xfail is the #68 argv TOCTOU window;
+it asserts the fixed behaviour and fails today). The #66 CONSUMED-replay and
+#64 approval-lifecycle cases now run as ordinary regression tests. The five bypass
+suites therefore expect 130 passed, 4 skipped, 1 xfailed; running the separate
+24-case gate-consistency suite with them gives 154 passed, 4 skipped, 1 xfailed.
+Both tallies need a Linux rerun.
 
 Conventions: `DENY → NOT_EXECUTED` means the gateway returned a DENY decision
 and `execute_action` with that decision returned `NOT_EXECUTED` with the
@@ -177,7 +181,7 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
 
 | Case | Expected | Got | Executed? |
 | --- | --- | --- | --- |
-| CONSUMED approval replayed for the *same* action | Refuse (fixed behaviour) | **XFAIL — today EXECUTEs again; KNOWN-GAP owned by #66** | **Yes today — finding, #66 owns the fix** |
+| CONSUMED approval replayed for the *same* action | Refuse (fixed behaviour) | **PASS — ordinary regression test after PR #81** | No |
 | Deny after run COMPLETED | Refuse, run stays COMPLETED (fixed) | **XPASS — the run-status guard landed (PR #67), so the non-strict xfail now passes: denied + `RUN_NOT_ACTIVE`, run stays COMPLETED** | No execution (deny path), run lifecycle correct |
 | DENY decision has no approval to grant (control) | DENY + no approval object | same | No |
 | Submit after COMPLETED | Refuse `RUN_NOT_ACTIVE` | same | No |
@@ -227,3 +231,27 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
     #69/#70 test updates: **517 passed, 24 skipped, 2 xfailed, 1 xpassed**
     (`PYTHONPATH=backend python3 -m pytest backend/tests -q`; browser suite
     not run here).
+
+## K. Cross-backend gate consistency (new in `test_executor_gate_consistency.py`)
+
+The pre-dispatch gates exist in four places: the local, Docker, and remote
+executor backends plus the `executor-runner` sidecar. Three of those copies
+had drifted apart, and because no test compared them, CI stayed green.
+These cases pin the agreement rather than each copy.
+
+| Case | Expected | Backend | Executed? |
+| --- | --- | --- | --- |
+| `CONSUMED` approval for a held action | Refuse `ExecutionSecurityError` | local, Docker, remote | No (remote previously **executed** it) |
+| `APPROVED` approval for a held action | Executes | remote | Yes (guards against over-refusing) |
+| `run_command` digest vs the wire payload | Runner recomputation matches | 4 argument shapes | Yes (previously **HTTP 409** on 3 of 4) |
+| `prepare_dispatch` payload and digest agree | Same call returns both | gateway | Yes |
+| `run_command` normalized before digesting | argv list, timeout clamped to 300s | gateway | Yes |
+| Non-command arguments untouched | Passed through verbatim | gateway | Yes |
+| `DENY` outcome at the runner | `403` refused | runner | No (previously **reached Docker**, 502 with no daemon) |
+| `UNKNOWN` / lowercase / empty outcome | `403` refused | runner | No |
+| `ALLOW` and `HOLD` outcomes | Pass the gate, reach dispatch | runner | Yes (guards against over-refusing) |
+| Forged digest with `DENY` | `409`, no further than a wrong digest | runner | No |
+
+The runner cases assert on whether the status falls in the 4xx range, which
+is where a gate refusal lands, rather than on an exact code, so they hold
+both with and without a Docker daemon present.

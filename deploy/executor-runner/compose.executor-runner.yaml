@@ -8,6 +8,8 @@
 # Required secret (environment only, never committed):
 #   EXECUTOR_RUNNER_TOKEN — pre-shared bearer token, shared with the gateway
 #   via EXECUTOR_RUNNER_TOKEN in the gateway environment.
+#   EXECUTOR_RUNNER_SIGNING_KEY — separate gateway/runner HMAC key. Never use
+#   the bearer token as this key.
 #
 # Internal networking only: no `ports:` published to the host. The gateway
 # reaches the runner at http://executor-runner:8091 via the internal
@@ -30,6 +32,7 @@ services:
       EXECUTOR_RUNNER_PORT: "8091"
       EXECUTOR_RUNNER_WORKSPACE: /workspace
       EXECUTOR_RUNNER_TOKEN: ${EXECUTOR_RUNNER_TOKEN:?EXECUTOR_RUNNER_TOKEN is required}
+      EXECUTOR_RUNNER_SIGNING_KEY: ${EXECUTOR_RUNNER_SIGNING_KEY:?EXECUTOR_RUNNER_SIGNING_KEY is required}
     volumes:
       # THE socket mount. No other service may add one.
       - /var/run/docker.sock:/var/run/docker.sock
