@@ -180,7 +180,7 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
 
 | Case | Expected | Got | Executed? |
 | --- | --- | --- | --- |
-| CONSUMED approval replayed for the *same* action | Refuse (fixed behaviour) | **XPASS — the local fix landed (PR #81), so the non-strict xfail now passes** | No |
+| CONSUMED approval replayed for the *same* action | Refuse (fixed behaviour) | **PASS — ordinary regression test after PR #81** | No |
 | Deny after run COMPLETED | Refuse, run stays COMPLETED (fixed) | **XPASS — the run-status guard landed (PR #67), so the non-strict xfail now passes: denied + `RUN_NOT_ACTIVE`, run stays COMPLETED** | No execution (deny path), run lifecycle correct |
 | DENY decision has no approval to grant (control) | DENY + no approval object | same | No |
 | Submit after COMPLETED | Refuse `RUN_NOT_ACTIVE` | same | No |
