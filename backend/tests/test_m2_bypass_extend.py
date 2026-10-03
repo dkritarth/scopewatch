@@ -27,8 +27,8 @@ New families (all probed against the real policy before being written):
   1MB multi-component blocked-tail still DENY, 1MB benign multi-component
   ALLOW (documents missing length cap, V1 gap 7);
 - approvals: forced-expiry refusal, deny-path receipt shape + single-use,
-  cross-run + cross-operation refusal, and two ``xfail(strict=False)``
-  race/lifecycle probes linked to open issues #66/#64;
+  cross-run + cross-operation refusal, and the approval lifecycle/race
+  regressions for #64/#66, which are now fixed and hard-guarded;
 - auditor: seven prompt-injection phrasings not in the base or gap-close
   suites (developer-mode, do-not-evaluate, scope-expansion, admin-assume,
   wget/reverse-shell, pip/refactor drift, exfiltrate/socket);
@@ -494,7 +494,7 @@ def test_m2_1mb_multi_component_benign_allows_no_cap(
 
 
 # ---------------------------------------------------------------------
-# Approvals: expiry, deny-path receipt, cross-run, two xfails (#66/#64)
+# Approvals: expiry, deny-path receipt, cross-run, lifecycle + race guards (#66/#64)
 # ---------------------------------------------------------------------
 
 
@@ -609,10 +609,6 @@ def test_m2_approval_cross_run_operation_refused(
         )
 
 
-@pytest.mark.xfail(
-    reason="Race class owned by issue #66: concurrent double-resolve must execute exactly once",
-    strict=False,
-)
 def test_m2_approval_double_resolve_race_exactly_once(m2_svc: dict) -> None:
     """Two concurrent resolves of one PENDING approval serialize: exactly
     one executes, the loser gets APPROVAL_ALREADY_RESOLVED (409)."""
@@ -645,15 +641,11 @@ def test_m2_approval_double_resolve_race_exactly_once(m2_svc: dict) -> None:
     assert sorted(outcomes) == ["executed", "rejected"]
 
 
-@pytest.mark.xfail(
-    reason="Lifecycle hole owned by issue #64: resolving after COMPLETED must refuse",
-    strict=False,
-)
 def test_m2_approval_completed_run_isolation(m2_svc: dict) -> None:
     """After run A COMPLETEs, resolving its still-pending approval must
-    refuse — and an innocent run B must stay untouched either way. Today the
-    resolve executes and flips A back to ACTIVE (the #64 hole); this test
-    expects the fixed refusal and xfails until #64 lands."""
+    refuse — and an innocent run B must stay untouched either way. The #64
+    hole (the resolve executing and flipping A back to ACTIVE) is fixed, so
+    this is now a hard regression guard rather than an expected failure."""
     service: ScopewatchService = m2_svc["service"]
     run_a = m2_svc["run"]
     res = _m2_hold(m2_svc)

@@ -207,11 +207,17 @@ def test_approval_polling_terminates_on_wall_clock_deadline(test_env: dict[str, 
             )
 
     dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    # The budget must be long enough that setup (provider call + HOLD dispatch)
+    # always completes and the loop reliably reaches the approval-poll exit at
+    # loop.py "while awaiting approval". At 0.05s the deadline sometimes expired
+    # at the earlier pre-dispatch check instead, so the test intermittently
+    # never exercised the path it names. approval_timeout_s (10s) is far longer
+    # than the wall clock, so the wall-clock exit is always the one taken.
     loop = AgentLoop(
         run_id=run_id,
         provider_client=TriggerHoldProvider(),
         dispatcher=dispatcher,
-        wall_clock_timeout_s=0.05,
+        wall_clock_timeout_s=1.0,
         approval_timeout_s=10.0,
         poll_interval_s=0.01,
     )
@@ -220,7 +226,13 @@ def test_approval_polling_terminates_on_wall_clock_deadline(test_env: dict[str, 
 
     assert result.status == "FAILED"
     assert "Wall clock timeout reached" in (result.error or "")
+    # Asserts the run actually reached the approval-poll exit, not the
+    # pre-dispatch one; the primary invariant (never COMPLETED) is below.
     assert "while awaiting approval" in (result.error or "")
+    # The loop must have actually entered the wait and issued a HOLD, else the
+    # assertion above would pass for the wrong reason.
+    assert result.total_tool_calls == 1
+    assert len(result.decisions) >= 1
 
     run_resp = client.get(f"/api/v1/runs/{run_id}")
     assert run_resp.status_code == 200
