@@ -12,6 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     SCOPEWATCH_DB_PATH=/data/scopewatch.db \
     SCOPEWATCH_WORKSPACE_ROOT=/workspace \
+    SCOPEWATCH_RUN_WORKSPACES_DIR=/runs \
     PYTHONPATH=/app/backend
 
 WORKDIR /app
@@ -31,9 +32,14 @@ COPY demo/scenarios/ ./demo/scenarios/
 COPY scripts/seed_demo.py ./scripts/seed_demo.py
 COPY deploy/docker-entrypoint.sh ./deploy/docker-entrypoint.sh
 
+# /runs holds the per-run workspaces (#117). The `chown` on it is load-bearing,
+# not tidiness: compose declares `read_only: true` and mounts a NAMED volume
+# there, and Docker seeds an empty named volume from the image's directory —
+# so without this chown the volume is root-owned and appuser cannot create a
+# single run workspace.
 RUN chmod +x ./deploy/docker-entrypoint.sh \
-    && mkdir -p /data /workspace \
-    && chown -R appuser:appuser /app /data /workspace
+    && mkdir -p /data /workspace /runs \
+    && chown -R appuser:appuser /app /data /workspace /runs
 
 USER appuser
 

@@ -45,10 +45,13 @@ Validation order (fail closed, static messages, no secret in output):
    ``HOLD`` approval names this run and decision; ``ALLOW`` carries no
    approval (403). Verdict-to-HTTP mapping is ``GATE_REFUSALS``.
 5. ``run_workspace`` must name an existing, non-symlink directory strictly
-   inside ``EXECUTOR_RUNNER_WORKSPACE`` (issue #117). A missing or unsafe key
-   is refused (500); the runner never falls back to the mounted root, which
-   holds every run's workspace side by side. The key is covered by the
-   dispatch signature and the action digest, so it cannot be swapped.
+   inside ``EXECUTOR_RUNNER_WORKSPACE``, which holds one directory per run
+   (issue #117). A missing or unsafe key is refused (500); the runner never
+   falls back to any other root, least of all the scenario fixture. The key is
+   covered by the dispatch signature and the action digest, so it cannot be
+   swapped. ``EXECUTOR_RUNNER_WORKSPACE`` MUST therefore be the same path the
+   gateway uses for ``SCOPEWATCH_RUN_WORKSPACES_DIR``, shared by a common
+   volume mount; see ``compose.executor-runner.yaml``.
 6. Operation allowlisted; resource relative with no null bytes, no absolute
    paths, no ``..`` escape; resolved target must stay inside the run's
    workspace (symlink escapes refused). ``network_request`` is never executed.
@@ -219,7 +222,11 @@ def check_bearer(authorization: Optional[str], expected_token: str) -> bool:
     return hmac.compare_digest(credential.strip(), expected_token)
 
 
-SAFE_WORKSPACE_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+# `fullmatch`, not `match` with a `$` anchor: `$` also matches immediately
+# before a trailing newline, so "run\n" would pass and name a directory. This
+# mirrors `backend/scopewatch/workspaces.py::workspace_segment`, which checks the
+# same property from the other side of the wire.
+SAFE_WORKSPACE_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 def resolve_run_workspace(
@@ -236,7 +243,10 @@ def resolve_run_workspace(
     closes. Symlinks are refused because a link inside the mounted root can
     point at a sibling run's directory.
     """
-    if not isinstance(run_workspace, str) or not SAFE_WORKSPACE_KEY.match(run_workspace):
+    if (
+        not isinstance(run_workspace, str)
+        or not SAFE_WORKSPACE_KEY.fullmatch(run_workspace)
+    ):
         return None, "run workspace unavailable"
     try:
         root = workspace_root.resolve()
@@ -314,7 +324,12 @@ class RunnerConfig:
         self.signing_key = os.environ.get("EXECUTOR_RUNNER_SIGNING_KEY", "")
         self.host = os.environ.get("EXECUTOR_RUNNER_HOST", "127.0.0.1")
         self.port = int(os.environ.get("EXECUTOR_RUNNER_PORT", "8091"))
-        self.workspace = Path(os.environ.get("EXECUTOR_RUNNER_WORKSPACE", "/workspace"))
+        # Per-run workspaces only, NEVER the scenario fixture (issue #117). The
+        # gateway materialises one directory per run under this same path and
+        # announces the bare directory name; there is deliberately no fallback
+        # root, so a mismatched path fails closed rather than executing against
+        # the shared fixture.
+        self.workspace = Path(os.environ.get("EXECUTOR_RUNNER_WORKSPACE", "/runs"))
         self.image = os.environ.get("EXECUTOR_RUNNER_IMAGE", RUNNER_DOCKER_IMAGE)
 
 
