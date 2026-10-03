@@ -31,6 +31,7 @@ DOCKER_JOB = REPO / "backend" / "scopewatch" / "docker_job.py"
 RUNNER = REPO / "deploy" / "executor-runner" / "runner.py"
 RUNNER_DOCKERFILE = REPO / "deploy" / "executor-runner" / "Dockerfile"
 EXECUTOR = REPO / "backend" / "scopewatch" / "executor.py"
+DISPATCH_GATE = REPO / "backend" / "scopewatch" / "dispatch_gate.py"
 POLICY = REPO / "backend" / "scopewatch" / "policy.py"
 DOCKERFILE = REPO / "backend" / "executor" / "Dockerfile"
 WORKFLOW = REPO / ".github" / "workflows" / "docker-executor.yml"
@@ -51,6 +52,7 @@ def main() -> int:
         runner_src = RUNNER.read_text(encoding="utf-8")
         runner_dockerfile_src = RUNNER_DOCKERFILE.read_text(encoding="utf-8")
         executor_src = EXECUTOR.read_text(encoding="utf-8")
+        gate_src = DISPATCH_GATE.read_text(encoding="utf-8")
         policy_src = POLICY.read_text(encoding="utf-8")
         dockerfile_src = DOCKERFILE.read_text(encoding="utf-8")
         workflow_src = WORKFLOW.read_text(encoding="utf-8")
@@ -138,7 +140,9 @@ def main() -> int:
           or ('get_executor_backend()' in executor_src and 'backend == "docker"' in executor_src),
           "execute_action dispatch")
     check("stored-decision-required", "Direct execution without policy evidence"
-          in docker_src, "docker stored-decision gate")
+          in gate_src, "shared pre-dispatch gate refuses without a decision")
+    check("docker-calls-shared-gate", "authorize_dispatch" in docker_src,
+          "docker backend delegates to the shared gate")
     check("per-run-container-name", "scopewatch-{uuid" in docker_src
           or 'f"scopewatch-{uuid' in docker_src, "unique container names")
     check("best-effort-remove", "_best_effort_remove" in docker_src,

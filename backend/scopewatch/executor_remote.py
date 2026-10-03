@@ -8,14 +8,17 @@ daemon); the gateway, gate, and caddy containers are provably socket-free
 
 Trust model (fail closed everywhere):
 
-- Policy checks run on the gateway *before* any network call, mirroring the
-  local and Docker backends: a stored policy decision is required, ``DENY``
-  returns ``NOT_EXECUTED`` without touching the network, ``HOLD`` requires
-  an ``APPROVED`` approval bound to the exact action, and
-  ``network_request`` is refused outright. ``CONSUMED`` authorizes nothing,
-  because single-use means a spent approval cannot authorize a replay.
-  ``backend/tests/test_executor_gate_consistency.py`` asserts that all three
-  gateway backends agree on these rules, since the copies previously drifted.
+- Policy checks run on the gateway *before* any network call, through the one
+  shared pre-dispatch gate (``scopewatch.dispatch_gate.authorize_dispatch``,
+  issue #105): a stored policy decision is required, ``DENY`` returns
+  ``NOT_EXECUTED`` without touching the network, ``HOLD`` requires an
+  ``APPROVED`` approval bound to the exact action, and ``network_request`` is
+  refused outright. ``CONSUMED`` authorizes nothing, because single-use means a
+  spent approval cannot authorize a replay. This backend, the local and Docker
+  backends, and the runner sidecar all call that one module and none of them
+  restates the rules; ``backend/tests/test_executor_gate_consistency.py``
+  asserts the backends agree, since four hand-written copies previously
+  drifted.
 - Auth is a pre-shared bearer token from the environment only
   (``EXECUTOR_RUNNER_TOKEN``); it is never logged or echoed in errors.
 - Each dispatch carries a single-use dispatch token bound to one approved
@@ -59,7 +62,8 @@ from scopewatch.executor_docker import (
     clamp_run_command_timeout,
     extract_run_command_argv,
 )
-from scopewatch.models import ApprovalStatus, ExecutionStatus, PolicyOutcome
+from scopewatch.dispatch_gate import authorize_dispatch
+from scopewatch.models import ExecutionStatus
 from scopewatch.schemas import (
     ActionRequest,
     ApprovalRequest,
@@ -248,16 +252,16 @@ class RemoteExecutor:
                 operation=action.operation,
             )
 
-        # Defence in depth: identical pre-network gates as the other
-        # backends. No decision, no dispatch; DENY never dispatches.
-        if policy_decision is None:
-            from scopewatch.executor import ExecutionSecurityError
-
-            raise ExecutionSecurityError(
-                "Direct execution without policy evidence is prohibited."
-            )
-        if policy_decision.outcome == PolicyOutcome.DENY:
+        # Pre-dispatch gate (issue #105): the one shared authorization
+        # decision runs before any network call, so "no decision, no
+        # dispatch", "DENY never dispatches", "HOLD needs an APPROVED
+        # approval bound to this action", and the network_request ban are
+        # written once for the whole executor family. Digest construction
+        # and the request/response handling below stay backend-specific.
+        verdict = authorize_dispatch(action, policy_decision, approval_request)
+        if verdict.kind == "deny":
             completed_at = datetime.now(timezone.utc).isoformat()
+            assert policy_decision is not None  # DENY implies a decision
             return ExecutionReceipt(
                 id=receipt_id,
                 action_request_id=action.id,
@@ -270,25 +274,10 @@ class RemoteExecutor:
                 resource=action.resource,
                 operation=action.operation,
             )
-        if policy_decision.outcome == PolicyOutcome.HOLD:
-            # Single-use (issue #66): only a live APPROVED approval bound to
-            # this exact action executes. A CONSUMED approval must never
-            # authorize a replay, so this backend now matches the local and
-            # Docker backends instead of accepting APPROVED or CONSUMED.
-            if (
-                approval_request is None
-                or approval_request.status != ApprovalStatus.APPROVED
-                or approval_request.action_request_id != action.id
-            ):
-                from scopewatch.executor import ExecutionSecurityError
-
-                raise ExecutionSecurityError(
-                    "Held action requires valid approved status to execute."
-                )
-        if action.operation == "network_request":
+        if not verdict.proceed:
             from scopewatch.executor import ExecutionSecurityError
 
-            raise ExecutionSecurityError("Network requests are forbidden in synthetic executor.")
+            raise ExecutionSecurityError(verdict.reason)
 
         if (
             not self.runner_url

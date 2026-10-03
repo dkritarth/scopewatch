@@ -20,9 +20,11 @@
 services:
   executor-runner:
     build:
-      # Repo root, not ./executor-runner: the sidecar imports the shared
-      # Docker job module from backend/scopewatch (issue #106) so the flag
-      # list, helper code, and copy-back walk cannot drift from the gateway's.
+      # Repo root, not ./executor-runner: the sidecar imports two shared
+      # modules from backend/scopewatch — the Docker job module (#106), so the
+      # flag list, helper code, and copy-back walk cannot drift from the
+      # gateway's, and the pre-dispatch gate (#105), so the approval and
+      # outcome rules exist once.
       context: ..
       dockerfile: deploy/executor-runner/Dockerfile
     image: scopewatch/executor-runner:latest

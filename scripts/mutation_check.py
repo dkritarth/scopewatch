@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Repeatable twelve-mutation check for M1 invariants (#62).
+"""Repeatable mutation check for M1 invariants (#62, extended in #105).
 
-Injects twelve single-line mutations into a scratch copy (working tree files
-are mutated in place then restored), runs the focused test that must catch
-each mutation, and reports caught/survived.
+Injects single-line mutations into a scratch copy (working tree files are
+mutated in place then restored), runs the focused test that must catch each
+mutation, and reports caught/survived.
 
 Usage:
     PYTHONPATH=backend python3 scripts/mutation_check.py
@@ -11,8 +11,15 @@ Usage:
 
 Each mutation is tied to an AGENTS.md invariant. Eleven were caught before
 Wave 1; defect 19 (invariant-7 dict overwrite) survived and is now fixed to
-assert on the ordered event-type list. This script reruns all twelve so the
-next person can verify the suites stay load-bearing.
+assert on the ordered event-type list.
+
+Issue #105 moved the pre-dispatch rules into
+``backend/scopewatch/dispatch_gate.py``, so ``executor-without-decision``
+became ``gate-without-decision`` (same invariant, new home) and three more
+mutations cover the rules that module now owns in one place: a ``CONSUMED``
+approval authorizing, an unknown outcome authorizing, and ``network_request``
+reaching dispatch. Rerun the whole list so the next person can verify the
+suites stay load-bearing.
 
 The script never leaves the tree dirty: every mutation is restored via
 try/finally, even on failure or KeyboardInterrupt.
@@ -65,12 +72,41 @@ MUTATIONS: list[Mutation] = [
         test="backend/tests/test_agent_end_to_end.py::test_invariant_5_reasoning_audit_failure_results_in_hold_never_allow",
     ),
     Mutation(
-        name="executor-without-decision",
+        name="gate-without-decision",
         invariant="4. No decision, no execution",
-        file="backend/scopewatch/executor.py",
-        old='raise ExecutionSecurityError("Direct execution without policy evidence is prohibited.")',
-        new='policy_decision = policy_decision  # MUTATION: allow missing decision',
-        test="backend/tests/test_executor.py::test_direct_execution_without_policy_fails",
+        # The rule itself moved into the shared gate in #105; mutating it there
+        # is what proves the gate is load-bearing for this invariant.
+        file="backend/scopewatch/dispatch_gate.py",
+        # Fail open: let a dispatch with no decision proceed. The gate has
+        # defence in depth (an unreadable outcome is refused further down), so
+        # the mutation must flip the branch itself rather than delete it.
+        old="            REFUSE,\n            NO_DECISION,",
+        new="            PROCEED,  # MUTATION: allow missing decision\n            NO_DECISION,",
+        test="backend/tests/test_dispatch_gate.py::test_missing_decision_refuses",
+    ),
+    Mutation(
+        name="gate-consumed-approval-authorizes",
+        invariant="5. Approvals are single-use",
+        file="backend/scopewatch/dispatch_gate.py",
+        old='approval_status != "APPROVED" or approval_action_id != action_id',
+        new='approval_status not in ("APPROVED", "CONSUMED") or approval_action_id != action_id  # MUTATION',
+        test="backend/tests/test_dispatch_gate.py::test_hold_refuses_every_non_approved_status",
+    ),
+    Mutation(
+        name="gate-unknown-outcome-authorizes",
+        invariant="1. Deterministic policy first (fail closed on unknown)",
+        file="backend/scopewatch/dispatch_gate.py",
+        old='    if outcome not in ("ALLOW", "HOLD"):',
+        new='    if outcome not in ("ALLOW", "HOLD", "UNKNOWN", "MAYBE"):  # MUTATION',
+        test="backend/tests/test_dispatch_gate.py::test_non_authorizing_outcome_refuses",
+    ),
+    Mutation(
+        name="gate-network-request-executes",
+        invariant="Network requests never execute",
+        file="backend/scopewatch/dispatch_gate.py",
+        old='    if _text(_field(action, "operation")) == "network_request":',
+        new='    if False:  # MUTATION: network requests reach dispatch',
+        test="backend/tests/test_dispatch_gate.py::test_network_request_never_proceeds",
     ),
     Mutation(
         name="approval-reuse",

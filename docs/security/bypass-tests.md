@@ -232,12 +232,34 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
     (`PYTHONPATH=backend python3 -m pytest backend/tests -q`; browser suite
     not run here).
 
-## K. Cross-backend gate consistency (new in `test_executor_gate_consistency.py`)
+## K. Cross-backend gate consistency (`test_executor_gate_consistency.py`, `test_dispatch_gate.py`)
 
-The pre-dispatch gates exist in four places: the local, Docker, and remote
-executor backends plus the `executor-runner` sidecar. Three of those copies
-had drifted apart, and because no test compared them, CI stayed green.
-These cases pin the agreement rather than each copy.
+The pre-dispatch gates used to exist in four places: the local, Docker, and
+remote executor backends plus the `executor-runner` sidecar. Three of those
+copies had drifted apart, and because no test compared them, CI stayed
+green.
+
+Issue #105 removed the duplication: the approval-status and outcome rules now
+live in one stdlib-only module, `backend/scopewatch/dispatch_gate.py`
+(`authorize_dispatch`), which all three backends and the runner call. The
+runner loads that authored file rather than a vendored copy, so the rule set
+exists once in the repository and once in the sidecar image (the Dockerfile
+copies it in). Two suites now cover it:
+
+- `test_dispatch_gate.py` unit-tests the rules at their source — missing
+  decision, `DENY` finality, the `ALLOW`/`HOLD` allowlist, every
+  non-`APPROVED` status, approval-to-action binding, and the
+  `network_request` ban — and asserts the runner resolves to that same file
+  and that the image build copies it.
+- `test_executor_gate_consistency.py` is **kept**, not superseded: it pins
+  what stays per-backend, namely the remote client's `run_command` digest and
+  argument normalization, and the runner's signature, one-shot token, digest,
+  and run/decision binding.
+
+Checks that must stay backend-specific (they need state or `pathlib`
+semantics the runner does not have) are listed in the gate module's
+docstring. A fifth backend satisfies both suites by construction: it calls
+`authorize_dispatch` and must reproduce the signed protocol.
 
 | Case | Expected | Backend | Executed? |
 | --- | --- | --- | --- |
@@ -255,6 +277,17 @@ These cases pin the agreement rather than each copy.
 The runner cases assert on whether the status falls in the 4xx range, which
 is where a gate refusal lands, rather than on an exact code, so they hold
 both with and without a Docker daemon present.
+
+One intentional strictness change came with the merge (#105): an outcome
+outside `ALLOW`/`HOLD` now fails closed on the gateway backends too, not only
+in the runner. Previously only `DENY` was checked there, so an unrecognised
+outcome fell through toward execution. No test relied on that, and the gate
+unit tests pin the new behaviour.
+
+Mutations (`PYTHONPATH=backend python3 scripts/mutation_check.py`) cover the
+gate directly: a missing decision, a `CONSUMED` approval, an unknown outcome,
+and `network_request` must all be caught. 15/15 caught at the time of
+writing.
 
 ## L. Shared Docker job construction (`test_docker_job_share.py`, issue #106)
 
