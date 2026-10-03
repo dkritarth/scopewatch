@@ -454,3 +454,110 @@ test("isLiveRequested: without a live parameter, the default port or flag decide
   assert.equal(isLiveRequested("", "8765", true), true);
   assert.equal(isLiveRequested("?other=live", "8765"), false);
 });
+
+test("transformApiEvent joins approval record and surfaces simulated execution markers (#134)", () => {
+  const actionId = "act-del-134";
+  const turnId = "turn-del-134";
+
+  // 1. Policy holds action
+  const held = transformApiEvent({
+    id: "ev-hold-134",
+    sequence: 1,
+    event_type: "POLICY_HELD",
+    action_request_id: actionId,
+    turn_id: turnId,
+    details: {
+      operation: "delete_path",
+      resource: "outputs/archive_2025.txt",
+      reason_code: "APPROVAL_REQUIRED",
+    },
+  });
+  assert.equal(held.status, "pending-approval");
+  assert.equal(held.approvalStatus, "Pending reviewer authorization");
+
+  // 2. Reviewer approves
+  const granted = transformApiEvent({
+    id: "ev-appr-134",
+    sequence: 2,
+    event_type: "APPROVAL_GRANTED",
+    action_request_id: actionId,
+    turn_id: turnId,
+    actor: "security-reviewer",
+    details: {
+      reason: "Approved deletion of stale archive",
+      approval_request_id: "appr-134",
+    },
+  });
+  assert.equal(granted.approvalStatus, "Approved");
+  assert.equal(granted.resolvedBy, "security-reviewer");
+  assert.equal(granted.resolutionReason, "Approved deletion of stale archive");
+
+  // 3. Execution event arrives (EXECUTION_SUCCEEDED with simulated receipt)
+  const exec = transformApiEvent({
+    id: "ev-exec-134",
+    sequence: 3,
+    event_type: "EXECUTION_SUCCEEDED",
+    action_request_id: actionId,
+    turn_id: turnId,
+    actor: "synthetic-workspace-executor",
+    summary: "Successfully executed approved delete_path on 'outputs/archive_2025.txt'.",
+    details: {
+      status: "EXECUTED",
+      result: {
+        operation: "delete_path",
+        resource: "outputs/archive_2025.txt",
+        simulated: true,
+        note: "Deletion simulated safely in baseline demo; target not unlinked.",
+      },
+    },
+  });
+
+  // Verify approval join: execution event preserves who approved it
+  assert.equal(exec.approvalStatus, "Approved");
+  assert.equal(exec.resolvedBy, "security-reviewer");
+  assert.equal(exec.resolutionReason, "Approved deletion of stale archive");
+
+  // Verify simulated marker extraction
+  assert.equal(exec.executionSimulated, true);
+  assert.equal(exec.execution_simulated, true);
+  assert.equal(exec.executionNote, "Deletion simulated safely in baseline demo; target not unlinked.");
+  assert.equal(
+    exec.resultPreview,
+    "[Simulated] Deletion simulated safely in baseline demo; target not unlinked."
+  );
+});
+
+test("transformApiEvent surfaces simulated marker on unheld simulated execution (#134)", () => {
+  const exec = transformApiEvent({
+    id: "ev-sim-direct",
+    sequence: 1,
+    event_type: "EXECUTION_SUCCEEDED",
+    details: {
+      status: "EXECUTED",
+      result: {
+        simulated: true,
+        note: "Direct simulated write.",
+      },
+    },
+  });
+  assert.equal(exec.executionSimulated, true);
+  assert.equal(exec.executionNote, "Direct simulated write.");
+  assert.equal(exec.resultPreview, "[Simulated] Direct simulated write.");
+  assert.equal(exec.approvalStatus, null);
+});
+
+test("transformApiEvent retains unapproved status on normal allow (#134)", () => {
+  const exec = transformApiEvent({
+    id: "ev-allow-normal",
+    sequence: 1,
+    event_type: "EXECUTION_SUCCEEDED",
+    action_request_id: "act-normal-134",
+    details: {
+      status: "EXECUTED",
+      result: { preview: "File content read cleanly." },
+    },
+  });
+  assert.equal(exec.executionSimulated, false);
+  assert.equal(exec.approvalStatus, null);
+  assert.equal(exec.resultPreview, "File content read cleanly.");
+});

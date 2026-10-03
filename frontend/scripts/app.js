@@ -437,6 +437,7 @@ let pendingApprovals = [];
 
 const auditStore = new Map();
 const actionRequestStore = new Map();
+export const approvalStore = new Map();
 
 const state = {
   runId: fixtureRuns[0]?.id,
@@ -664,8 +665,23 @@ function renderEvidence() {
   const execTitle = document.createElement("h4");
   execTitle.className = "evidence-section-title";
   execTitle.textContent = "4. Controlled synthetic execution";
-  const execList = evidenceList([
-    { label: "Execution status", value: event.executionStatus || event.execution },
+  const execItems = [
+    {
+      label: "Execution status",
+      value: event.executionSimulated
+        ? `${event.executionStatus || event.execution} (simulated)`
+        : event.executionStatus || event.execution,
+    },
+  ];
+  if (event.executionSimulated) {
+    execItems.push({
+      label: "Simulation",
+      value:
+        event.executionNote ||
+        "Simulated safely in baseline demo; target not unlinked.",
+    });
+  }
+  execItems.push(
     { label: "Command", value: event.executionCommand || "N/A" },
     {
       label: "Exit code",
@@ -682,7 +698,8 @@ function renderEvidence() {
           ? "Timed out with no output."
           : event.executionOutput || "None",
     },
-  ]);
+  );
+  const execList = evidenceList(execItems);
   execSec.append(execTitle, execList);
 
   // 5. Reasoning
@@ -1219,11 +1236,67 @@ export function transformApiEvent(ev, context = null) {
   const offset = `+00:${String(ev.sequence ?? 0).padStart(2, "0")}`;
   const title = ev.summary || (d.operation ? `${d.operation} on ${d.resource}` : `${type}`);
 
+  // Approval tracking & join across turn / action events (#134)
+  let rawApproval = null;
+  if (type === "APPROVAL_GRANTED") {
+    rawApproval = {
+      status: "Approved",
+      resolvedBy: ev.actor || d.resolved_by || "reviewer",
+      resolutionReason: d.reason || d.resolution_reason || null,
+      approvalId: d.approval_request_id || d.approval_id || null,
+    };
+  } else if (type === "APPROVAL_DENIED") {
+    rawApproval = {
+      status: "Denied",
+      resolvedBy: ev.actor || d.resolved_by || "reviewer",
+      resolutionReason: d.reason || d.resolution_reason || null,
+      approvalId: d.approval_request_id || d.approval_id || null,
+    };
+  } else if (type === "APPROVAL_EXPIRED") {
+    rawApproval = {
+      status: "Expired",
+      resolvedBy: ev.actor || "system",
+      resolutionReason: d.reason || "Approval request expired.",
+      approvalId: d.approval_request_id || d.approval_id || null,
+    };
+  } else if (
+    type === "APPROVAL_REQUESTED" ||
+    type === "POLICY_HELD" ||
+    type === "POLICY_HELD_FOR_APPROVAL" ||
+    d.outcome === "HOLD"
+  ) {
+    rawApproval = {
+      status: "Pending reviewer authorization",
+      resolvedBy: null,
+      resolutionReason: null,
+      approvalId: d.approval_request_id || d.approval_id || null,
+    };
+  }
+
+  if (rawApproval) {
+    if (actionReqId) approvalStore.set(actionReqId, rawApproval);
+    if (turnId) approvalStore.set(turnId, rawApproval);
+  }
+
+  const cachedApproval =
+    (actionReqId && approvalStore.get(actionReqId)) ||
+    (turnId && approvalStore.get(turnId)) ||
+    null;
+
   // Execution receipt fields: the EXECUTION_* events carry the sanitized
   // receipt as details.result (argv, exit_code, stdout/stderr with truncation
   // flags for run_command; previews for file operations). Surface the
   // command, exit code, and truncated output for the evidence panel.
   const execResult = d.result && typeof d.result === "object" ? d.result : null;
+  const executionSimulated = Boolean(
+    execResult?.simulated ||
+    d.sanitized_result?.simulated ||
+    d.simulated,
+  );
+  const executionNote =
+    (execResult && typeof execResult.note === "string" ? execResult.note : null) ||
+    (d.sanitized_result && typeof d.sanitized_result.note === "string" ? d.sanitized_result.note : null) ||
+    (typeof d.note === "string" ? d.note : null);
   const submittedArgs = d.arguments || actionReq.arguments || cachedReq.arguments || {};
   let executionCommand = null;
   if (execResult && Array.isArray(execResult.argv)) {
@@ -1272,11 +1345,22 @@ export function transformApiEvent(ev, context = null) {
     policyOutcome: d.outcome || null,
     reasonCode,
     policyExplanation: d.explanation || ev.summary || null,
-    approvalStatus: d.approval_status || null,
-    resolvedBy: d.resolved_by || null,
-    resolutionReason: d.resolution_reason || null,
+    approvalStatus:
+      d.approval_status ||
+      cachedApproval?.status ||
+      (status === "pending-approval" ? "Pending reviewer authorization" : null),
+    resolvedBy: d.resolved_by || cachedApproval?.resolvedBy || null,
+    resolutionReason: d.resolution_reason || cachedApproval?.resolutionReason || null,
     executionStatus: d.execution_status || (status === "executed" ? "EXECUTED" : "NOT_EXECUTED"),
-    resultPreview: d.result_preview || (d.sanitized_result?.preview ?? null),
+    executionSimulated,
+    execution_simulated: executionSimulated,
+    executionNote,
+    execution_note: executionNote,
+    resultPreview:
+      d.result_preview ||
+      (execResult?.preview ?? null) ||
+      (d.sanitized_result?.preview ?? null) ||
+      (executionSimulated && executionNote ? `[Simulated] ${executionNote}` : null),
     executionCommand,
     executionExitCode,
     executionOutput,
