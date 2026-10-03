@@ -435,15 +435,37 @@ def test_container_output_caps_match_gateway_config() -> None:
     assert docker_job.MAX_WRITE_BYTES == config.MAX_WRITE_BYTES
 
 
-def test_runner_only_imports_the_shared_module_from_scopewatch() -> None:
-    """The sidecar's only gateway import is the shared job module."""
+def test_runner_only_imports_the_shared_modules_from_scopewatch() -> None:
+    """The sidecar's gateway imports are the shared modules and nothing else.
+
+    Two now: the Docker job module (#106) and the pre-dispatch gate (#105).
+    Both are stdlib-only and both are COPYed in from their authored location,
+    so an allowlist is the honest form of this check: a third import would be
+    new gateway code reaching the socket-holding container.
+    """
     tree = ast.parse(RUNNER_PATH.read_text(encoding="utf-8"))
     scopewatch_roots: set[str] = set()
     for node in ast.walk(tree):
+        # `from scopewatch import dispatch_gate` and
+        # `from scopewatch.docker_job import x` are both gateway imports; the
+        # alias resolves to the submodule it names, not to the package.
         if isinstance(node, ast.ImportFrom) and node.module:
             if node.module.split(".")[0] == "scopewatch":
-                scopewatch_roots.add(node.module)
-    assert scopewatch_roots == {"scopewatch.docker_job"}
+                if node.module == "scopewatch":
+                    # `from scopewatch import dispatch_gate`: the alias is
+                    # the submodule being imported.
+                    scopewatch_roots.update(
+                        f"scopewatch.{alias.name}" for alias in node.names
+                    )
+                else:
+                    # `from scopewatch.docker_job import x`: the names are
+                    # members of that module.
+                    scopewatch_roots.add(node.module)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] == "scopewatch":
+                    scopewatch_roots.add(alias.name)
+    assert scopewatch_roots == {"scopewatch.docker_job", "scopewatch.dispatch_gate"}
 
 
 def test_runner_image_ships_the_shared_module_from_the_same_source() -> None:

@@ -124,24 +124,25 @@ Now there is one module, `backend/scopewatch/docker_job.py`, which both
 
 ### The import constraint
 
-**The shared module must stay stdlib-only.** This runner is stdlib-only by
-design, so `docker_job.py` may not import anything outside the standard
-library, and may not import any other `scopewatch` module (a gateway module
-would drag in `pydantic`/`fastapi` and break the sidecar image). It is
-enforced in three places:
+**Both shared modules must stay stdlib-only.** This runner is stdlib-only by
+design, so `docker_job.py` and `dispatch_gate.py` may not import anything
+outside the standard library, and may not import any other `scopewatch` module
+(a gateway module would drag in `pydantic`/`fastapi` and break the sidecar
+image). It is enforced in three places:
 
 - `deploy/executor-runner/Dockerfile` runs an import check during the image
-  build, so a third-party import fails the build rather than the runner host.
+  build, importing both modules, so a third-party import fails the build
+  rather than the runner host.
 - `backend/tests/test_docker_job_share.py::test_shared_module_imports_only_the_standard_library`
   parses the module's AST and asserts every imported root is in
   `sys.stdlib_module_names`.
 - `scripts/check_docker_acceptance.py` asserts neither `executor_docker.py` nor
   `runner.py` re-declares the flag list.
 
-The Dockerfile therefore copies exactly three files — `scopewatch/__init__.py`,
-`scopewatch/docker_job.py`, and `runner.py` — which is why the compose build
-context is the repository root rather than this directory. Nothing else from the
-gateway ships in the sidecar image.
+The Dockerfile therefore copies exactly four files — `scopewatch/__init__.py`,
+`scopewatch/docker_job.py`, `scopewatch/dispatch_gate.py`, and `runner.py` —
+which is why the compose build context is the repository root rather than this
+directory. Nothing else from the gateway ships in the sidecar image.
 
 ### `DockerJob`: payload and serialization together
 

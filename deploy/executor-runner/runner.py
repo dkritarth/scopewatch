@@ -78,7 +78,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Optional
 
-<<<<<<< HEAD
 # Shared Docker job construction (issue #106). The runner is stdlib-only, so
 # this module must stay stdlib-only too: it may not import anything from
 # ``scopewatch`` except itself, no third-party package, and nothing that

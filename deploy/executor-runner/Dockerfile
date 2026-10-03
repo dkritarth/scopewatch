@@ -20,18 +20,21 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends docker-cli \
     && rm -rf /var/lib/apt/lists/*
 
-# Import-constraint check (issue #106): the shared job module must stay
-# stdlib-only, because this sidecar is stdlib-only. It is COPYed as a package
-# member so runner.py can `from scopewatch.docker_job import ...`; nothing else
-# from the gateway package is shipped. If this ever needs a third-party import
-# the image build fails here instead of at runtime on the runner host.
+# Import-constraint check (#106, #105): both shared modules must stay
+# stdlib-only, because this sidecar is stdlib-only. They are COPYed as package
+# members so runner.py can import them by module path; nothing else from the
+# gateway package is shipped. If either ever needs a third-party import the
+# image build fails here instead of at runtime on the runner host.
 RUN python3 -c "import sys; sys.path.insert(0, '/app'); \
     from scopewatch.docker_job import helper_code, build_docker_command; \
-    assert 'import json, os, subprocess, sys' in helper_code()"
+    from scopewatch.dispatch_gate import authorize_dispatch; \
+    assert 'import json, os, subprocess, sys' in helper_code(); \
+    assert authorize_dispatch(None, None).code == 'NO_DECISION'"
 
-# Byte-compile ahead of time so a syntax error in the shared module fails the
+# Byte-compile ahead of time so a syntax error in a shared module fails the
 # build rather than the first dispatch.
-RUN python3 -m compileall -q /app/runner.py /app/scopewatch/docker_job.py
+RUN python3 -m compileall -q /app/runner.py /app/scopewatch/docker_job.py \
+    /app/scopewatch/dispatch_gate.py
 
 # Internal-only port; the compose fragment publishes nothing to the host.
 EXPOSE 8091
