@@ -40,6 +40,7 @@ from scopewatch.schemas import (
     CreateRunRequest,
     EvidenceEvent,
     HealthResponse,
+    PolicyDecision,
     ResolveApprovalRequest,
     Run,
     SubmitActionRequest,
@@ -255,6 +256,25 @@ def create_app(
         svc: ScopewatchService = Depends(get_service),
     ) -> ActionResponse:
         return await svc.submit_action(run_id, req, capture_credential=capture_token)
+
+    @app.post(
+        "/api/v1/runs/{run_id}/actions/preview",
+        response_model=PolicyDecision,
+        status_code=status.HTTP_200_OK,
+    )
+    def preview_action(
+        run_id: str,
+        req: SubmitActionRequest,
+        svc: ScopewatchService = Depends(get_service),
+    ) -> PolicyDecision:
+        """Side-effect-free deterministic policy dry-run (issue #122).
+
+        Evaluates the exact gateway policy for the would-be action without
+        persisting anything, creating approvals, or executing. Used by
+        permission preflight so it agrees with actual submission by
+        construction.
+        """
+        return svc.preview_action(run_id, req)
 
     @app.get("/api/v1/runs/{run_id}/actions/{action_id}", response_model=ActionResponse)
     def get_action(

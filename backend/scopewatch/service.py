@@ -519,6 +519,102 @@ class ScopewatchService:
 
     # ---------------- Actions ----------------
 
+    def _build_action_request(
+        self,
+        run_id: str,
+        request: SubmitActionRequest,
+        *,
+        action_id: str,
+        turn_id: Optional[str],
+        requested_at: str,
+        capture_verified: bool,
+    ) -> ActionRequest:
+        """Build the ActionRequest that submission or a preview evaluates.
+
+        One builder for both paths (#122) so permission preflight is always
+        evaluated against exactly the request submission would send.
+
+        Reasoning provenance is resolved here too (#116), not by the caller,
+        so the ACP preview seam cannot hand a caller a verified provider-trace
+        label that a real submission would have downgraded to a caller
+        assertion. A preview never verifies (it presents no credential), so
+        its ActionRequest carries the unverified label while the policy
+        decision it produces stays accurate.
+        """
+        claimed_provenance = request.reasoning_provenance or (
+            ReasoningProvenance.PROVIDER_EXPOSED_TRACE
+            if request.exposed_reasoning_trace
+            else (
+                ReasoningProvenance.AGENT_AUTHORED_SUMMARY
+                if request.reasoning_summary
+                else ReasoningProvenance.UNAVAILABLE
+            )
+        )
+        return ActionRequest(
+            id=action_id,
+            run_id=run_id,
+            tool=request.tool,
+            operation=request.operation,
+            resource=request.resource,
+            arguments=request.arguments,
+            requested_by=request.requested_by or "synthetic-agent",
+            requested_at=requested_at,
+            reasoning_summary=request.reasoning_summary,
+            exposed_reasoning_trace=request.exposed_reasoning_trace,
+            reasoning_provenance=provenance_for_submission(
+                claimed_provenance, capture_verified
+            ),
+            caller_claimed_provenance=(
+                None
+                if capture_verified or claimed_provenance == ReasoningProvenance.UNAVAILABLE
+                else claimed_provenance
+            ),
+            turn_id=turn_id,
+            reasoning_audit_id=None,
+        )
+
+    def preview_action(self, run_id: str, request: SubmitActionRequest) -> PolicyDecision:
+        """Evaluate deterministic policy without side effects (issue #122).
+
+        Shared dry-run seam for permission preflight: builds the same
+        ActionRequest that submit_action would evaluate, through the same
+        _build_action_request, runs the exact gateway policy engine against the
+        same workspace root and run scope, and returns the deterministic
+        decision. Performs no DB writes, creates no action/decision/approval/
+        receipt records, emits no events, consumes no approvals and no demo
+        budget, executes nothing, and runs no reasoning audit.
+
+        Audit-dependent escalation is deliberately out of scope: a preview
+        ALLOW stays provisional because the submit-time reasoning audit may
+        still escalate to HOLD. Callers must say so rather than presenting a
+        preview ALLOW as a grant.
+        """
+        conn = self._get_conn()
+        try:
+            run = ScopewatchRepository.get_run(conn, run_id)
+            if not run:
+                raise ScopewatchAPIError(
+                    code="RUN_NOT_FOUND",
+                    message=f"Run '{run_id}' not found.",
+                    status_code=status.HTTP_404_NOT_FOUND,
+                )
+        finally:
+            conn.close()
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        action_id = str(uuid.uuid4())
+        action = self._build_action_request(
+            run_id,
+            request,
+            action_id=action_id,
+            turn_id=request.turn_id or f"preview-{action_id}",
+            requested_at=now_iso,
+            # A preview carries no capture credential, so provenance stays
+            # unverified here exactly as it would on submission.
+            capture_verified=False,
+        )
+        return evaluate_policy(action, run, self.workspace_root)
+
     async def submit_action(
         self,
         run_id: str,
@@ -553,44 +649,20 @@ class ScopewatchService:
             # #116: the API cannot tell a trace captured by the in-process
             # provider client from a label typed into the request body. Only a
             # submission carrying the capture credential may keep a verified
-            # provenance label; every other claim is stored as an unverified
-            # caller assertion, with the raw value kept for diagnostics.
+            # provenance label. That decision is made once, here, and then
+            # applied inside _build_action_request so submission and preview
+            # cannot disagree about it.
             capture_verified = capture_credential_verified(
                 self.capture_token, capture_credential
             )
-            claimed_provenance = request.reasoning_provenance or (
-                ReasoningProvenance.PROVIDER_EXPOSED_TRACE
-                if request.exposed_reasoning_trace
-                else (
-                    ReasoningProvenance.AGENT_AUTHORED_SUMMARY
-                    if request.reasoning_summary
-                    else ReasoningProvenance.UNAVAILABLE
-                )
-            )
-            action_provenance = provenance_for_submission(
-                claimed_provenance, capture_verified
-            )
-            caller_claimed_provenance = (
-                None
-                if capture_verified or claimed_provenance == ReasoningProvenance.UNAVAILABLE
-                else claimed_provenance
-            )
 
-            action = ActionRequest(
-                id=action_id,
-                run_id=run_id,
-                tool=request.tool,
-                operation=request.operation,
-                resource=request.resource,
-                arguments=request.arguments,
-                requested_by=request.requested_by or "synthetic-agent",
-                requested_at=now_iso,
-                reasoning_summary=request.reasoning_summary,
-                exposed_reasoning_trace=request.exposed_reasoning_trace,
-                reasoning_provenance=action_provenance,
-                caller_claimed_provenance=caller_claimed_provenance,
+            action = self._build_action_request(
+                run_id,
+                request,
+                action_id=action_id,
+                capture_verified=capture_verified,
                 turn_id=effective_turn_id,
-                reasoning_audit_id=None,
+                requested_at=now_iso,
             )
 
             # Invariant: Deterministic policy first!
