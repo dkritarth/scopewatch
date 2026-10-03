@@ -235,6 +235,7 @@ export function formatLiveRun(backendRun, rawEvents = []) {
     name: `${backendRun.name} (Live)`,
     task: scope?.task_description || "Synthetic live run",
     status: backendRun.status || "ACTIVE",
+    promptVersion: backendRun.prompt_version || null,
     scope: [
       `Allowed: ${scope?.allowed_paths?.join(", ") || "none"}`,
       `Blocked: ${scope?.blocked_paths?.join(", ") || "none"}`,
@@ -540,6 +541,13 @@ function renderScope() {
   const tools = run.gatewayTools?.tools || run.taskScope?.allowed_tools || [...GATEWAY_TOOLS.tools];
   const operations = run.gatewayTools?.operations || run.taskScope?.allowed_operations || [...GATEWAY_TOOLS.operations];
   toolsItem.textContent = `Gateway-mediated tools: ${tools.join(", ")} — operations: ${operations.join(", ")}`;
+  if (run.promptVersion) {
+    const promptItem = document.createElement("li");
+    promptItem.className = "scope-prompt-version";
+    promptItem.dataset.promptVersion = "true";
+    promptItem.textContent = `Agent prompt version: ${run.promptVersion}`;
+    elements.runScope.append(promptItem);
+  }
   // Keep the tools item last even when scope re-renders.
   elements.runScope.append(toolsItem);
 }

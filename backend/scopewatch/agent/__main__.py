@@ -15,6 +15,7 @@ from typing import Any, Optional
 import httpx
 
 from scopewatch.agent.loop import AgentLoop, AgentRunResult
+from scopewatch.agent.prompt import PROMPT_VERSION
 from scopewatch.agent.tools import GatewayDispatcher
 from scopewatch.models import ReasoningProvenance
 from scopewatch.providers.client import ChatResult, MockProviderClient, ProviderClient
@@ -187,6 +188,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     run_payload = {
         "name": scenario.get("name", "Scopewatch Agent Run"),
         "task_scope": task_scope,
+        "prompt_version": PROMPT_VERSION,
     }
 
     resp = client.post("/api/v1/runs", json=run_payload)

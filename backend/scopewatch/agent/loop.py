@@ -70,6 +70,7 @@ class AgentLoop:
         approval_timeout_s: float = 30.0,
         poll_interval_s: float = 0.5,
         requested_by: str = "scopewatch-agent",
+        prompt_version: str = PROMPT_VERSION,
     ) -> None:
         self.run_id = run_id
         self.max_turns = max_turns
@@ -78,6 +79,7 @@ class AgentLoop:
         self.approval_timeout_s = approval_timeout_s
         self.poll_interval_s = poll_interval_s
         self.requested_by = requested_by
+        self.prompt_version = prompt_version
 
         if dispatcher is not None:
             self.dispatcher = dispatcher
@@ -127,6 +129,13 @@ class AgentLoop:
 
         tools = get_gateway_tools()
 
+        # Persist prompt version with run evidence before model execution (#126)
+        if self.dispatcher:
+            try:
+                self.dispatcher.record_prompt_version(self.run_id, self.prompt_version)
+            except Exception:
+                pass
+
         while True:
             # Check turn limit
             if turns >= self.max_turns:
@@ -141,6 +150,7 @@ class AgentLoop:
                     decisions=recorded_decisions,
                     error=err,
                     messages=messages,
+                    prompt_version=self.prompt_version,
                 )
 
             # Check wall clock timeout
@@ -156,6 +166,7 @@ class AgentLoop:
                     decisions=recorded_decisions,
                     error=err,
                     messages=messages,
+                    prompt_version=self.prompt_version,
                 )
 
             # Query model provider
@@ -196,6 +207,7 @@ class AgentLoop:
                     decisions=recorded_decisions,
                     final_response=chat_result.content,
                     messages=messages,
+                    prompt_version=self.prompt_version,
                 )
 
             # Process all tool calls from this turn

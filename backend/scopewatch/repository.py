@@ -45,8 +45,8 @@ class ScopewatchRepository:
             """
             INSERT INTO runs (
                 id, name, task_scope_json, status, created_at, updated_at,
-                synthetic, interception_coverage, reasoning_availability
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                synthetic, interception_coverage, reasoning_availability, prompt_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run.id,
@@ -58,6 +58,7 @@ class ScopewatchRepository:
                 int(run.synthetic),
                 run.interception_coverage,
                 run.reasoning_availability,
+                run.prompt_version,
             ),
         )
         return run
@@ -69,6 +70,7 @@ class ScopewatchRepository:
         if not row:
             return None
         scope_data = json.loads(row["task_scope_json"])
+        prompt_version = row["prompt_version"] if "prompt_version" in row.keys() else None
         return Run(
             id=row["id"],
             name=row["name"],
@@ -79,6 +81,7 @@ class ScopewatchRepository:
             synthetic=bool(row["synthetic"]),
             interception_coverage=row["interception_coverage"],
             reasoning_availability=row["reasoning_availability"],
+            prompt_version=prompt_version,
         )
 
     @staticmethod
@@ -87,6 +90,7 @@ class ScopewatchRepository:
         runs = []
         for row in cur.fetchall():
             scope_data = json.loads(row["task_scope_json"])
+            prompt_version = row["prompt_version"] if "prompt_version" in row.keys() else None
             runs.append(
                 Run(
                     id=row["id"],
@@ -98,9 +102,19 @@ class ScopewatchRepository:
                     synthetic=bool(row["synthetic"]),
                     interception_coverage=row["interception_coverage"],
                     reasoning_availability=row["reasoning_availability"],
+                    prompt_version=prompt_version,
                 )
             )
         return runs
+
+    @staticmethod
+    def update_run_prompt_version(
+        conn: sqlite3.Connection, run_id: str, prompt_version: str, updated_at: str
+    ) -> None:
+        conn.execute(
+            "UPDATE runs SET prompt_version = ?, updated_at = ? WHERE id = ?",
+            (prompt_version, updated_at, run_id),
+        )
 
     @staticmethod
     def update_run_status(

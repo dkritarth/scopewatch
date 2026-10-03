@@ -282,6 +282,11 @@ def test_m1_prompt_version_recorded(tmp_path: Path) -> None:
     assert result.prompt_version == PROMPT_VERSION
     assert result.summary()["prompt_version"] == PROMPT_VERSION
 
+    # Persistence verification (#126): prompt_version is recorded on the run in the database and API
+    run_resp = client.get(f"/api/v1/runs/{run_id}")
+    assert run_resp.status_code == 200
+    assert run_resp.json()["prompt_version"] == PROMPT_VERSION
+
 
 def test_m1_turn_id_shared_trace_provenance(tmp_path: Path) -> None:
     client, _ = _isolated_client(tmp_path)

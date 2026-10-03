@@ -42,6 +42,7 @@ from scopewatch.schemas import (
     ResolveApprovalRequest,
     Run,
     SubmitActionRequest,
+    UpdateRunRequest,
 )
 from scopewatch.service import ScopewatchService
 
@@ -186,12 +187,25 @@ def create_app(
         svc: ScopewatchService = Depends(get_service),
     ) -> Run:
         run, _ = svc.create_run(
-            name=req.name, task_scope=req.task_scope, client_ip=request_client_ip(request)
+            name=req.name,
+            task_scope=req.task_scope,
+            client_ip=request_client_ip(request),
+            prompt_version=req.prompt_version,
         )
         return run
 
     @app.get("/api/v1/runs/{run_id}", response_model=Run)
     def get_run(run_id: str, svc: ScopewatchService = Depends(get_service)) -> Run:
+        return svc.get_run(run_id)
+
+    @app.patch("/api/v1/runs/{run_id}", response_model=Run)
+    def update_run(
+        run_id: str,
+        req: UpdateRunRequest,
+        svc: ScopewatchService = Depends(get_service),
+    ) -> Run:
+        if req.prompt_version:
+            return svc.set_run_prompt_version(run_id, req.prompt_version)
         return svc.get_run(run_id)
 
     @app.post("/api/v1/runs/{run_id}/complete", response_model=Run)

@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at TEXT NOT NULL,
     synthetic INTEGER NOT NULL DEFAULT 1,
     interception_coverage TEXT NOT NULL,
-    reasoning_availability TEXT NOT NULL
+    reasoning_availability TEXT NOT NULL,
+    prompt_version TEXT
 );
 
 CREATE TABLE IF NOT EXISTS action_requests (
@@ -175,6 +176,11 @@ def init_db(db_path: Path | str) -> None:
         decision_cols = {row["name"] for row in cur.fetchall()}
         if decision_cols and "reasoning_audit_id" not in decision_cols:
             conn.execute("ALTER TABLE policy_decisions ADD COLUMN reasoning_audit_id TEXT")
+
+        cur = conn.execute("PRAGMA table_info(runs)")
+        run_cols = {row["name"] for row in cur.fetchall()}
+        if run_cols and "prompt_version" not in run_cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN prompt_version TEXT")
 
         cur = conn.execute("SELECT version FROM schema_version WHERE version = 1")
         if cur.fetchone() is None:
