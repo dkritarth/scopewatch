@@ -39,7 +39,8 @@ PYTHONPATH=backend python3 -m uvicorn scopewatch.app:create_app --factory \
 ```
 
 Then open `http://127.0.0.1:8000/?live=1`. Without `?live=1` (and when not
-served from port 8000) the dashboard stays in static replay mode. The header
+served from port 8000) the dashboard stays in static replay mode; `?live=0`
+(or `false`, `off`, `no`) forces static mode even on port 8000. The header
 status pill shows `Live gateway connected`, `Reconnecting live stream…`,
 `Gateway polling fallback`, or `Live stream stale`; reconnecting/stale states
 also raise a text banner (`#sse-banner`) with a `Retry live stream` button.
