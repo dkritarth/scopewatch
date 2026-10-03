@@ -45,6 +45,7 @@ from scopewatch.models import (
     ReasonCode,
     ReasoningProvenance,
     RunStatus,
+    get_policy_version,
 )
 from scopewatch.policy import evaluate_policy
 from scopewatch.provenance import (
@@ -88,6 +89,44 @@ def _audit_error_code(exc: BaseException) -> str:
     if isinstance(code, str) and code:
         return code
     return AuditErrorCode.AUDIT_ERROR.value
+
+
+def _approval_policy_evidence(
+    decision: Optional[PolicyDecision],
+    reason: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build the policy-identity details recorded when an approval resolves.
+
+    Issue #119 defines what an approval means when the policy has moved on.
+    An approval authorizes *one stored decision for one exact action*, and is
+    consumed once. The decision it resolves is append-only, so the reviewer
+    approved the outcome of a specific policy revision. Re-evaluating that
+    action under the live revision at resolution time would silently
+    reinterpret what the reviewer saw -- and could turn a granted approval
+    into a denial (or the reverse) with no human in the loop. So the approval
+    keeps its evaluated identity and any drift is recorded explicitly:
+
+    * ``policy_version``: the revision that evaluated the action, read from
+      the stored decision. ``None`` for a decision recorded before versions
+      existed, which stays visibly unknown.
+    * ``policy_version_current`` / ``policy_version_changed``: present only
+      when the running revision differs from the evaluated one, so ordinary
+      approvals carry no extra keys and drift can never be silent.
+
+    This is a statement about evidence, not a relaxation: the approval stays
+    bound to its single stored decision, cannot be reused, and still cannot
+    override a deterministic ``DENY``.
+    """
+    details: dict[str, Any] = {"reason": reason}
+    evaluated = decision.policy_version if decision else None
+    details["policy_version"] = evaluated
+    if decision is not None:
+        details["policy_decision_id"] = decision.id
+    current = get_policy_version()
+    if evaluated is not None and evaluated != current:
+        details["policy_version_current"] = current
+        details["policy_version_changed"] = True
+    return details
 
 
 class ScopewatchService:
@@ -557,6 +596,13 @@ class ScopewatchService:
             # Invariant: Deterministic policy first!
             decision = evaluate_policy(action, run, self.workspace_root)
 
+            # Identity of the deterministic revision that evaluated this
+            # action (#119). Escalation below merges model output into the
+            # policy's decision without re-running the engine, so the
+            # escalated decision carries this same identity rather than a
+            # freshly read "current" version.
+            evaluated_policy_version = decision.policy_version
+
             # Feature flag check
             reasoning_audit_enabled = os.environ.get(
                 "SCOPEWATCH_REASONING_AUDIT", "on"
@@ -707,6 +753,7 @@ class ScopewatchService:
                             decided_at=datetime.now(timezone.utc).isoformat(),
                             deterministic=False,
                             reasoning_audit_id=audit_record.id,
+                            policy_version=evaluated_policy_version,
                         )
                     elif audit_record.verdict == ReasoningAuditVerdict.FAILED.value:
                         # Fail-closed: final decision HOLD with reason_code = ReasonCode.REASONING_AUDIT_FAILED
@@ -720,6 +767,7 @@ class ScopewatchService:
                             decided_at=datetime.now(timezone.utc).isoformat(),
                             deterministic=False,
                             reasoning_audit_id=audit_record.id,
+                            policy_version=evaluated_policy_version,
                         )
                 elif decision.outcome == PolicyOutcome.HOLD:
                     # Policy HOLD -> audit run (or attached if available) -> final decision HOLD (policy's reason code)
@@ -788,6 +836,8 @@ class ScopewatchService:
                     details_allow = {
                         "reason_code": decision.reason_code.value,
                         "matched_rule": decision.matched_rule,
+                        # Issue #119: identity of the evaluated policy revision.
+                        "policy_version": decision.policy_version,
                     }
                     if not audit_record:
                         if not reasoning_audit_enabled:
@@ -833,6 +883,7 @@ class ScopewatchService:
                     details_held = {
                         "reason_code": decision.reason_code.value,
                         "matched_rule": decision.matched_rule,
+                        "policy_version": decision.policy_version,
                         "tool": action.tool,
                         "operation": action.operation,
                         "resource": action.resource,
@@ -885,6 +936,11 @@ class ScopewatchService:
                         status=ApprovalStatus.PENDING,
                         requested_at=now_iso,
                         expires_at=expires_at,
+                        # The evaluated identity travels with the in-memory
+                        # response too, so the API reply and a later re-read
+                        # of the same row agree (#119). It is still derived
+                        # from the stored decision on every read.
+                        policy_version=decision.policy_version,
                     )
                     ScopewatchRepository.create_approval_request(conn, approval_req)
 
@@ -902,6 +958,10 @@ class ScopewatchService:
                         details={
                             "expires_at": expires_at,
                             "reason": decision.explanation,
+                            # Issue #119: bind the request to the evaluated
+                            # policy revision, not just the decision id.
+                            "policy_version": decision.policy_version,
+                            "policy_decision_id": decision.id,
                         },
                     )
                     generated_events.append(ev_app)
@@ -913,6 +973,7 @@ class ScopewatchService:
                     details_deny = {
                         "reason_code": decision.reason_code.value,
                         "matched_rule": decision.matched_rule,
+                        "policy_version": decision.policy_version,
                     }
                     if not reasoning_audit_enabled:
                         details_deny["reasoning_audit"] = "disabled"
@@ -1105,7 +1166,15 @@ class ScopewatchService:
                                 timestamp=now_iso,
                                 action_request_id=app.action_request_id,
                                 approval_request_id=app.id,
-                                details={"expired_at": app.expires_at},
+                                details={
+                                    "expired_at": app.expires_at,
+                                    # The approval is being closed, not
+                                    # granted, but it still names the policy
+                                    # revision that produced the hold (#119).
+                                    "policy_version": ScopewatchRepository.get_policy_version_for_decision(
+                                        conn, app.policy_decision_id
+                                    ),
+                                },
                             )
                             app.status = ApprovalStatus.EXPIRED
                             app.resolved_by = "system"
@@ -1221,7 +1290,12 @@ class ScopewatchService:
                         timestamp=now_iso,
                         action_request_id=approval.action_request_id,
                         approval_request_id=approval_id,
-                        details={"expired_at": approval.expires_at},
+                        details={
+                            "expired_at": approval.expires_at,
+                            # Evaluated identity of the hold this approval
+                            # was bound to (#119); None for a legacy decision.
+                            "policy_version": decision.policy_version,
+                        },
                     )
                     remaining_pending = ScopewatchRepository.list_approvals(
                         conn, status_filter=ApprovalStatus.PENDING, run_id=approval.run_id
@@ -1262,7 +1336,7 @@ class ScopewatchService:
                         timestamp=now_iso,
                         action_request_id=action.id,
                         approval_request_id=approval_id,
-                        details={"reason": reason},
+                        details=_approval_policy_evidence(decision, reason),
                     )
                     generated_events.append(ev_app)
 
@@ -1296,7 +1370,7 @@ class ScopewatchService:
                         timestamp=now_iso,
                         action_request_id=action.id,
                         approval_request_id=approval_id,
-                        details={"reason": reason},
+                        details=_approval_policy_evidence(decision, reason),
                     )
                     generated_events.append(ev_app)
 

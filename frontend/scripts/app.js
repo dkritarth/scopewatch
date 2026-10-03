@@ -652,11 +652,15 @@ function renderEvidence() {
   const polTitle = document.createElement("h4");
   polTitle.className = "evidence-section-title";
   polTitle.textContent = "2. Deterministic policy decision";
-  const polList = evidenceList([
+  const polItems = [
     { label: "Outcome", value: event.policyOutcome || event.statusLabel },
     { label: "Reason code", value: event.reasonCode || "EVALUATED" },
     { label: "Explanation", value: event.policyExplanation || event.statusDescription },
-  ]);
+  ];
+  if (shouldShowPolicyVersion(event.eventType, event.policyVersion)) {
+    polItems.push({ label: "Policy version", value: event.policyVersionLabel });
+  }
+  const polList = evidenceList(polItems);
   polSec.append(polTitle, polList);
 
   // 3. Human Approval
@@ -665,11 +669,18 @@ function renderEvidence() {
   const appTitle = document.createElement("h4");
   appTitle.className = "evidence-section-title";
   appTitle.textContent = "3. Human approval";
-  const appList = evidenceList([
+  const appItems = [
     { label: "Approval status", value: event.approvalStatus || (event.status === "pending-approval" ? "Pending reviewer authorization" : "Not required") },
     { label: "Resolved by", value: event.resolvedBy || "N/A" },
     { label: "Resolution reason", value: event.resolutionReason || "N/A" },
-  ]);
+  ];
+  if (event.policyVersionChanged) {
+    appItems.push({
+      label: "Policy version drift",
+      value: `Approval issued under ${event.policyVersion}; the running revision is ${event.policyVersionCurrent}. The approval was not re-evaluated.`,
+    });
+  }
+  const appList = evidenceList(appItems);
   appSec.append(appTitle, appList);
 
   // 4. Controlled Execution
@@ -1157,6 +1168,43 @@ function render() {
 }
 
 // Convert raw API event to timeline event format
+// Issue #119: the evaluated policy identity on a decision. Pre-version
+// records carry no identity and must stay visibly unknown rather than being
+// shown as whatever revision happens to be deployed now.
+export const LEGACY_POLICY_VERSION_LABEL = "unknown (legacy)";
+export const NOT_APPLICABLE_LABEL = "N/A";
+
+// Event types that record a deterministic policy result, and so are the ones
+// that name a policy revision. Anything else (ACTION_REQUESTED, RUN_CREATED,
+// EXECUTION_* -- which carry no identity of their own) is not applicable.
+export const POLICY_DECISION_EVENT_TYPES = new Set([
+  "POLICY_ALLOWED",
+  "POLICY_HELD",
+  "POLICY_DENIED",
+  "APPROVAL_REQUESTED",
+  "APPROVAL_GRANTED",
+  "APPROVAL_DENIED",
+  "APPROVAL_EXPIRED",
+]);
+
+// Label to show for a policy identity. A missing/blank value on a decision
+// event means the record predates policy-version evidence, so it reads as
+// unknown rather than as the currently deployed revision.
+export function policyVersionLabelFor(eventType, policyVersion) {
+  if (typeof policyVersion === "string" && policyVersion.trim()) return policyVersion;
+  return POLICY_DECISION_EVENT_TYPES.has(eventType)
+    ? LEGACY_POLICY_VERSION_LABEL
+    : NOT_APPLICABLE_LABEL;
+}
+
+// True when a policy-version row is worth showing: the event names a
+// revision, or it is a decision event that predates versioning and must
+// visibly say so. Events with no identity of their own get no row.
+export function shouldShowPolicyVersion(eventType, policyVersion) {
+  if (typeof policyVersion === "string" && policyVersion.trim()) return true;
+  return POLICY_DECISION_EVENT_TYPES.has(eventType);
+}
+
 export function transformApiEvent(ev, context = null) {
   const type = ev.event_type || ev.type || "UNKNOWN";
   const d = ev.details || ev.payload || {};
@@ -1265,6 +1313,16 @@ export function transformApiEvent(ev, context = null) {
     d.reason_code ||
     ev.reason_code ||
     (reasoningAudit?.verdict === "CONCERN" ? "REASONING_SCOPE_CONCERN" : null);
+
+  // Issue #119: identity of the evaluated policy revision, straight from the
+  // stored evidence. Never synthesised locally.
+  const policyVersion =
+    typeof d.policy_version === "string" && d.policy_version.trim()
+      ? d.policy_version
+      : typeof ev.policy_version === "string" && ev.policy_version.trim()
+        ? ev.policy_version
+        : null;
+  const policyVersionLabel = policyVersionLabelFor(type, policyVersion);
 
   let status = "attempted";
   let statusLabel = "Action: attempted";
@@ -1394,6 +1452,9 @@ export function transformApiEvent(ev, context = null) {
   return {
     id: ev.id,
     sequence: ev.sequence,
+    // Raw event type, kept alongside the derived status so the evidence panel
+    // can tell a decision event from one that carries no policy identity.
+    eventType: type,
     isFixture: false,
     offset,
     title,
@@ -1408,6 +1469,14 @@ export function transformApiEvent(ev, context = null) {
     timestamp: ev.timestamp || ev.created_at,
     policyOutcome: d.outcome || null,
     reasonCode,
+    policyVersion,
+    policy_version: policyVersion,
+    policyVersionLabel,
+    // #119: present only when the approval was resolved under a revision
+    // other than the one now running. Surfaced so a reviewer sees that the
+    // approval was honoured on its evaluated decision, not re-evaluated.
+    policyVersionCurrent: d.policy_version_current || null,
+    policyVersionChanged: d.policy_version_changed === true,
     policyExplanation: d.explanation || ev.summary || null,
     approvalStatus:
       d.approval_status ||

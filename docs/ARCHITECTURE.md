@@ -82,6 +82,8 @@ The policy engine (`backend/scopewatch/policy.py`) evaluates candidate actions a
 
 Deterministic policy `DENY` is final. It bypasses the reasoning auditor and cannot be overridden by human approval.
 
+Every decision records the policy identity that produced it, as `policy_version` on the `policy_decisions` row and in the `details` of its `POLICY_*` event (issue #119, [ADR-0003](adr/0003-policy-identity-in-evidence.md)). The value is `"<revision label>+<rule-set fingerprint>"` — for example `2026-10-03.1+3f2a1b9c8d0e` — and is independent of the `schema_version` ("1") that describes the stored data shape. `evaluate_policy` stamps it at the single public entry point of the engine, while `PolicyDecision.policy_version` defaults to `None` so a read of a pre-version row stays visibly `unknown (legacy)` rather than being assigned the revision running today. Nothing backfills old rows, and no environment variable can override the identity. `ApprovalRequest.policy_version` is derived from the bound decision on read rather than stored twice, so the two cannot disagree. When an approval is resolved after the policy has moved on, it is honoured on the decision the reviewer saw and the drift is recorded explicitly on the event as `policy_version_current` / `policy_version_changed`.
+
 ### 3. Escalate-only reasoning auditor
 
 The reasoning auditor (`backend/scopewatch/reasoning_audit.py`) audits agent reasoning traces per turn:
@@ -113,7 +115,7 @@ The frontend (`frontend/`) is a vanilla HTML/CSS/JS dashboard displaying:
 - Real-time SSE event streaming.
 - Five-part evidence panel:
   1. Observation (tool, operation, resource, arguments, timestamp).
-  2. Policy decision (outcome, reason code, matched rule).
+2. Policy decision (outcome, reason code, matched rule, and the evaluated policy version — shown as `unknown (legacy)` for records written before policy versioning).
   3. Reasoning provenance and audit card (verdict, concern type, model, profile, highlighted trace excerpts, and permanent disclaimer: *"Reasoning is evidence, not proof of intent."*). Provenance badges distinguish verified provider traces from agent-authored summaries, synthetic fixtures, and unverified caller assertions (`CALLER_ASSERTED_*`).
   4. Human approval card with single-use action tokens.
   5. Execution receipt with sanitized outputs.
@@ -137,3 +139,4 @@ All tool actions go through the gateway API; actions that bypass the API are not
 | **6. Missing reasoning does not escalate** | Recorded as UNAVAILABLE; policy ALLOW proceeds. | `test_agent_end_to_end.py::test_invariant_6_*` |
 | **7. Monotonic evidence sequence** | Monotonic event sequence; decisions precede execution. | `test_agent_end_to_end.py::test_invariant_7_*` |
 | **8. Agent-executor isolation** | Agent package has zero import path to executor. | `test_agent_end_to_end.py::test_invariant_8_*` |
+| **9. Evidence names its policy** | Every decision stores the evaluated `policy_version`; pre-version rows read as `unknown (legacy)` and are never backfilled; approvals resolve against the identity of their stored decision. | `test_issue_119_policy_version.py::*` |

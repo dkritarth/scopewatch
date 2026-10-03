@@ -70,7 +70,8 @@ CREATE TABLE IF NOT EXISTS policy_decisions (
     matched_rule TEXT NOT NULL,
     decided_at TEXT NOT NULL,
     deterministic INTEGER NOT NULL DEFAULT 1,
-    reasoning_audit_id TEXT
+    reasoning_audit_id TEXT,
+    policy_version TEXT
 );
 
 CREATE TABLE IF NOT EXISTS approval_requests (
@@ -179,6 +180,10 @@ def init_db(db_path: Path | str) -> None:
         decision_cols = {row["name"] for row in cur.fetchall()}
         if decision_cols and "reasoning_audit_id" not in decision_cols:
             conn.execute("ALTER TABLE policy_decisions ADD COLUMN reasoning_audit_id TEXT")
+        # Issue #119: policy identity for new decisions. Existing rows keep
+        # NULL (exposed as "unknown (legacy)"); versions are never backfilled.
+        if decision_cols and "policy_version" not in decision_cols:
+            conn.execute("ALTER TABLE policy_decisions ADD COLUMN policy_version TEXT")
 
         cur = conn.execute("PRAGMA table_info(runs)")
         run_cols = {row["name"] for row in cur.fetchall()}

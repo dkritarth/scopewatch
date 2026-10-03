@@ -1,0 +1,67 @@
+# Docker build context exclusions.
+#
+# All four Dockerfiles build with the repository root as their context:
+#   - backend/executor/Dockerfile        (CI docker-executor job)
+#   - deploy/Dockerfile                  (gateway service)
+#   - deploy/gate/Dockerfile             (gate service)
+#   - deploy/executor-runner/Dockerfile  (runner sidecar, issue #106)
+#
+# Docker sends the entire context to the daemon before running a single
+# COPY. Anything listed here is therefore exposed to the daemon even when
+# no COPY references it. deploy/RUNBOOK.md notes the runner may talk to a
+# remote daemon via DOCKER_HOST, so a local .env holding NEBIUS_API_KEY /
+# OPENROUTER_API_KEY would otherwise cross the wire during `compose build`.
+# AGENTS.md forbids secrets in the repository or logs; this keeps them out
+# of the build context too.
+#
+# Mirrors .gitignore. Every COPY path in the four Dockerfiles stays
+# reachable: backend/, frontend/, demo/scenarios/, scripts/seed_demo.py,
+# deploy/, and backend/requirements.lock.
+# scripts/check_dockerignore.py asserts both properties.
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# VCS metadata
+.git
+.gitignore
+.github
+.claude
+.codex
+.gemini
+.agents
+
+# Dependencies and generated output
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+.next/
+coverage/
+.pytest_cache/
+
+# Private runtime artifacts
+traces/
+logs/
+*.log
+runtime-data/
+*.sqlite3
+*.db
+
+# Local editor and OS state
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Not needed inside any image (docs, spikes, local scratch)
+docs/
+poc/
+*.md

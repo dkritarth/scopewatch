@@ -352,8 +352,9 @@ class ScopewatchRepository:
             """
             INSERT INTO policy_decisions (
                 id, action_request_id, outcome, reason_code, explanation,
-                matched_rule, decided_at, deterministic, reasoning_audit_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                matched_rule, decided_at, deterministic, reasoning_audit_id,
+                policy_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 decision.id,
@@ -365,9 +366,50 @@ class ScopewatchRepository:
                 decision.decided_at,
                 int(decision.deterministic),
                 decision.reasoning_audit_id,
+                decision.policy_version,
             ),
         )
         return decision
+
+    @staticmethod
+    def get_policy_decision(
+        conn: sqlite3.Connection, decision_id: str
+    ) -> Optional[PolicyDecision]:
+        """Fetch a decision by its id; None when missing.
+
+        A row written before policy-version tracking keeps ``policy_version``
+        as ``None``, so callers label it "unknown (legacy)" instead of
+        assigning the current revision to a past decision.
+        """
+        cur = conn.execute("SELECT * FROM policy_decisions WHERE id = ?", (decision_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return ScopewatchRepository._decision_from_row(row)
+
+    @staticmethod
+    def get_policy_version_for_decision(
+        conn: sqlite3.Connection, decision_id: str
+    ) -> Optional[str]:
+        """Return the stored policy identity for a decision, or None.
+
+        Reads the single column rather than rebuilding the whole decision, so
+        a caller that only needs the identity cannot be derailed by an
+        unrelated malformed field. None covers three honest cases: the
+        decision does not exist, it predates policy-version tracking, or the
+        database has not been migrated yet. None is never replaced by the
+        current revision.
+        """
+        try:
+            row = conn.execute(
+                "SELECT policy_version FROM policy_decisions WHERE id = ?", (decision_id,)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            # Database predates the issue #119 migration; treat as unknown.
+            return None
+        if row is None:
+            return None
+        return row["policy_version"]
 
     @staticmethod
     def get_policy_decision_by_action(
@@ -379,6 +421,18 @@ class ScopewatchRepository:
         row = cur.fetchone()
         if not row:
             return None
+        return ScopewatchRepository._decision_from_row(row)
+
+    @staticmethod
+    def _decision_from_row(row: sqlite3.Row) -> PolicyDecision:
+        """Build a PolicyDecision from a ``policy_decisions`` row.
+
+        ``policy_version`` is copied verbatim, including ``None`` for legacy
+        rows: PolicyDecision's default cannot be relied on here, because its
+        default is deliberately "unknown" and a legacy row must not be
+        stamped with the revision that happens to be running today.
+        """
+        keys = row.keys()
         return PolicyDecision(
             id=row["id"],
             action_request_id=row["action_request_id"],
@@ -388,10 +442,55 @@ class ScopewatchRepository:
             matched_rule=row["matched_rule"],
             decided_at=row["decided_at"],
             deterministic=bool(row["deterministic"]),
-            reasoning_audit_id=row["reasoning_audit_id"] if "reasoning_audit_id" in row.keys() else None,
+            reasoning_audit_id=row["reasoning_audit_id"] if "reasoning_audit_id" in keys else None,
+            policy_version=row["policy_version"] if "policy_version" in keys else None,
         )
 
     # ---------------- Approvals ----------------
+
+    #: Columns selected for an approval, joining the action it holds and the
+    #: policy decision that produced the hold. ``policy_version`` is read from
+    #: the decision rather than stored on the approval: an approval authorizes
+    #: exactly one stored decision, so that row stays the single source of
+    #: truth and the two can never disagree. LEFT JOINs keep an approval
+    #: visible even if its action or decision row is missing.
+    _APPROVAL_SELECT = """
+        SELECT ar.*, a.operation, a.resource, a.tool, d.policy_version AS decision_policy_version
+        FROM approval_requests ar
+        LEFT JOIN action_requests a ON ar.action_request_id = a.id
+        LEFT JOIN policy_decisions d ON ar.policy_decision_id = d.id
+    """
+
+    @staticmethod
+    def _approval_from_row(row: sqlite3.Row) -> ApprovalRequest:
+        """Build an ApprovalRequest from an ``_APPROVAL_SELECT`` row.
+
+        ``policy_version`` is the evaluated identity of the bound decision,
+        or ``None`` when that decision predates policy-version tracking. It is
+        never replaced by the revision running now.
+        """
+        keys = row.keys()
+        return ApprovalRequest(
+            id=row["id"],
+            run_id=row["run_id"],
+            action_request_id=row["action_request_id"],
+            policy_decision_id=row["policy_decision_id"],
+            status=ApprovalStatus(row["status"]),
+            requested_at=row["requested_at"],
+            expires_at=row["expires_at"],
+            resolved_at=row["resolved_at"],
+            resolved_by=row["resolved_by"],
+            resolution_reason=row["resolution_reason"],
+            approval_token_version=row["approval_token_version"],
+            operation=row["operation"] if "operation" in keys else None,
+            resource=row["resource"] if "resource" in keys else None,
+            tool=row["tool"] if "tool" in keys else None,
+            policy_version=(
+                row["decision_policy_version"]
+                if "decision_policy_version" in keys
+                else None
+            ),
+        )
 
     @staticmethod
     def create_approval_request(
@@ -436,67 +535,27 @@ class ScopewatchRepository:
         conn: sqlite3.Connection, approval_id: str
     ) -> Optional[ApprovalRequest]:
         cur = conn.execute(
-            """
-            SELECT ar.*, a.operation, a.resource, a.tool
-            FROM approval_requests ar
-            JOIN action_requests a ON ar.action_request_id = a.id
-            WHERE ar.id = ?
-            """,
+            ScopewatchRepository._APPROVAL_SELECT + " WHERE ar.id = ?",
             (approval_id,),
         )
         row = cur.fetchone()
         if not row:
             return None
-        return ApprovalRequest(
-            id=row["id"],
-            run_id=row["run_id"],
-            action_request_id=row["action_request_id"],
-            policy_decision_id=row["policy_decision_id"],
-            status=ApprovalStatus(row["status"]),
-            requested_at=row["requested_at"],
-            expires_at=row["expires_at"],
-            resolved_at=row["resolved_at"],
-            resolved_by=row["resolved_by"],
-            resolution_reason=row["resolution_reason"],
-            approval_token_version=row["approval_token_version"],
-            operation=row["operation"] if "operation" in row.keys() else None,
-            resource=row["resource"] if "resource" in row.keys() else None,
-            tool=row["tool"] if "tool" in row.keys() else None,
-        )
+        return ScopewatchRepository._approval_from_row(row)
 
     @staticmethod
     def get_approval_by_action(
         conn: sqlite3.Connection, action_id: str
     ) -> Optional[ApprovalRequest]:
         cur = conn.execute(
-            """
-            SELECT ar.*, a.operation, a.resource, a.tool
-            FROM approval_requests ar
-            JOIN action_requests a ON ar.action_request_id = a.id
-            WHERE ar.action_request_id = ?
-            ORDER BY ar.requested_at DESC LIMIT 1
-            """,
+            ScopewatchRepository._APPROVAL_SELECT + " WHERE ar.action_request_id = ?"
+            " ORDER BY ar.requested_at DESC LIMIT 1",
             (action_id,),
         )
         row = cur.fetchone()
         if not row:
             return None
-        return ApprovalRequest(
-            id=row["id"],
-            run_id=row["run_id"],
-            action_request_id=row["action_request_id"],
-            policy_decision_id=row["policy_decision_id"],
-            status=ApprovalStatus(row["status"]),
-            requested_at=row["requested_at"],
-            expires_at=row["expires_at"],
-            resolved_at=row["resolved_at"],
-            resolved_by=row["resolved_by"],
-            resolution_reason=row["resolution_reason"],
-            approval_token_version=row["approval_token_version"],
-            operation=row["operation"] if "operation" in row.keys() else None,
-            resource=row["resource"] if "resource" in row.keys() else None,
-            tool=row["tool"] if "tool" in row.keys() else None,
-        )
+        return ScopewatchRepository._approval_from_row(row)
 
     @staticmethod
     def list_approvals(
@@ -505,12 +564,7 @@ class ScopewatchRepository:
         run_id: Optional[str] = None,
         status_filter: Optional[ApprovalStatus] = None,
     ) -> list[ApprovalRequest]:
-        query = """
-            SELECT ar.*, a.operation, a.resource, a.tool
-            FROM approval_requests ar
-            LEFT JOIN action_requests a ON ar.action_request_id = a.id
-            WHERE 1=1
-        """
+        query = ScopewatchRepository._APPROVAL_SELECT + " WHERE 1=1"
         eff_status = status_filter if status_filter is not None else status
         params: list[Any] = []
         if eff_status is not None:
@@ -521,27 +575,7 @@ class ScopewatchRepository:
             params.append(run_id)
         query += " ORDER BY ar.requested_at DESC"
         cur = conn.execute(query, params)
-        approvals = []
-        for row in cur.fetchall():
-            approvals.append(
-                ApprovalRequest(
-                    id=row["id"],
-                    run_id=row["run_id"],
-                    action_request_id=row["action_request_id"],
-                    policy_decision_id=row["policy_decision_id"],
-                    status=ApprovalStatus(row["status"]),
-                    requested_at=row["requested_at"],
-                    expires_at=row["expires_at"],
-                    resolved_at=row["resolved_at"],
-                    resolved_by=row["resolved_by"],
-                    resolution_reason=row["resolution_reason"],
-                    approval_token_version=row["approval_token_version"],
-                    operation=row["operation"] if "operation" in row.keys() else None,
-                    resource=row["resource"] if "resource" in row.keys() else None,
-                    tool=row["tool"] if "tool" in row.keys() else None,
-                )
-            )
-        return approvals
+        return [ScopewatchRepository._approval_from_row(row) for row in cur.fetchall()]
 
     @staticmethod
     def resolve_approval(
