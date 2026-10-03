@@ -9,7 +9,10 @@ tokens or keys.
 > and forwards `X-Demo-Token` over the private Compose network. The gateway
 > validates the same token again and applies its native guards and token
 > metering. Other deployments may omit the sidecar and use these gateway
-> controls directly.
+> controls directly. Since #107 both layers refuse in the same flat
+> `{"error": "<code>", "message": "..."}` envelope; their numerics still
+> differ, so treat them as one policy only for the envelope. The gate is
+> published on `127.0.0.1:8080` for the operator's own runbook checks.
 
 ## Demo mode (#76)
 
@@ -28,6 +31,19 @@ behaves exactly as before (local development and tests).
 Fail-closed: a malformed `DEMO_*` numeric refuses new runs/actions with
 `503 {"error": "demo_guard_misconfigured"}` while health and reads stay up.
 Guard denials never echo tokens, keys, prompts, traces, or provider bodies.
+
+### Discovery and the reviewer dashboard
+
+`GET /api/v1/health` is a public read and reports `demo_mode: true` when
+`DEMO_TOKEN` is set. It never carries the token or anything derived from it.
+The reviewer dashboard uses that flag to offer its **Reviewer access** panel
+only where a token is actually required (#115): the panel appears when
+`demo_mode` is true, and again after the first `401`/`503` on a mutation, in
+case the flag is missing from an older deployment. A local gateway without
+`DEMO_TOKEN` reports `demo_mode: false` and shows no panel. The dashboard
+holds the pasted token in memory for the page load only, writes it to no
+browser storage, and sends it as `X-Demo-Token` on mutating `/api/*` requests
+only. See `frontend/README.md` for the client-side contract.
 
 ### Curl examples
 

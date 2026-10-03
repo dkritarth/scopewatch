@@ -7,8 +7,12 @@
 #   the forwarded demo token and applies its native guards. Caddy stays dumb:
 #   TLS + compression + proxy.
 # - Caddy adds X-Forwarded-For automatically; the gate trusts its first
-#   entry for per-IP rate limiting (gate only listens on the internal
-#   `public` compose network, so clients cannot spoof it past Caddy).
+#   entry for per-IP rate limiting. On the public internet that is sound
+#   because the only reachable copy of the gate is the one behind Caddy: the
+#   host publishes it on 127.0.0.1 only (#107), for the operator's own
+#   runbook verify commands, and `127.0.0.1:` is not routable from outside
+#   the VM. Anything running ON the VM can reach :8080 directly and spoof
+#   that header, which is acceptable because it already owns the host.
 {
 	# Keep the admin API off the network (default listens on :2019).
 	admin off

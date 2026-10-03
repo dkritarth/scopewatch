@@ -6,7 +6,9 @@ import {
   NOT_APPLICABLE_LABEL,
   POLICY_DECISION_EVENT_TYPES,
   PROVENANCE_LABELS,
+  REVIEWER_ACCESS_COPY,
   approvalConfirmStep,
+  authFailureHint,
   getHoldIcon,
   getHoldKind,
   getProvenanceLabel,
@@ -17,6 +19,7 @@ import {
   policyVersionLabelFor,
   renderHighlightedText,
   renderPanelStatus,
+  reviewerAccessState,
   safeTransformApiEvent,
   shouldShowPolicyVersion,
   transformApiEvent,
@@ -735,4 +738,38 @@ test("an attacker-controlled version stays inert data (#119)", () => {
   );
   assert.equal(typeof res.policyVersion, "string");
   assert.equal(res.policyVersionLabel, "<img src=x onerror=alert(1)>");
+});
+
+test("reviewer access state reports the credential without revealing it (#115)", () => {
+  assert.equal(reviewerAccessState(false), REVIEWER_ACCESS_COPY.noToken);
+  assert.equal(reviewerAccessState(true), REVIEWER_ACCESS_COPY.tokenSet);
+  // The state line must say which mutation classes are affected, and must not
+  // read as if reads were blocked.
+  assert.match(REVIEWER_ACCESS_COPY.noToken, /mutating actions are refused/i);
+  assert.match(REVIEWER_ACCESS_COPY.noToken, /[Rr]eading runs, events, and evidence still works/);
+  assert.match(REVIEWER_ACCESS_COPY.tokenSet, /in memory for this page only/i);
+});
+
+test("authFailureHint points a refused mutation at the reviewer token panel (#115)", () => {
+  const denied = new Error("Demo access token required.");
+  denied.status = 401;
+  const hint = authFailureHint(denied);
+  assert.match(hint, /Reviewer access/);
+  assert.match(hint, /reviewer token/i);
+
+  // Gate misconfiguration (503) is the other auth-shaped refusal.
+  const misconfigured = new Error("Demo access is not configured on this host.");
+  misconfigured.status = 503;
+  assert.match(authFailureHint(misconfigured), /Reviewer access/);
+
+  // Ordinary failures keep their original copy: no auth speculation.
+  const other = new Error("Gateway is temporarily unreachable.");
+  other.status = 502;
+  assert.equal(authFailureHint(other), "");
+  assert.equal(authFailureHint(null), "");
+
+  // The hint never restates or leaks a token value.
+  const withTokenText = new Error("Demo access token required.");
+  withTokenText.status = 401;
+  assert.ok(!authFailureHint(withTokenText).includes("judge-token"));
 });

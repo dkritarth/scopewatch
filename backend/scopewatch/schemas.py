@@ -236,3 +236,7 @@ class HealthResponse(BaseModel):
     status: str
     database: str
     version: str
+    # True when demo guards are engaged (DEMO_TOKEN set). Public, non-secret:
+    # the dashboard uses it to offer the reviewer-token control only where a
+    # token is actually required (#115). Never carries the token itself.
+    demo_mode: bool = False

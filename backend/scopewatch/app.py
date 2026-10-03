@@ -155,7 +155,12 @@ def create_app(
             conn.close()
         except Exception:
             db_status = "error"
-        return HealthResponse(status="ok", database=db_status, version=__version__)
+        return HealthResponse(
+            status="ok",
+            database=db_status,
+            version=__version__,
+            demo_mode=guards.config.enabled,
+        )
 
     # ---------------- Demo Reset ----------------
 

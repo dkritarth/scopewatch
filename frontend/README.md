@@ -47,6 +47,38 @@ also raise a text banner (`#sse-banner`) with a `Retry live stream` button.
 Approvals resolve exactly once: the first click arms (`Confirm approve` /
 `Confirm deny`), the second fires, and both buttons lock while pending.
 
+## Reviewer access on the hosted demo (issue #115)
+
+A hosted demo gateway runs with `DEMO_TOKEN` set, so the gateway's demo guards
+require `X-Demo-Token` on every mutating `/api/*` call: submitting a simulated
+action, resolving an approval, creating a run. Reads (dashboard loads, run and
+event reads, health, live streams) stay public on purpose.
+
+The dashboard exposes a **Reviewer access** panel for that credential:
+
+- It is revealed when `GET /api/v1/health` reports `demo_mode: true`, and also
+  the first time a mutation comes back `401`/`503`, so a judge never has to
+  guess. A local gateway without `DEMO_TOKEN` never shows it, because no token
+  is required there.
+- The token is held **in memory only** for the page load. It is never written
+  to `localStorage`, `sessionStorage`, or a cookie, never put in a URL or query
+  string, never rendered back into the form, and never logged. `Forget token`
+  drops it; a reload drops it too. On a shared judging machine that is the
+  point: nothing survives the tab.
+- `scripts/api.js` attaches it as the `X-Demo-Token` header **only** on
+  mutating `/api/*` requests (`isMutatingRequest` mirrors
+  `backend/scopewatch/demo_guards.py` `is_mutating_api_call`). Reads never
+  carry it, and a header the caller sets explicitly is never overwritten.
+- Refusals keep the server's own message and add one sentence naming the
+  panel (`authFailureHint`); the token value is never echoed back.
+
+Browser coverage lives in `tests/browser/demo-auth.test.js`: it runs a real
+gateway in demo mode, asserts the panel appears, that an unauthenticated submit
+is refused with the panel named, that the authenticated retry carries the header
+while reads do not, that nothing is persisted, and that a non-demo gateway shows
+no panel and needs no token. It does **not** exercise the `deploy/gate` sidecar
+or Caddy; that path is verified by hand on a deployed VM.
+
 ## SSE contract
 
 - Stream: `GET /api/v1/runs/{run_id}/events/stream` (event names are the
@@ -93,10 +125,12 @@ Approvals resolve exactly once: the first click arms (`Confirm approve` /
 
 `npm test` uses `node:test` for filters, selection reconciliation, reset defaults,
 run isolation, fixture provenance, SSE reconnect/backoff math, malformed-frame
-tolerance, approve/deny double-confirm steps, panel status copy, and XSS-safe
-rendering (44 tests). CSS includes narrow-screen layouts down to 360px, visible
-focus indicators, reduced-motion support, and light/dark palettes. Controls use native
-buttons, labels, semantic lists, a skip link, and polite result-count status regions.
+tolerance, approve/deny double-confirm steps, panel status copy, the reviewer
+credential rules (header scope, memory-only storage, error-envelope parsing), and
+XSS-safe rendering (58 tests). CSS includes narrow-screen layouts down to 360px,
+visible focus indicators, reduced-motion support, and light/dark palettes. Controls
+use native buttons, labels, semantic lists, a skip link, and polite result-count
+status regions.
 
 Run the same isolated Chromium smoke test used in CI:
 
@@ -113,7 +147,8 @@ server and browser on success or failure. Tests cover every fixture event, keybo
 intersecting filters, empty evidence, reset, run isolation, and light/dark layouts at
 320, 390, 768, and 1440px, plus escalated-hold approve/deny with double-confirm,
 a 360px usability pass, SSE polling-fallback banner, malformed-frame tolerance, and
-real-gateway hold approve/deny with disabled-while-pending (10 browser tests).
+real-gateway hold approve/deny with disabled-while-pending, and the hosted-demo
+reviewer-credential flow against a real demo-mode gateway (13 browser tests).
 Screen-reader behavior, zoom, and non-Chromium browsers remain
 unverified. Unit tests alone do not verify rendering.
 
@@ -121,8 +156,8 @@ unverified. Unit tests alone do not verify rendering.
 
 ```sh
 cd frontend
-npm test              # 44 unit tests (node --test)
-npm run test:browser  # 10 Playwright tests (needs: npm ci; npx playwright install chromium)
+npm test              # 58 unit tests (node --test)
+npm run test:browser  # 13 Playwright tests (needs: npm ci; npx playwright install chromium)
 ```
 
 From the repository root, `./scripts/validate.sh --quick` runs the full
