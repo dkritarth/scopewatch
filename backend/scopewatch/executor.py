@@ -8,6 +8,7 @@ backend selected by ``SCOPEWATCH_EXECUTOR=local|docker|remote``
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import sqlite3
 from typing import Any, Optional
 import uuid
 
@@ -46,9 +47,20 @@ def _verify_workspace_containment(workspace_root: Path, target_path: Path) -> Pa
     return resolved_target
 
 
+def _resolve_connection(
+    store: Path | str | sqlite3.Connection,
+) -> tuple[sqlite3.Connection, bool]:
+    """Return (conn, should_close). Does not close borrowed active connections."""
+    from scopewatch.db import get_connection
+
+    if isinstance(store, sqlite3.Connection):
+        return store, False
+    return get_connection(store), True
+
+
 def _verify_stored_run_not_terminal(
     action: ActionRequest,
-    db_path: Path | str,
+    db_path: Path | str | sqlite3.Connection,
 ) -> None:
     """Refuse execution when the stored run is terminal or unknown.
 
@@ -57,11 +69,10 @@ def _verify_stored_run_not_terminal(
     run lifecycle itself. Any store failure fails closed. Messages are
     static so no stored content leaks into errors.
     """
-    from scopewatch.db import get_connection
     from scopewatch.repository import ScopewatchRepository
 
     try:
-        conn = get_connection(db_path)
+        conn, should_close = _resolve_connection(db_path)
     except Exception as exc:
         raise ExecutionSecurityError(
             "Stored run authorization is unavailable; failing closed."
@@ -83,13 +94,14 @@ def _verify_stored_run_not_terminal(
             "Stored run authorization could not be verified; failing closed."
         ) from exc
     finally:
-        conn.close()
+        if should_close:
+            conn.close()
 
 
 def _verify_stored_approval_single_use(
     action: ActionRequest,
     approval_request: ApprovalRequest,
-    db_path: Path | str,
+    db_path: Path | str | sqlite3.Connection,
 ) -> None:
     """Enforce verifiable single-use against the stored authorization.
 
@@ -99,12 +111,11 @@ def _verify_stored_approval_single_use(
     may already exist for the action. Any violation or store failure fails
     closed with a static message.
     """
-    from scopewatch.db import get_connection
     from scopewatch.repository import ScopewatchRepository
 
     _verify_stored_run_not_terminal(action, db_path)
     try:
-        conn = get_connection(db_path)
+        conn, should_close = _resolve_connection(db_path)
     except Exception as exc:
         raise ExecutionSecurityError(
             "Stored approval authorization is unavailable; failing closed."
@@ -131,7 +142,8 @@ def _verify_stored_approval_single_use(
             "Stored approval authorization could not be verified; failing closed."
         ) from exc
     finally:
-        conn.close()
+        if should_close:
+            conn.close()
 def _verify_scoped_target(
     workspace_root: Path, resource: str, task_scope: Optional[TaskScope],
     *, require_allowed: bool = True,
@@ -157,7 +169,7 @@ def _execute_local(
     workspace_root: Path,
     policy_decision: Optional[PolicyDecision] = None,
     approval_request: Optional[ApprovalRequest] = None,
-    db_path: Optional[Path | str] = None,
+    db_path: Optional[Path | str | sqlite3.Connection] = None,
     task_scope: Optional[TaskScope] = None,
 ) -> ExecutionReceipt:
     """Execute an authorized action inside the synthetic workspace (local backend)."""
@@ -401,7 +413,7 @@ def execute_action(
     workspace_root: Path,
     policy_decision: Optional[PolicyDecision] = None,
     approval_request: Optional[ApprovalRequest] = None,
-    db_path: Optional[Path | str] = None,
+    db_path: Optional[Path | str | sqlite3.Connection] = None,
     task_scope: Optional[TaskScope] = None,
 ) -> ExecutionReceipt:
     """Single gateway entry point; dispatches to the configured backend.
