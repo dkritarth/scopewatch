@@ -249,19 +249,60 @@ class ScopewatchRepository:
 
     @staticmethod
     def get_reasoning_audit_by_turn(
-        conn: sqlite3.Connection, run_id: str, turn_id: str, trace_hash: str
+        conn: sqlite3.Connection,
+        run_id: str,
+        turn_id: str,
+        trace_hash: str,
+        tool: Optional[str] = None,
+        operation: Optional[str] = None,
+        resource: Optional[str] = None,
+        arguments: Optional[dict[str, Any]] = None,
     ) -> Optional[ReasoningAuditRecord]:
-        cur = conn.execute(
-            """
-            SELECT * FROM reasoning_audits
-            WHERE run_id = ? AND turn_id = ? AND trace_hash = ?
-            ORDER BY audited_at DESC LIMIT 1
-            """,
-            (run_id, turn_id, trace_hash),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
+        """Fetch cached reasoning audit for turn and trace.
+
+        If tool/operation/resource/arguments are provided (issue #111),
+        verifies that the audit actually examined the same planned action
+        rather than reusing a verdict across distinct unseen actions.
+        """
+        if tool is not None and operation is not None and resource is not None:
+            cur = conn.execute(
+                """
+                SELECT ra.*, ar.tool, ar.operation, ar.resource, ar.arguments_json
+                FROM reasoning_audits ra
+                JOIN action_requests ar ON ar.reasoning_audit_id = ra.id
+                WHERE ra.run_id = ? AND ra.turn_id = ? AND ra.trace_hash = ?
+                ORDER BY ra.audited_at DESC
+                """,
+                (run_id, turn_id, trace_hash),
+            )
+            rows = cur.fetchall()
+            matching_row = None
+            target_args = arguments or {}
+            for r in rows:
+                if r["tool"] == tool and r["operation"] == operation and r["resource"] == resource:
+                    try:
+                        parsed_args = json.loads(r["arguments_json"])
+                    except Exception:
+                        parsed_args = {}
+                    if parsed_args == target_args:
+                        matching_row = r
+                        break
+            if not matching_row:
+                return None
+            row = matching_row
+        else:
+            cur = conn.execute(
+                """
+                SELECT * FROM reasoning_audits
+                WHERE run_id = ? AND turn_id = ? AND trace_hash = ?
+                ORDER BY audited_at DESC LIMIT 1
+                """,
+                (run_id, turn_id, trace_hash),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+
         return ReasoningAuditRecord(
             id=row["id"],
             run_id=row["run_id"],

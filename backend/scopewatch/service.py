@@ -520,9 +520,16 @@ class ScopewatchService:
             if decision.outcome != PolicyOutcome.DENY and reasoning_audit_enabled and trace_text:
                 trace_hash = hashlib.sha256(trace_text.encode("utf-8")).hexdigest()
 
-                # Check cache per (run_id, turn_id, sha256(trace))
+                # Check cache per (run_id, turn_id, sha256(trace)) and action identity (#111)
                 cached_audit = ScopewatchRepository.get_reasoning_audit_by_turn(
-                    conn, run_id, effective_turn_id, trace_hash
+                    conn,
+                    run_id,
+                    effective_turn_id,
+                    trace_hash,
+                    tool=action.tool,
+                    operation=action.operation,
+                    resource=action.resource,
+                    arguments=action.arguments,
                 )
                 if cached_audit:
                     audit_record = cached_audit
@@ -655,8 +662,18 @@ class ScopewatchService:
             approval_req: Optional[ApprovalRequest] = None
             receipt: Optional[ExecutionReceipt] = None
             generated_events: list[EvidenceEvent] = []
+            exec_started: Optional[str] = None
 
+            # Phase 1: Re-check run lifecycle under lock and commit intent/decision BEFORE execution (#109, #110)
             with db_transaction(conn):
+                fresh_run = ScopewatchRepository.get_run(conn, run_id)
+                if not fresh_run or fresh_run.status in (RunStatus.COMPLETED, RunStatus.FAILED):
+                    raise ScopewatchAPIError(
+                        code="RUN_NOT_ACTIVE",
+                        message=f"Cannot submit action: run is in terminal status {fresh_run.status.value if fresh_run else 'MISSING'}.",
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    )
+
                 if audit_record and not ScopewatchRepository.get_reasoning_audit(conn, audit_record.id):
                     ScopewatchRepository.create_reasoning_audit(conn, audit_record)
 
@@ -729,7 +746,7 @@ class ScopewatchService:
                     )
                     generated_events.append(ev_pol)
 
-                    # Execute action
+                    # Persist EXECUTION_STARTED before actual dispatch
                     exec_started = datetime.now(timezone.utc).isoformat()
                     ev_start = ScopewatchRepository.append_event(
                         conn,
@@ -743,38 +760,6 @@ class ScopewatchService:
                         details={"resource": action.resource},
                     )
                     generated_events.append(ev_start)
-
-                    receipt = execute_action(
-                        action,
-                        self.workspace_root,
-                        policy_decision=decision,
-                        db_path=conn,
-                        task_scope=run.task_scope,
-                    )
-                    ScopewatchRepository.create_execution_receipt(conn, receipt)
-
-                    success = receipt.status == ExecutionStatus.EXECUTED
-                    ev_end = ScopewatchRepository.append_event(
-                        conn,
-                        run_id=run_id,
-                        event_type=EventType.EXECUTION_SUCCEEDED if success else EventType.EXECUTION_FAILED,
-                        actor="synthetic-workspace-executor",
-                        summary=(
-                            f"Successfully executed {action.operation} on '{action.resource}'."
-                            if success
-                            else f"Failed execution of {action.operation}: {receipt.error_code}"
-                        ),
-                        timestamp=receipt.completed_at,
-                        action_request_id=action.id,
-                        execution_receipt_id=receipt.id,
-                        turn_id=action.turn_id,
-                        details={
-                            "status": receipt.status.value,
-                            "result": receipt.sanitized_result,
-                            "error_code": receipt.error_code,
-                        },
-                    )
-                    generated_events.append(ev_end)
 
                 elif decision.outcome == PolicyOutcome.HOLD:
                     actor_name = "deterministic-policy" if decision.deterministic else "reasoning-escalation"
@@ -880,6 +865,79 @@ class ScopewatchService:
                         operation=action.operation,
                     )
                     ScopewatchRepository.create_execution_receipt(conn, receipt)
+
+            # Phase 2: Action dispatch for ALLOW outcome (evidence committed before effect #109)
+            if decision.outcome == PolicyOutcome.ALLOW:
+                try:
+                    receipt = execute_action(
+                        action,
+                        self.workspace_root,
+                        policy_decision=decision,
+                        db_path=conn,
+                        task_scope=fresh_run.task_scope,
+                    )
+                except Exception as exc:
+                    failed_at = datetime.now(timezone.utc).isoformat()
+                    err_code = getattr(exc, "code", "EXECUTION_ERROR")
+                    receipt = ExecutionReceipt(
+                        id=str(uuid.uuid4()),
+                        action_request_id=action.id,
+                        status=ExecutionStatus.FAILED,
+                        started_at=exec_started or failed_at,
+                        completed_at=failed_at,
+                        executor="synthetic-workspace-executor",
+                        sanitized_result={"error": str(exc)},
+                        error_code=err_code,
+                        resource=action.resource,
+                        operation=action.operation,
+                    )
+                    with db_transaction(conn):
+                        ScopewatchRepository.create_execution_receipt(conn, receipt)
+                        ev_fail = ScopewatchRepository.append_event(
+                            conn,
+                            run_id=run_id,
+                            event_type=EventType.EXECUTION_FAILED,
+                            actor="synthetic-workspace-executor",
+                            summary=f"Failed execution of {action.operation}: {receipt.error_code}",
+                            timestamp=failed_at,
+                            action_request_id=action.id,
+                            execution_receipt_id=receipt.id,
+                            turn_id=action.turn_id,
+                            details={
+                                "status": receipt.status.value,
+                                "result": receipt.sanitized_result,
+                                "error_code": receipt.error_code,
+                            },
+                        )
+                        generated_events.append(ev_fail)
+                    for ev in generated_events:
+                        broadcaster.publish_sync(run_id, ev)
+                    raise
+
+                with db_transaction(conn):
+                    ScopewatchRepository.create_execution_receipt(conn, receipt)
+                    success = receipt.status == ExecutionStatus.EXECUTED
+                    ev_end = ScopewatchRepository.append_event(
+                        conn,
+                        run_id=run_id,
+                        event_type=EventType.EXECUTION_SUCCEEDED if success else EventType.EXECUTION_FAILED,
+                        actor="synthetic-workspace-executor",
+                        summary=(
+                            f"Successfully executed {action.operation} on '{action.resource}'."
+                            if success
+                            else f"Failed execution of {action.operation}: {receipt.error_code}"
+                        ),
+                        timestamp=receipt.completed_at,
+                        action_request_id=action.id,
+                        execution_receipt_id=receipt.id,
+                        turn_id=action.turn_id,
+                        details={
+                            "status": receipt.status.value,
+                            "result": receipt.sanitized_result,
+                            "error_code": receipt.error_code,
+                        },
+                    )
+                    generated_events.append(ev_end)
 
             # Broadcast generated events to live SSE subscribers
             for ev in generated_events:
@@ -1097,6 +1155,10 @@ class ScopewatchService:
             receipt: Optional[ExecutionReceipt] = None
             generated_events: list[EvidenceEvent] = []
 
+            updated_approval: Optional[ApprovalRequest] = None
+            exec_started: Optional[str] = None
+
+            # Phase 1: Re-verify run status and commit approval & start of execution before dispatch (#109)
             with db_transaction(conn):
                 require_resolvable_run()
                 if approve:
@@ -1121,7 +1183,6 @@ class ScopewatchService:
                     )
                     generated_events.append(ev_app)
 
-                    # Execute approved action
                     exec_started = datetime.now(timezone.utc).isoformat()
                     ev_start = ScopewatchRepository.append_event(
                         conn,
@@ -1134,43 +1195,6 @@ class ScopewatchService:
                         details={"resource": action.resource},
                     )
                     generated_events.append(ev_start)
-
-                    receipt = execute_action(
-                        action,
-                        self.workspace_root,
-                        policy_decision=decision,
-                        approval_request=updated_approval,
-                        db_path=conn,
-                        task_scope=run.task_scope,
-                    )
-                    ScopewatchRepository.create_execution_receipt(conn, receipt)
-
-                    success = receipt.status == ExecutionStatus.EXECUTED
-                    ev_end = ScopewatchRepository.append_event(
-                        conn,
-                        run_id=approval.run_id,
-                        event_type=EventType.EXECUTION_SUCCEEDED if success else EventType.EXECUTION_FAILED,
-                        actor="synthetic-workspace-executor",
-                        summary=(
-                            f"Successfully executed approved {action.operation} on '{action.resource}'."
-                            if success
-                            else f"Failed execution of approved {action.operation}: {receipt.error_code}"
-                        ),
-                        timestamp=receipt.completed_at,
-                        action_request_id=action.id,
-                        execution_receipt_id=receipt.id,
-                        details={
-                            "status": receipt.status.value,
-                            "result": receipt.sanitized_result,
-                            "error_code": receipt.error_code,
-                        },
-                    )
-                    generated_events.append(ev_end)
-
-                    # Single-use consumption
-                    ScopewatchRepository.consume_approval(conn, approval_id)
-                    updated_approval.status = ApprovalStatus.CONSUMED
-
                 else:
                     updated_approval = ScopewatchRepository.resolve_approval(
                         conn,
@@ -1207,14 +1231,98 @@ class ScopewatchService:
                     )
                     ScopewatchRepository.create_execution_receipt(conn, receipt)
 
-                # Check if there are other pending approvals for this run
-                pending = ScopewatchRepository.list_approvals(
-                    conn, status_filter=ApprovalStatus.PENDING, run_id=approval.run_id
-                )
-                if not pending:
-                    ScopewatchRepository.update_run_status(
-                        conn, approval.run_id, RunStatus.ACTIVE, now_iso
+                if not approve:
+                    pending = ScopewatchRepository.list_approvals(
+                        conn, status_filter=ApprovalStatus.PENDING, run_id=approval.run_id
                     )
+                    if not pending:
+                        ScopewatchRepository.update_run_status(
+                            conn, approval.run_id, RunStatus.ACTIVE, now_iso
+                        )
+
+            # Phase 2: Action dispatch for approved action (#109)
+            if approve and updated_approval:
+                try:
+                    receipt = execute_action(
+                        action,
+                        self.workspace_root,
+                        policy_decision=decision,
+                        approval_request=updated_approval,
+                        db_path=conn,
+                        task_scope=run.task_scope,
+                    )
+                except Exception as exc:
+                    failed_at = datetime.now(timezone.utc).isoformat()
+                    receipt = ExecutionReceipt(
+                        id=str(uuid.uuid4()),
+                        action_request_id=action.id,
+                        status=ExecutionStatus.FAILED,
+                        started_at=exec_started or failed_at,
+                        completed_at=failed_at,
+                        executor="synthetic-workspace-executor",
+                        sanitized_result={"error": str(exc)},
+                        error_code=getattr(exc, "code", "EXECUTION_ERROR"),
+                        resource=action.resource,
+                        operation=action.operation,
+                    )
+                    with db_transaction(conn):
+                        ScopewatchRepository.create_execution_receipt(conn, receipt)
+                        ev_fail = ScopewatchRepository.append_event(
+                            conn,
+                            run_id=approval.run_id,
+                            event_type=EventType.EXECUTION_FAILED,
+                            actor="synthetic-workspace-executor",
+                            summary=f"Failed execution of approved {action.operation}: {receipt.error_code}",
+                            timestamp=failed_at,
+                            action_request_id=action.id,
+                            execution_receipt_id=receipt.id,
+                            details={
+                                "status": receipt.status.value,
+                                "result": receipt.sanitized_result,
+                                "error_code": receipt.error_code,
+                            },
+                        )
+                        generated_events.append(ev_fail)
+                        ScopewatchRepository.consume_approval(conn, approval_id)
+                        updated_approval.status = ApprovalStatus.CONSUMED
+                    for ev in generated_events:
+                        broadcaster.publish_sync(approval.run_id, ev)
+                    raise
+
+                with db_transaction(conn):
+                    ScopewatchRepository.create_execution_receipt(conn, receipt)
+                    success = receipt.status == ExecutionStatus.EXECUTED
+                    ev_end = ScopewatchRepository.append_event(
+                        conn,
+                        run_id=approval.run_id,
+                        event_type=EventType.EXECUTION_SUCCEEDED if success else EventType.EXECUTION_FAILED,
+                        actor="synthetic-workspace-executor",
+                        summary=(
+                            f"Successfully executed approved {action.operation} on '{action.resource}'."
+                            if success
+                            else f"Failed execution of approved {action.operation}: {receipt.error_code}"
+                        ),
+                        timestamp=receipt.completed_at,
+                        action_request_id=action.id,
+                        execution_receipt_id=receipt.id,
+                        details={
+                            "status": receipt.status.value,
+                            "result": receipt.sanitized_result,
+                            "error_code": receipt.error_code,
+                        },
+                    )
+                    generated_events.append(ev_end)
+
+                    ScopewatchRepository.consume_approval(conn, approval_id)
+                    updated_approval.status = ApprovalStatus.CONSUMED
+
+                    pending = ScopewatchRepository.list_approvals(
+                        conn, status_filter=ApprovalStatus.PENDING, run_id=approval.run_id
+                    )
+                    if not pending:
+                        ScopewatchRepository.update_run_status(
+                            conn, approval.run_id, RunStatus.ACTIVE, now_iso
+                        )
 
             # Broadcast generated events
             for ev in generated_events:
