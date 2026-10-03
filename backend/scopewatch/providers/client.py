@@ -244,22 +244,46 @@ class ProviderClient:
             payload.update(self.profile.extra_body)
         if self.profile.reasoning_param:
             payload["reasoning"] = self.profile.reasoning_param
+        request_timeout = kwargs.pop("request_timeout", None)
         if kwargs:
             payload.update(kwargs)
 
         attempt = 0
         max_retries = self.profile.max_retries
+        call_start = time.monotonic()
+        call_deadline = (
+            call_start + request_timeout
+            if request_timeout is not None
+            else None
+        )
 
         while True:
+            if call_deadline is not None:
+                remaining_call = call_deadline - time.monotonic()
+                if remaining_call <= 0:
+                    raise ProviderError(
+                        ProviderErrorCode.PROVIDER_TIMEOUT,
+                        f"Provider '{self.profile.name}' call deadline exceeded before completion.",
+                    )
+                timeout_val = min(self.profile.timeout_s, max(0.001, remaining_call))
+            else:
+                timeout_val = self.profile.timeout_s
+
             try:
                 t0 = time.perf_counter()
                 response = self._client.post(
                     url,
                     json=payload,
                     headers=headers,
-                    timeout=self.profile.timeout_s,
+                    timeout=timeout_val,
                 )
                 latency_ms = (time.perf_counter() - t0) * 1000.0
+
+                if call_deadline is not None and time.monotonic() > call_deadline:
+                    raise ProviderError(
+                        ProviderErrorCode.PROVIDER_TIMEOUT,
+                        f"Provider '{self.profile.name}' call deadline exceeded during request execution.",
+                    )
 
                 if response.status_code == 200:
                     try:
@@ -287,6 +311,11 @@ class ProviderClient:
                         self.max_backoff_s,
                         self.initial_backoff_s * (self.backoff_factor ** attempt),
                     )
+                    if call_deadline is not None and (time.monotonic() + delay) > call_deadline:
+                        raise ProviderError(
+                            ProviderErrorCode.PROVIDER_TIMEOUT,
+                            f"Provider '{self.profile.name}' retry delay ({delay:.2f}s) would exceed call deadline.",
+                        )
                     self.sleep_fn(delay)
                     attempt += 1
                     continue
@@ -324,6 +353,11 @@ class ProviderClient:
                         self.max_backoff_s,
                         self.initial_backoff_s * (self.backoff_factor ** attempt),
                     )
+                    if call_deadline is not None and (time.monotonic() + delay) > call_deadline:
+                        raise ProviderError(
+                            ProviderErrorCode.PROVIDER_TIMEOUT,
+                            f"Provider '{self.profile.name}' retry delay would exceed call deadline.",
+                        ) from e
                     self.sleep_fn(delay)
                     attempt += 1
                     continue

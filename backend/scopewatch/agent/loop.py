@@ -6,6 +6,7 @@ All operations are mediated strictly through the Scopewatch gateway API.
 """
 
 from datetime import datetime, timezone
+import inspect
 import json
 import logging
 import re
@@ -130,7 +131,7 @@ class AgentLoop:
 
     def run(self) -> AgentRunResult:
         """Run the model-driven agent loop to completion or failure."""
-        start_time = time.time()
+        start_time = time.monotonic()
         turns = 0
         total_tool_calls = 0
         recorded_actions: list[ActionResponse] = []
@@ -175,8 +176,9 @@ class AgentLoop:
                         prompt_version=self.prompt_version,
                     )
 
-                # Check wall clock timeout
-                if (time.time() - start_time) > self.wall_clock_timeout_s:
+                # Check wall clock timeout before provider call (#125)
+                elapsed = time.monotonic() - start_time
+                if elapsed >= self.wall_clock_timeout_s:
                     err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s)."
                     self.dispatcher.fail_run(self.run_id, reason=err)
                     return AgentRunResult(
@@ -191,12 +193,43 @@ class AgentLoop:
                         prompt_version=self.prompt_version,
                     )
 
-                # Query model provider
+                # Query model provider with remaining monotonic budget
+                remaining_budget = max(0.001, self.wall_clock_timeout_s - elapsed)
+                call_kwargs: dict[str, Any] = {"tools": tools}
+                try:
+                    sig = inspect.signature(self.provider_client.complete)
+                    if (
+                        any(
+                            p.kind == inspect.Parameter.VAR_KEYWORD
+                            for p in sig.parameters.values()
+                        )
+                        or "request_timeout" in sig.parameters
+                    ):
+                        call_kwargs["request_timeout"] = remaining_budget
+                except Exception:
+                    pass
+
                 chat_result: ChatResult = self.provider_client.complete(
                     messages=messages,
-                    tools=tools,
+                    **call_kwargs,
                 )
                 turns += 1
+
+                # Check wall clock timeout immediately after provider call (#125)
+                if (time.monotonic() - start_time) >= self.wall_clock_timeout_s:
+                    err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s)."
+                    self.dispatcher.fail_run(self.run_id, reason=err)
+                    return AgentRunResult(
+                        run_id=self.run_id,
+                        status="FAILED",
+                        turns=turns,
+                        total_tool_calls=total_tool_calls,
+                        actions=recorded_actions,
+                        decisions=recorded_decisions,
+                        error=err,
+                        messages=messages,
+                        prompt_version=self.prompt_version,
+                    )
 
                 turn_id = f"turn-{uuid.uuid4()}"
                 reasoning_trace = chat_result.reasoning_text
@@ -249,8 +282,8 @@ class AgentLoop:
                             messages=messages,
                         )
 
-                    # Check wall clock timeout
-                    if (time.time() - start_time) > self.wall_clock_timeout_s:
+                    # Check wall clock timeout before tool dispatch (#125)
+                    if (time.monotonic() - start_time) >= self.wall_clock_timeout_s:
                         err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s)."
                         self.dispatcher.fail_run(self.run_id, reason=err)
                         return AgentRunResult(
@@ -262,6 +295,7 @@ class AgentLoop:
                             decisions=recorded_decisions,
                             error=err,
                             messages=messages,
+                            prompt_version=self.prompt_version,
                         )
 
                     total_tool_calls += 1
@@ -320,12 +354,12 @@ class AgentLoop:
                     elif decision_str == PolicyOutcome.HOLD.value:
                         approval_req = action_resp.approval_request
                         approval_id = approval_req.id if approval_req else None
-                        poll_start = time.time()
+                        poll_start = time.monotonic()
                         resolved = False
                         tool_content = ""
 
-                        while (time.time() - poll_start) < self.approval_timeout_s:
-                            if (time.time() - start_time) > self.wall_clock_timeout_s:
+                        while (time.monotonic() - poll_start) < self.approval_timeout_s:
+                            if (time.monotonic() - start_time) >= self.wall_clock_timeout_s:
                                 err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s) while awaiting approval."
                                 self.dispatcher.fail_run(self.run_id, reason=err)
                                 return AgentRunResult(
@@ -337,6 +371,7 @@ class AgentLoop:
                                     decisions=recorded_decisions,
                                     error=err,
                                     messages=messages,
+                                    prompt_version=self.prompt_version,
                                 )
 
                             approvals = self.dispatcher.list_approvals(self.run_id)

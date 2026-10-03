@@ -880,3 +880,75 @@ def test_provider_trace_keeps_provider_provenance_alongside_visible_text(test_en
     action = result.actions[0].action_request
     assert action.exposed_reasoning_trace == "The task asks for approved invoices, so I list that folder first."
     assert action.reasoning_provenance == ReasoningProvenance.PROVIDER_EXPOSED_TRACE
+
+
+# ---------------- Wall-Clock Timeout Bounded Provider Tests (#125) ----------------
+
+
+def test_final_response_after_deadline_marks_run_failed(test_env: dict[str, Any]) -> None:
+    """A final response (no tool calls) returned after the wall-clock deadline must NEVER be marked COMPLETED (#125)."""
+    client: TestClient = test_env["client"]
+    run_id = create_test_run(client)
+
+    class OvertimeFinalResponseProvider:
+        def complete(self, messages, **kwargs):
+            # Sleep longer than the wall-clock timeout
+            time.sleep(0.12)
+            return ChatResult(
+                content="All work finished successfully.",
+                tool_calls=[],
+                reasoning_text="Done after timeout.",
+                reasoning_provenance=ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value,
+                model="mock-overtime",
+                profile="mock",
+            )
+
+    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    loop = AgentLoop(
+        run_id=run_id,
+        provider_client=OvertimeFinalResponseProvider(),
+        dispatcher=dispatcher,
+        wall_clock_timeout_s=0.08,
+    )
+
+    result = loop.run()
+
+    assert result.status == "FAILED"
+    assert "Wall clock timeout reached" in (result.error or "")
+    assert result.final_response is None
+
+    # Verify run state in gateway database is FAILED, not COMPLETED
+    run_resp = client.get(f"/api/v1/runs/{run_id}")
+    assert run_resp.status_code == 200
+    assert run_resp.json()["status"] == "FAILED"
+
+
+def test_provider_client_receives_remaining_budget_kwargs(test_env: dict[str, Any]) -> None:
+    """The agent loop propagates the remaining monotonic wall clock budget to the provider (#125)."""
+    client: TestClient = test_env["client"]
+    run_id = create_test_run(client)
+    received_timeouts: list[float] = []
+
+    class BudgetTrackingProvider:
+        def complete(self, messages, **kwargs):
+            if "request_timeout" in kwargs:
+                received_timeouts.append(kwargs["request_timeout"])
+            return ChatResult(
+                content="Done.",
+                tool_calls=[],
+                model="budget-tracker",
+                profile="mock",
+            )
+
+    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    loop = AgentLoop(
+        run_id=run_id,
+        provider_client=BudgetTrackingProvider(),
+        dispatcher=dispatcher,
+        wall_clock_timeout_s=2.5,
+    )
+
+    result = loop.run()
+    assert result.status == "COMPLETED"
+    assert len(received_timeouts) == 1
+    assert 0.0 < received_timeouts[0] <= 2.5
