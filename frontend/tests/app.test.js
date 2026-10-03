@@ -2,6 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   APPROVAL_CONFIRM_COPY,
+  LEGACY_POLICY_VERSION_LABEL,
+  NOT_APPLICABLE_LABEL,
+  POLICY_DECISION_EVENT_TYPES,
   PROVENANCE_LABELS,
   approvalConfirmStep,
   getHoldIcon,
@@ -11,9 +14,11 @@ import {
   groupEventsByTurn,
   isLiveRequested,
   panelStatus,
+  policyVersionLabelFor,
   renderHighlightedText,
   renderPanelStatus,
   safeTransformApiEvent,
+  shouldShowPolicyVersion,
   transformApiEvent,
 } from "../scripts/app.js";
 
@@ -607,4 +612,127 @@ test("transformApiEvent and UI render explicit unaudited and disabled reasoning 
   });
   assert.ok(resAudited.reasoningAudit);
   assert.equal(resAudited.reasoningAuditStatus, "audited");
+});
+
+// ---------------------------------------------------------------------------
+// Issue #119: evaluated policy identity in the reviewer UI
+// ---------------------------------------------------------------------------
+
+const POLICY_V = "2026-10-03.1+3f2a1b9c8d0e";
+
+function _policyEvent(event_type, details) {
+  return {
+    id: `ev-${event_type}-${Math.random().toString(16).slice(2)}`,
+    sequence: 1,
+    run_id: "run-119",
+    event_type,
+    timestamp: "2026-10-03T00:00:00+00:00",
+    actor: "deterministic-policy",
+    summary: `synthetic ${event_type}`,
+    action_request_id: "action-119",
+    policy_decision_id: "decision-119",
+    details: details || {},
+  };
+}
+
+test("decision events surface the stored policy version verbatim (#119)", () => {
+  for (const type of ["POLICY_ALLOWED", "POLICY_HELD", "POLICY_DENIED"]) {
+    const res = transformApiEvent(
+      _policyEvent(type, { outcome: "ALLOW", reason_code: "ALLOWED_TOOL_AND_RESOURCE", policy_version: POLICY_V }),
+    );
+    assert.equal(res.policyVersion, POLICY_V, `${type} must expose the stored version`);
+    assert.equal(res.policyVersionLabel, POLICY_V);
+    assert.equal(res.eventType, type);
+  }
+});
+
+test("pre-version decision events read as unknown, never as a deployed revision (#119)", () => {
+  for (const type of POLICY_DECISION_EVENT_TYPES) {
+    const res = transformApiEvent(_policyEvent(type, { reason_code: "APPROVAL_REQUIRED" }));
+    assert.equal(res.policyVersion, null, `${type} must not invent a version`);
+    assert.equal(res.policyVersionLabel, LEGACY_POLICY_VERSION_LABEL);
+    assert.equal(shouldShowPolicyVersion(res.eventType, res.policyVersion), true);
+  }
+  // A blank or whitespace value is treated as missing, not as a version.
+  const blank = transformApiEvent(_policyEvent("POLICY_HELD", { policy_version: "   " }));
+  assert.equal(blank.policyVersion, null);
+  assert.equal(blank.policyVersionLabel, LEGACY_POLICY_VERSION_LABEL);
+});
+
+test("events with no policy identity of their own show no version (#119)", () => {
+  for (const type of ["ACTION_REQUESTED", "RUN_CREATED", "EXECUTION_SUCCEEDED"]) {
+    const res = transformApiEvent(_policyEvent(type, { operation: "read_text" }));
+    assert.equal(res.policyVersion, null);
+    assert.equal(res.policyVersionLabel, NOT_APPLICABLE_LABEL);
+    assert.equal(shouldShowPolicyVersion(res.eventType, res.policyVersion), false);
+  }
+});
+
+test("policyVersionLabelFor and shouldShowPolicyVersion agree on every case (#119)", () => {
+  const cases = [
+    ["POLICY_ALLOWED", POLICY_V],
+    ["POLICY_ALLOWED", null],
+    ["POLICY_DENIED", ""],
+    ["APPROVAL_GRANTED", null],
+    ["EXECUTION_STARTED", null],
+    ["EXECUTION_STARTED", POLICY_V],
+    [undefined, undefined],
+  ];
+  for (const [type, version] of cases) {
+    const label = policyVersionLabelFor(type, version);
+    const shown = shouldShowPolicyVersion(type, version);
+    if (shown) {
+      assert.equal(label, version || LEGACY_POLICY_VERSION_LABEL);
+      assert.notEqual(label, NOT_APPLICABLE_LABEL);
+    } else {
+      assert.equal(label, NOT_APPLICABLE_LABEL);
+    }
+  }
+});
+
+test("approval events expose the evaluated version and any recorded drift (#119)", () => {
+  const stable = transformApiEvent(
+    _policyEvent("APPROVAL_GRANTED", { policy_version: POLICY_V, reason: "ok" }),
+  );
+  assert.equal(stable.policyVersion, POLICY_V);
+  assert.equal(stable.policyVersionChanged, false);
+  assert.equal(stable.policyVersionCurrent, null);
+
+  const drifted = transformApiEvent(
+    _policyEvent("APPROVAL_GRANTED", {
+      policy_version: "2026-01-01.1+aaaabbbbcccc",
+      policy_version_current: "2026-02-01.1+ddddeeeeffff",
+      policy_version_changed: true,
+      reason: "ok",
+    }),
+  );
+  assert.equal(drifted.policyVersion, "2026-01-01.1+aaaabbbbcccc");
+  assert.equal(drifted.policyVersionCurrent, "2026-02-01.1+ddddeeeeffff");
+  assert.equal(drifted.policyVersionChanged, true);
+});
+
+test("policy version is read from details, then a top-level field (#119)", () => {
+  const inDetails = transformApiEvent(_policyEvent("POLICY_HELD", { policy_version: POLICY_V }));
+  assert.equal(inDetails.policyVersion, POLICY_V);
+
+  const topLevel = transformApiEvent({
+    ..._policyEvent("POLICY_HELD", {}),
+    policy_version: POLICY_V,
+  });
+  assert.equal(topLevel.policyVersion, POLICY_V);
+
+  // Details win over a stale top-level copy.
+  const both = transformApiEvent({
+    ..._policyEvent("POLICY_HELD", { policy_version: POLICY_V }),
+    policy_version: "1999-01-01.1+000000000000",
+  });
+  assert.equal(both.policyVersion, POLICY_V);
+});
+
+test("an attacker-controlled version stays inert data (#119)", () => {
+  const res = transformApiEvent(
+    _policyEvent("POLICY_ALLOWED", { policy_version: "<img src=x onerror=alert(1)>" }),
+  );
+  assert.equal(typeof res.policyVersion, "string");
+  assert.equal(res.policyVersionLabel, "<img src=x onerror=alert(1)>");
 });
