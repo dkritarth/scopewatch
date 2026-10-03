@@ -561,3 +561,50 @@ test("transformApiEvent retains unapproved status on normal allow (#134)", () =>
   assert.equal(exec.approvalStatus, null);
   assert.equal(exec.resultPreview, "File content read cleanly.");
 });
+
+test("transformApiEvent and UI render explicit unaudited and disabled reasoning states (#127)", () => {
+  const baseEvent = {
+    id: "ev-unaudited-test",
+    sequence: 1,
+    event_type: "POLICY_ALLOWED",
+  };
+
+  // 1. Unavailable reasoning trace & audit
+  const resUnavailable = transformApiEvent({
+    ...baseEvent,
+    details: {
+      reason_code: "ALLOW",
+      reasoning_audit: "unavailable",
+      reasoning_availability: "unavailable",
+      reasoning_provenance: "UNAVAILABLE",
+    },
+  });
+  assert.equal(resUnavailable.reasoningAudit, null);
+  assert.equal(resUnavailable.reasoningAuditStatus, "unavailable");
+
+  // 2. Disabled reasoning audit
+  const resDisabled = transformApiEvent({
+    ...baseEvent,
+    details: {
+      reason_code: "ALLOW",
+      reasoning_audit: "disabled",
+      reasoning_availability: "disabled",
+    },
+  });
+  assert.equal(resDisabled.reasoningAudit, null);
+  assert.equal(resDisabled.reasoningAuditStatus, "disabled");
+
+  // 3. Fully audited action has status audited
+  const resAudited = transformApiEvent({
+    ...baseEvent,
+    details: {
+      reason_code: "ALLOW",
+      reasoning_audit: {
+        verdict: "NO_CONCERN",
+        explanation: "OK",
+      },
+    },
+  });
+  assert.ok(resAudited.reasoningAudit);
+  assert.equal(resAudited.reasoningAuditStatus, "audited");
+});

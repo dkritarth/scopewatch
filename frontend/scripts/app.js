@@ -772,6 +772,39 @@ function renderEvidence() {
     }
 
     rsnSec.append(auditCard);
+  } else {
+    // Explicit unaudited state card (#127)
+    const auditCard = document.createElement("div");
+    const isAuditDisabled = event.reasoningAuditStatus === "disabled";
+    const auditStatusClass = isAuditDisabled ? "disabled" : "unaudited";
+    auditCard.className = `reasoning-audit-card verdict-${auditStatusClass}`;
+
+    const auditHeader = document.createElement("div");
+    auditHeader.className = "audit-card-header";
+
+    const auditTitle = document.createElement("h5");
+    auditTitle.className = "audit-card-title";
+    auditTitle.textContent = "Reasoning audit verdict";
+
+    const verdictBadge = document.createElement("span");
+    verdictBadge.className = `verdict-badge verdict-${auditStatusClass}`;
+    verdictBadge.textContent = isAuditDisabled ? "DISABLED" : "UNAUDITED";
+
+    auditHeader.append(auditTitle, verdictBadge);
+    auditCard.append(auditHeader);
+
+    const expP = document.createElement("p");
+    expP.className = "audit-explanation";
+    if (isAuditDisabled) {
+      expP.textContent = "Reasoning audit is disabled by operator configuration.";
+    } else if (event.status === "blocked") {
+      expP.textContent = "Audit skipped: action was denied by deterministic policy prior to evaluation.";
+    } else {
+      expP.textContent = "Audit skipped: no provider reasoning trace or agent summary was available to evaluate.";
+    }
+    auditCard.append(expP);
+
+    rsnSec.append(auditCard);
   }
 
   // Trace display
@@ -1188,7 +1221,7 @@ export function transformApiEvent(ev, context = null) {
   }
 
   let reasoningAudit = null;
-  if (rawAudit && (rawAudit.verdict || rawAudit.explanation || rawAudit.flagged_excerpts)) {
+  if (rawAudit && typeof rawAudit === "object" && (rawAudit.verdict || rawAudit.explanation || rawAudit.flagged_excerpts)) {
     reasoningAudit = {
       verdict: rawAudit.verdict || (type === "REASONING_AUDIT_FAILED" ? "FAILED" : "NO_CONCERN"),
       concern_type: rawAudit.concern_type ?? null,
@@ -1198,6 +1231,22 @@ export function transformApiEvent(ev, context = null) {
       profile: rawAudit.profile || "",
       latency_ms: rawAudit.latency_ms ?? 0,
     };
+  }
+
+  let reasoningAuditStatus = null;
+  if (reasoningAudit) {
+    reasoningAuditStatus = "audited";
+  } else if (rawAudit === "disabled" || d.reasoning_audit === "disabled" || d.reasoning_availability === "disabled") {
+    reasoningAuditStatus = "disabled";
+  } else if (
+    rawAudit === "unavailable" ||
+    d.reasoning_audit === "unavailable" ||
+    d.reasoning_availability === "unavailable" ||
+    reasoningProvenance === "UNAVAILABLE"
+  ) {
+    reasoningAuditStatus = "unavailable";
+  } else {
+    reasoningAuditStatus = "unaudited";
   }
 
   const reasonCode =
@@ -1383,6 +1432,8 @@ export function transformApiEvent(ev, context = null) {
     turn_id: turnId,
     reasoningAudit,
     reasoning_audit: reasoningAudit,
+    reasoningAuditStatus,
+    reasoning_audit_status: reasoningAuditStatus,
   };
 }
 

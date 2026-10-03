@@ -785,6 +785,13 @@ class ScopewatchService:
                             "model": audit_record.model,
                             "profile": audit_record.profile,
                         }
+                    else:
+                        if not reasoning_audit_enabled:
+                            details_held["reasoning_audit"] = "disabled"
+                            details_held["reasoning_availability"] = "disabled"
+                        else:
+                            details_held["reasoning_audit"] = "unavailable"
+                            details_held["reasoning_availability"] = "unavailable"
                     ev_pol = ScopewatchRepository.append_event(
                         conn,
                         run_id=run_id,
@@ -835,6 +842,17 @@ class ScopewatchService:
                     )
 
                 elif decision.outcome == PolicyOutcome.DENY:
+                    details_deny = {
+                        "reason_code": decision.reason_code.value,
+                        "matched_rule": decision.matched_rule,
+                    }
+                    if not reasoning_audit_enabled:
+                        details_deny["reasoning_audit"] = "disabled"
+                        details_deny["reasoning_availability"] = "disabled"
+                    elif not trace_text:
+                        details_deny["reasoning_audit"] = "unavailable"
+                        details_deny["reasoning_availability"] = "unavailable"
+
                     ev_pol = ScopewatchRepository.append_event(
                         conn,
                         run_id=run_id,
@@ -845,10 +863,7 @@ class ScopewatchService:
                         action_request_id=action.id,
                         policy_decision_id=decision.id,
                         turn_id=action.turn_id,
-                        details={
-                            "reason_code": decision.reason_code.value,
-                            "matched_rule": decision.matched_rule,
-                        },
+                        details=details_deny,
                     )
                     generated_events.append(ev_pol)
 

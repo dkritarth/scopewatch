@@ -1581,6 +1581,16 @@ select:focus,
   background: var(--status-attempted-bg);
 }
 
+.reasoning-audit-card.verdict-unaudited {
+  border-left: 3px solid var(--status-attempted-dot);
+  background: var(--status-attempted-bg);
+}
+
+.reasoning-audit-card.verdict-disabled {
+  border-left: 3px solid var(--border-strong);
+  background: var(--bg-surface-subtle);
+}
+
 .audit-card-header {
   display: flex;
   justify-content: space-between;
@@ -1621,6 +1631,18 @@ select:focus,
   background: var(--status-attempted-bg);
   border: 1px solid var(--status-attempted-border);
   color: var(--status-attempted-text);
+}
+
+.verdict-badge.verdict-unaudited {
+  background: var(--status-attempted-bg);
+  border: 1px solid var(--status-attempted-border);
+  color: var(--status-attempted-text);
+}
+
+.verdict-badge.verdict-disabled {
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
 }
 
 .audit-concern {
