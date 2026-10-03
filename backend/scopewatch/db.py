@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS runs (
     synthetic INTEGER NOT NULL DEFAULT 1,
     interception_coverage TEXT NOT NULL,
     reasoning_availability TEXT NOT NULL,
-    prompt_version TEXT
+    prompt_version TEXT,
+    workspace_path TEXT
 );
 
 CREATE TABLE IF NOT EXISTS action_requests (
@@ -181,6 +182,10 @@ def init_db(db_path: Path | str) -> None:
         run_cols = {row["name"] for row in cur.fetchall()}
         if run_cols and "prompt_version" not in run_cols:
             conn.execute("ALTER TABLE runs ADD COLUMN prompt_version TEXT")
+        # Issue #117: per-run workspace identity. NULL on legacy rows; the
+        # service resolves those lazily from the scenario fixture.
+        if run_cols and "workspace_path" not in run_cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN workspace_path TEXT")
 
         cur = conn.execute("SELECT version FROM schema_version WHERE version = 1")
         if cur.fetchone() is None:

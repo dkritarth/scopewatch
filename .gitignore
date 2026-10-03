@@ -25,6 +25,10 @@ runtime-data/
 *.sqlite3
 *.db
 
+# Per-run workspace copies (#117): default is a '-runs' sibling of the
+# scenario fixture, so demo/workspace-runs/ is runtime state, not source.
+*-runs/
+
 # Local editor and OS state
 .idea/
 .vscode/

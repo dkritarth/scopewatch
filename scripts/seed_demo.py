@@ -32,6 +32,7 @@ from scopewatch.schemas import (
     TaskScope,
 )
 from scopewatch.service import ScopewatchService
+from scopewatch.workspaces import default_run_workspaces_root
 from scopewatch.agent.prompt import PROMPT_VERSION
 
 logger = logging.getLogger("scopewatch.seed")
@@ -462,9 +463,13 @@ def main() -> None:
     init_db(args.db_path)
     print(f"Database initialized: {args.db_path}")
 
-    # 2. Seed workspace files
+    # 2. Seed workspace files (the read-only baseline every run copies from)
     seed_workspace_files(args.workspace_root)
     print(f"Workspace fixtures seeded: {args.workspace_root}")
+    print(
+        "Per-run workspace copies: "
+        f"{default_run_workspaces_root(args.workspace_root)}"
+    )
     if args.coding or (
         include_prefixes is not None
         and any(p in CODING_SCENARIO_PREFIXES for p in include_prefixes)

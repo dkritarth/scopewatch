@@ -1,11 +1,17 @@
 """Docker-isolated executor backend for Scopewatch.
 
 Runs allowed file operations inside a per-run, hardened container. The
-container mounts ONLY a per-run copy of the synthetic workspace at
-``/workspace`` and never mounts host home, the Docker socket, or
+container mounts ONLY a per-dispatch staged copy of the run's own workspace
+at ``/workspace`` and never mounts host home, the Docker socket, or
 credentials. All dispatches still require a stored policy decision (checked
 on the host before Docker is touched); Docker-unavailable fails closed with
 ``EXECUTION_FAILED`` and never falls back to local execution.
+
+Two distinct copies matter here (issue #117). ``workspace_root`` is already
+the calling run's own workspace (itself copied from the scenario fixture);
+staging adds a throwaway per-dispatch copy for the container's benefit.
+Successful container writes sync back to ``workspace_root`` and nowhere
+else, so a run cannot alter another run's files or the shared fixture.
 """
 
 from __future__ import annotations

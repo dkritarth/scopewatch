@@ -124,7 +124,13 @@ def test_remote_sends_bearer_and_digest(monkeypatch: pytest.MonkeyPatch, tmp_pat
     body = seen["body"]
     assert isinstance(body, dict)
     assert body["dispatch_token"]
-    assert body["action_digest"] == compute_action_digest(action, decision)
+    # Issue #117: the dispatch names the run's workspace, and the digest
+    # covers that key so a token minted for one run's workspace cannot be
+    # replayed against another's.
+    assert body["run_workspace"] == action.run_id
+    assert body["action_digest"] == compute_action_digest(
+        action, decision, run_workspace=action.run_id
+    )
     assert body["dispatch_signature"] == sign_dispatch_payload(
         body, "synthetic-independent-signing-key"
     )
@@ -356,14 +362,16 @@ def test_runner_handle_execute_refuses_reused_token(tmp_path: Path) -> None:
     config = runner_mod.RunnerConfig()
     config.token = "synthetic"
     config.signing_key = "synthetic-independent-signing-key"
+    # Issue #117: the runner resolves a per-run directory inside the volume.
     config.workspace = tmp_path / "ws"
-    config.workspace.mkdir()
+    (config.workspace / "r1-ws").mkdir(parents=True)
     store = runner_mod.DispatchTokenStore()
     action = {"id": "a1", "run_id": "r1", "operation": "read_text",
               "resource": "docs/a.txt", "arguments": {}}
     decision = {"id": "d1", "action_request_id": "a1", "outcome": "ALLOW"}
-    digest = runner_mod.canonical_action_digest(action, decision)
+    digest = runner_mod.canonical_action_digest(action, decision, "r1-ws")
     body = {"issued_at": time.time(), "dispatch_token": "once-only", "action_digest": digest,
+            "run_workspace": "r1-ws",
             "action": action, "policy_decision": decision, "approval": None}
     body["dispatch_signature"] = sign_dispatch_payload(body, config.signing_key)
     # First consume reserves the token; the digest check then passes and the

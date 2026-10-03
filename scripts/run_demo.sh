@@ -37,10 +37,12 @@ Options:
   --auto-approve          Auto-approve HOLD actions while seeding.
   --db-path PATH          SQLite database to seed and serve (default:
                           runtime-data/scopewatch.db inside the repository).
-  --workspace-root PATH   Synthetic workspace the executor may touch (default:
-                          demo/workspace inside the repository). Runs write to
-                          this directory, so point it at a scratch copy to keep
-                          the repository clean.
+  --workspace-root PATH   Synthetic scenario fixture each run is copied from
+                          (default: demo/workspace inside the repository).
+                          The fixture itself is read-only baseline: runs never
+                          write to it. Each run executes against its own copy
+                          under a '-runs' sibling directory (override with
+                          SCOPEWATCH_RUN_WORKSPACES_DIR).
   --port PORT --host HOST Gateway bind address (defaults: 127.0.0.1:8000).
 
 Scenario files carry no per-scenario mode key; the global --mode above is
@@ -116,6 +118,11 @@ if [[ "${CODING}" -eq 1 ]]; then
   fi
 fi
 
+# Per-run workspace copies (issue #117). Default under runtime-data/ so a demo
+# run never dirties the tracked demo/ tree, and so the gateway finds them again
+# after a restart. Runs never write to the scenario fixture itself.
+export SCOPEWATCH_RUN_WORKSPACES_DIR="${SCOPEWATCH_RUN_WORKSPACES_DIR:-${REPO_ROOT}/runtime-data/run-workspaces}"
+
 echo "=================================================================="
 echo "Scopewatch Local Demonstration"
 if [[ "${CODING}" -eq 1 ]]; then
@@ -172,5 +179,8 @@ echo ""
 export SCOPEWATCH_DB_PATH="${DB_PATH}"
 export SCOPEWATCH_WORKSPACE_ROOT="${WORKSPACE_ROOT}"
 export PYTHONPATH="${REPO_ROOT}/backend:${PYTHONPATH:-}"
+
+echo "Run workspaces: ${SCOPEWATCH_RUN_WORKSPACES_DIR} (one directory per run)"
+echo ""
 
 exec "${PYTHON}" -m uvicorn scopewatch.app:app --host "${HOST}" --port "${PORT}"

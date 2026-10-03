@@ -102,7 +102,17 @@ Model routing is centralized in `backend/scopewatch/providers/` configured via `
 
 ### 5. Controlled workspace executor
 
-The executor (`backend/scopewatch/executor.py`) operates strictly within the designated workspace boundary:
+Each run owns a workspace: `create_run` copies the read-only synthetic scenario
+fixture into a per-run directory (`backend/scopewatch/workspaces.py`) and stores
+that path on the run. `submit_action`, `resolve_approval`, and every executor
+backend resolve the workspace through the stored run, never the service-wide
+fixture root (issue #117). Consequences: two runs never share a writable tree,
+the fixture stays pristine across runs, and an approved HOLD still finds its
+workspace after a service restart because the identity is persisted. Container
+copy-back lands in the run's own workspace; a missing or out-of-root stored
+workspace fails closed.
+
+The executor (`backend/scopewatch/executor.py`) operates strictly within the resolved workspace boundary:
 - Supported operations: `list_directory`, `read_text`, `write_text`, `delete_path` (`backend/scopewatch/executor.py:80-232`).
 - `delete_path` is simulated in the M1 baseline: it returns `"simulated": true` and does not unlink the target (`backend/scopewatch/executor.py:214-232`).
 - Produces immutable execution receipts with execution status, sanitized result payloads, error codes, and completion timestamps.

@@ -16,7 +16,8 @@ Request contract (gateway: ``backend/scopewatch/executor_remote.py``)::
     Authorization: Bearer <EXECUTOR_RUNNER_TOKEN>
     {
       "dispatch_token": "<single-use random token>",
-      "action_digest": "<sha256 over canonical action + decision>",
+      "action_digest": "<sha256 over canonical action + decision + run_workspace>",
+      "run_workspace": "<per-run workspace key under EXECUTOR_RUNNER_WORKSPACE>",
       "action": {"id","run_id","operation","resource","arguments"},
       "policy_decision": {"id","outcome"},
       "approval": {"id","action_request_id","status"} | null
@@ -30,9 +31,14 @@ Validation order (fail closed, static messages, no secret in output):
 3. Action digest recomputed with the same canonicalization as the gateway;
    mismatches refused (409) so a token minted for one action cannot run
    another.
-4. Operation allowlisted; resource relative with no null bytes, no absolute
-   paths, no ``..`` escape; resolved target must stay inside ``/workspace``
-   (symlink escapes refused). ``network_request`` is never executed.
+4. ``run_workspace`` must name an existing, non-symlink directory strictly
+   inside ``EXECUTOR_RUNNER_WORKSPACE`` (issue #117). A missing or unsafe key
+   is refused (500); the runner never falls back to the mounted root, which
+   holds every run's workspace side by side. The key is covered by the
+   dispatch signature and the action digest, so it cannot be swapped.
+5. Operation allowlisted; resource relative with no null bytes, no absolute
+   paths, no ``..`` escape; resolved target must stay inside the run's
+   workspace (symlink escapes refused). ``network_request`` is never executed.
 5. Docker dispatch with the same hardening flags as the gateway Docker
    backend (no network, read-only rootfs, nobody user, cap-drop, pids/mem
    caps, workspace-only mount). Any Docker error, timeout, or malformed
@@ -55,6 +61,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -107,8 +114,14 @@ ALLOWED_OPERATIONS = frozenset(
 def canonical_action_digest(
     action: dict[str, Any],
     policy_decision: dict[str, Any],
+    run_workspace: str = "",
 ) -> str:
-    """Recompute the gateway action digest (must match exactly)."""
+    """Recompute the gateway action digest (must match exactly).
+
+    ``run_workspace`` (issue #117) is the per-run workspace key the gateway
+    resolved; it is part of the digest so a dispatch token minted for one
+    run's workspace cannot be replayed against another's.
+    """
     canonical = {
         "action_id": action.get("id"),
         "run_id": action.get("run_id"),
@@ -117,6 +130,7 @@ def canonical_action_digest(
         "arguments": action.get("arguments") or {},
         "policy_decision_id": policy_decision.get("id"),
         "policy_outcome": policy_decision.get("outcome"),
+        "run_workspace": run_workspace or "",
     }
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -169,6 +183,41 @@ def check_bearer(authorization: Optional[str], expected_token: str) -> bool:
     if scheme.lower() != "bearer" or not credential:
         return False
     return hmac.compare_digest(credential.strip(), expected_token)
+
+
+SAFE_WORKSPACE_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def resolve_run_workspace(
+    workspace_root: Path,
+    run_workspace: object,
+) -> tuple[Optional[Path], Optional[str]]:
+    """Resolve one run's workspace directory under the mounted root (#117).
+
+    ``run_workspace`` is the gateway-resolved per-run key. It must be a safe
+    single path segment and must name an existing directory strictly inside
+    ``workspace_root``. Returns ``(None, reason)`` for anything else,
+    including a missing key: falling back to the mounted root would execute
+    against the shared fixture, which is exactly the isolation gap #117
+    closes. Symlinks are refused because a link inside the mounted root can
+    point at a sibling run's directory.
+    """
+    if not isinstance(run_workspace, str) or not SAFE_WORKSPACE_KEY.match(run_workspace):
+        return None, "run workspace unavailable"
+    try:
+        root = workspace_root.resolve()
+        candidate = (root / run_workspace)
+        resolved = candidate.resolve()
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        return None, "run workspace unavailable"
+    if resolved == root:
+        return None, "run workspace unavailable"
+    if candidate.is_symlink():
+        return None, "run workspace unavailable"
+    if not resolved.is_dir():
+        return None, "run workspace unavailable"
+    return resolved, None
 
 
 def validate_resource_inside_workspace(
@@ -283,7 +332,9 @@ def handle_execute(
         return 409, {"error": "dispatch token already used"}
     if outcome == "invalid":
         return 400, {"error": "malformed dispatch"}
-    expected_digest = canonical_action_digest(action, decision)
+    expected_digest = canonical_action_digest(
+        action, decision, body.get("run_workspace") or ""
+    )
     if not hmac.compare_digest(str(body.get("action_digest") or ""), expected_digest):
         return 409, {"error": "action digest mismatch"}
 
@@ -317,9 +368,14 @@ def handle_execute(
     if not isinstance(resource, str):
         return 400, {"error": "invalid resource"}
 
-    workspace = config.workspace
-    if not workspace.exists():
-        return 500, {"error": "workspace unavailable"}
+    # Issue #117: resolve the run's own workspace directory under the mounted
+    # root instead of using the shared root itself. A missing or unsafe key
+    # fails closed rather than silently falling back to the shared tree,
+    # which would reintroduce cross-run visibility.
+    run_workspace = body.get("run_workspace")
+    workspace, ws_reason = resolve_run_workspace(config.workspace, run_workspace)
+    if workspace is None:
+        return 500, {"error": ws_reason or "workspace unavailable"}
     target, reason = validate_resource_inside_workspace(resource, workspace)
     if target is None:
         code = 403 if "boundary" in (reason or "") else 400
