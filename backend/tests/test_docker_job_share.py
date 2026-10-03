@@ -26,6 +26,7 @@ import ast
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import uuid
@@ -519,10 +520,17 @@ def test_executed_write_syncs_back_through_a_preexisting_link(
 
         from scopewatch.executor_remote import sign_dispatch_payload
 
+        # Issue #117: the runner resolves a per-run directory inside its
+        # volume, so the dispatch announces which one and the mounted root
+        # holds it.
+        run_workspace = "run-1-ws"
         config = runner_mod.RunnerConfig()
         config.token = "synthetic"
         config.signing_key = "synthetic-independent-signing-key"
         config.workspace = ws
+        (config.workspace / run_workspace).mkdir()
+        shutil.copy2(ws / "notes.txt", config.workspace / run_workspace / "notes.txt")
+        (config.workspace / run_workspace / "notes-link.txt").symlink_to("notes.txt")
         action = {
             "id": "action-1",
             "run_id": "run-1",
@@ -534,7 +542,10 @@ def test_executed_write_syncs_back_through_a_preexisting_link(
         body = {
             "issued_at": time.time(),
             "dispatch_token": "cross-test-token",
-            "action_digest": runner_mod.canonical_action_digest(action, decision),
+            "run_workspace": run_workspace,
+            "action_digest": runner_mod.canonical_action_digest(
+                action, decision, run_workspace
+            ),
             "action": action,
             "policy_decision": decision,
             "approval": None,
@@ -547,8 +558,13 @@ def test_executed_write_syncs_back_through_a_preexisting_link(
         assert payload["status"] == "EXECUTED", payload
 
     # The link survives as a link and the write landed through it.
-    assert (ws / "notes-link.txt").is_symlink()
-    assert (ws / "notes.txt").read_text(encoding="utf-8") == "after"
+    target = (
+        ws
+        if not runner_side
+        else ws / "run-1-ws"
+    )
+    assert (target / "notes-link.txt").is_symlink()
+    assert (target / "notes.txt").read_text(encoding="utf-8") == "after"
 
 
 def test_staging_leaves_no_residue_on_failure(tmp_path: Path) -> None:
