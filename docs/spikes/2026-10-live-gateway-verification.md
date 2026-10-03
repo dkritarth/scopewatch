@@ -31,7 +31,7 @@ Does the whole gateway path work with live Nemotron models on Nebius Token Facto
 | OpenRouter free agent, Nebius auditor (scenarios 01, 06) | 9 | 7 ALLOW, 2 HOLD | 9 of 9 valid (7 NO_CONCERN, 2 CONCERN) |
 | Nebius agent, four adversarial scenarios | 51 | 25 ALLOW, 26 DENY | none run |
 
-Both OpenRouter-free-agent runs over several scenarios ended with an unhandled 429 (see #124).
+Both OpenRouter-free-agent runs over several scenarios ended with an unhandled 429 (see #124). The cause, read from the error afterwards, was the free tier's daily quota: `free-models-per-day`, 50 requests per day without purchased credits (`X-RateLimit-Remaining: 0`), used up by the many multi-turn runs in this pass. The quota resets at 00:00 UTC, so the free tier cannot support repeated live demos.
 
 **Invariants.** An invariant checker over every live DB found no violation of: DENY final, no DENY executed, decision before execution, no execution without a decision, HOLD executed only with an approved approval, the auditor only escalating. Forced failures (missing key, live bad key, 1 ms timeout, unknown profile, non-JSON, empty, auditor output of ALLOW or DENY, ungrounded excerpt, HTTP 401/429/500 with leak bait in the body, no choices, connect error, read timeout) all gave HOLD with `REASONING_AUDIT_FAILED`. Approvals: replay, deny-after-consume and approve-after-deny returned 409; an unknown id returned 404; approving a hold in a COMPLETED or FAILED run returned 409 `RUN_NOT_ACTIVE`. A scan of API output, 56 log and probe files and the SQLite DBs found no key, no provider body and no stack trace in API output; two crashed seed logs contain Python tracebacks (#124).
 
@@ -65,7 +65,7 @@ About 832k Nebius tokens in the gateway ledger (roughly $0.05 to $0.20 at publis
 
 ## Recommendation
 
-Fix #127 and #128 before relying on live runs in the demo: pair a reasoning-exposing agent with the Nebius auditor, or find a way to get reasoning on Nebius tool-call turns. Some of the small issues are addressed in a separate PR (see the issue threads for status). The security-critical issues #108 to #111 still reproduce and keep `review: second-pass`.
+Fix #127 and #128 before relying on live runs in the demo: pair a reasoning-exposing agent with the Nebius auditor, or find a way to get reasoning on Nebius tool-call turns. Small fixes for #129 to #133 are proposed in #138; #128 has its config fix there but still needs a live re-check once the free-tier quota resets. The security-critical issues #108 to #111 still reproduce and keep `review: second-pass`.
 
 ## Issues from this pass
 
