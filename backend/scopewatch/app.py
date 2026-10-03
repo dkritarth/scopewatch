@@ -31,6 +31,7 @@ from scopewatch.errors import (
 )
 from scopewatch.events import broadcaster
 from scopewatch.models import ApprovalStatus
+from scopewatch.provenance import CAPTURE_TOKEN_HEADER
 from scopewatch.reasoning_audit import ReasoningAuditor
 from scopewatch.schemas import (
     ActionResponse,
@@ -79,6 +80,7 @@ def create_app(
     workspace_root: Path | str = WORKSPACE_ROOT,
     auditor: Optional[ReasoningAuditor] = None,
     demo_config: Optional[DemoGuardConfig] = None,
+    capture_token: Optional[str] = None,
 ) -> FastAPI:
     actual_db_path = Path(db_path)
     actual_workspace_root = Path(workspace_root)
@@ -137,7 +139,11 @@ def create_app(
         return await call_next(request)
 
     service = ScopewatchService(
-        db_path=db_path, workspace_root=workspace_root, auditor=auditor, guards=guards
+        db_path=db_path,
+        workspace_root=workspace_root,
+        auditor=auditor,
+        guards=guards,
+        capture_token=capture_token,
     )
     app.state.service = service
 
@@ -232,9 +238,18 @@ def create_app(
     async def submit_action(
         run_id: str,
         req: SubmitActionRequest,
+        capture_token: Optional[str] = Header(
+            None,
+            alias=CAPTURE_TOKEN_HEADER,
+            description=(
+                "Capture credential held only by in-process provider-capture "
+                "integrations (#116). Without it, submitted reasoning provenance "
+                "is stored as an unverified caller assertion."
+            ),
+        ),
         svc: ScopewatchService = Depends(get_service),
     ) -> ActionResponse:
-        return await svc.submit_action(run_id, req)
+        return await svc.submit_action(run_id, req, capture_credential=capture_token)
 
     @app.get("/api/v1/runs/{run_id}/actions/{action_id}", response_model=ActionResponse)
     def get_action(

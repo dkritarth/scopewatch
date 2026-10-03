@@ -16,6 +16,7 @@ from typing import Any, Optional
 import httpx
 
 from scopewatch.models import ReasoningProvenance
+from scopewatch.provenance import CAPTURE_TOKEN_HEADER, configured_capture_token
 from scopewatch.schemas import (
     ActionResponse,
     ApprovalRequest,
@@ -203,6 +204,12 @@ class GatewayDispatcher:
     """Submits agent actions to the Scopewatch gateway REST API.
 
     Ensures that all operations pass through the gateway and never directly touch the filesystem.
+
+    When a capture credential is available (``SCOPEWATCH_CAPTURE_TOKEN``, or an
+    explicit ``capture_token``) the submission is marked as a trusted
+    in-process provider capture, so the gateway may store the reasoning
+    provenance label the provider client derived (#116). Without it the
+    gateway stores the label as an unverified caller assertion.
     """
 
     def __init__(
@@ -211,8 +218,12 @@ class GatewayDispatcher:
         http_client: Optional[httpx.Client] = None,
         transport: Optional[httpx.BaseTransport] = None,
         timeout_s: float = 30.0,
+        capture_token: Optional[str] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.capture_token = (
+            capture_token if capture_token is not None else configured_capture_token()
+        )
         self._external_client = http_client is not None
         self._client = http_client or httpx.Client(
             base_url=self.base_url,
@@ -238,7 +249,8 @@ class GatewayDispatcher:
     ) -> ActionResponse:
         """Submit an action request to POST /api/v1/runs/{run_id}/actions."""
         url = f"/api/v1/runs/{run_id}/actions"
-        resp = self._client.post(url, json=action.model_dump())
+        headers = {CAPTURE_TOKEN_HEADER: self.capture_token} if self.capture_token else {}
+        resp = self._client.post(url, json=action.model_dump(), headers=headers)
         if resp.status_code not in (200, 201):
             raise RuntimeError(
                 f"Gateway rejected action submission (HTTP {resp.status_code}): {resp.text}"

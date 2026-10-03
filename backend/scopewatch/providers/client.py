@@ -4,7 +4,7 @@ from collections.abc import Callable
 import logging
 import os
 import time
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -21,6 +21,13 @@ VALID_PROVENANCES = {
     "SYNTHETIC_FIXTURE",
 }
 
+# Provider reasoning-detail block types we recognise (#120). A block whose type
+# is not listed here is unknown: its payload may be encrypted, redacted, or
+# something the provider has not documented, so it never becomes a raw trace.
+RAW_REASONING_FIELDS = ("reasoning_content", "reasoning")
+RAW_DETAIL_TYPES = {"reasoning.text"}
+SUMMARY_DETAIL_TYPES = {"reasoning.summary"}
+
 
 class ChatResult(BaseModel):
     """Normalized chat completion response with extracted reasoning."""
@@ -31,6 +38,7 @@ class ChatResult(BaseModel):
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     reasoning_text: Optional[str] = None
     reasoning_provenance: str = "UNAVAILABLE"
+    reasoning_detail_type: Optional[str] = None
     usage: dict[str, Any] = Field(default_factory=dict)
     latency_ms: float = 0.0
     model: str
@@ -47,80 +55,109 @@ class ChatResult(BaseModel):
         return val
 
 
-def extract_reasoning(message: dict[str, Any]) -> tuple[Optional[str], str]:
+class ReasoningExtraction(NamedTuple):
+    """Normalized reasoning text with the detail type that classified it.
+
+    ``detail_type`` keeps the response shape that earned the provenance, so
+    downstream evidence can tell a raw provider field from a provider summary
+    instead of seeing both as ``PROVIDER_EXPOSED_TRACE``.
+    """
+
+    text: Optional[str]
+    provenance: str
+    detail_type: Optional[str] = None
+
+
+def _detail_text(detail: dict[str, Any], *keys: str) -> Optional[str]:
+    """First non-blank string value among `keys` in a reasoning-detail block."""
+    for key in keys:
+        value = detail.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _normalize_detail(detail: Any) -> ReasoningExtraction:
+    """Classify one reasoning-detail block.
+
+    A recognised raw type is the only source of ``PROVIDER_EXPOSED_TRACE``. A
+    recognised summary type is ``AGENT_AUTHORED_SUMMARY`` (ADR-0001 decision 5:
+    summary-only evidence stays labelled as a summary). Everything else,
+    including encrypted, redacted, untyped and unrecognised payloads, is
+    ``UNAVAILABLE``: unknown detail never falls back to raw text (#120).
+    """
+    if not isinstance(detail, dict):
+        return ReasoningExtraction(None, "UNAVAILABLE", None)
+
+    detail_type = detail.get("type")
+    if isinstance(detail_type, str) and detail_type:
+        if detail_type in RAW_DETAIL_TYPES:
+            return ReasoningExtraction(
+                _detail_text(detail, "text"), "PROVIDER_EXPOSED_TRACE", detail_type
+            )
+        if detail_type in SUMMARY_DETAIL_TYPES:
+            return ReasoningExtraction(
+                _detail_text(detail, "summary"), "AGENT_AUTHORED_SUMMARY", detail_type
+            )
+        return ReasoningExtraction(None, "UNAVAILABLE", detail_type)
+
+    # Untyped single-object payloads keep the meaning of their own field name.
+    text = _detail_text(detail, "text")
+    if text:
+        return ReasoningExtraction(text, "PROVIDER_EXPOSED_TRACE", "reasoning.text")
+    summary = _detail_text(detail, "summary")
+    if summary:
+        return ReasoningExtraction(summary, "AGENT_AUTHORED_SUMMARY", "reasoning.summary")
+    # `content` is deliberately never mined: message content is not reasoning.
+    return ReasoningExtraction(None, "UNAVAILABLE", None)
+
+
+def _best(extractions: list[ReasoningExtraction]) -> ReasoningExtraction:
+    """Prefer raw reasoning over summaries, matching provider block precedence."""
+    for provenance in ("PROVIDER_EXPOSED_TRACE", "AGENT_AUTHORED_SUMMARY"):
+        matches = [e for e in extractions if e.provenance == provenance and e.text]
+        if matches:
+            return ReasoningExtraction(
+                "\n".join(e.text for e in matches),
+                provenance,
+                matches[0].detail_type,
+            )
+    # Nothing recognized. Keep the first detail type seen so reviewers can see
+    # why reasoning is unavailable (encrypted, redacted, undocumented).
+    untyped = next((e.detail_type for e in extractions if e.detail_type), None)
+    return ReasoningExtraction(None, "UNAVAILABLE", untyped)
+
+
+def extract_reasoning(message: dict[str, Any]) -> ReasoningExtraction:
     """Extract normalized reasoning trace from provider message fields.
 
-    Checks:
+    Checks, in order:
     1. choice["message"]["reasoning_content"]
     2. choice["message"]["reasoning"]
-    3. choice["message"].get("reasoning_details")
+    3. choice["message"].get("reasoning_details") block types
 
-    Sets PROVIDER_EXPOSED_TRACE only when raw reasoning came from a provider field.
-    Sets UNAVAILABLE when absent or empty.
+    Sets PROVIDER_EXPOSED_TRACE only for raw reasoning from a recognised raw
+    provider field, and AGENT_AUTHORED_SUMMARY for provider summary blocks.
+    Sets UNAVAILABLE when absent, blank, or of an unknown detail variant.
     Never synthesizes reasoning from the `content` field.
     """
-    # 1. Check reasoning_content
-    reasoning_content = message.get("reasoning_content")
-    if isinstance(reasoning_content, str) and reasoning_content.strip():
-        return reasoning_content.strip(), "PROVIDER_EXPOSED_TRACE"
+    # 1 & 2. Recognized raw reasoning fields
+    for field in RAW_REASONING_FIELDS:
+        value = message.get(field)
+        if isinstance(value, str) and value.strip():
+            return ReasoningExtraction(value.strip(), "PROVIDER_EXPOSED_TRACE", field)
 
-    # 2. Check reasoning
-    reasoning = message.get("reasoning")
-    if isinstance(reasoning, str) and reasoning.strip():
-        return reasoning.strip(), "PROVIDER_EXPOSED_TRACE"
-
-    # 3. Check reasoning_details
+    # 3. Reasoning detail blocks
     details = message.get("reasoning_details")
     if details:
         if isinstance(details, list):
-            # Prefer reasoning.text blocks
-            text_blocks = [
-                d["text"].strip()
-                for d in details
-                if isinstance(d, dict)
-                and d.get("type") == "reasoning.text"
-                and isinstance(d.get("text"), str)
-                and d["text"].strip()
-            ]
-            if text_blocks:
-                return "\n".join(text_blocks), "PROVIDER_EXPOSED_TRACE"
+            return _best([_normalize_detail(d) for d in details])
+        if isinstance(details, dict):
+            return _normalize_detail(details)
+        # A bare string carries no detail type, so it cannot be shown to be a
+        # raw trace rather than a summary or an opaque blob.
 
-            # Fall back to reasoning.summary blocks
-            summary_blocks = [
-                d["summary"].strip()
-                for d in details
-                if isinstance(d, dict)
-                and d.get("type") == "reasoning.summary"
-                and isinstance(d.get("summary"), str)
-                and d["summary"].strip()
-            ]
-            if summary_blocks:
-                return "\n".join(summary_blocks), "PROVIDER_EXPOSED_TRACE"
-
-            # Fall back to any dict with text, summary, or content
-            generic_blocks = [
-                (d.get("text") or d.get("summary") or d.get("content") or "").strip()
-                for d in details
-                if isinstance(d, dict)
-            ]
-            generic_blocks = [b for b in generic_blocks if b]
-            if generic_blocks:
-                return "\n".join(generic_blocks), "PROVIDER_EXPOSED_TRACE"
-
-            # Fall back to list of strings
-            str_blocks = [d.strip() for d in details if isinstance(d, str) and d.strip()]
-            if str_blocks:
-                return "\n".join(str_blocks), "PROVIDER_EXPOSED_TRACE"
-
-        elif isinstance(details, dict):
-            extracted = details.get("text") or details.get("summary") or details.get("content")
-            if isinstance(extracted, str) and extracted.strip():
-                return extracted.strip(), "PROVIDER_EXPOSED_TRACE"
-
-        elif isinstance(details, str) and details.strip():
-            return details.strip(), "PROVIDER_EXPOSED_TRACE"
-
-    return None, "UNAVAILABLE"
+    return ReasoningExtraction(None, "UNAVAILABLE", None)
 
 
 class ProviderClient:
@@ -406,15 +443,16 @@ class ProviderClient:
 
         content = message.get("content")
         tool_calls = message.get("tool_calls") or []
-        reasoning_text, reasoning_provenance = extract_reasoning(message)
+        extraction = extract_reasoning(message)
         usage = data.get("usage") or {}
         model = data.get("model") or self.profile.model
 
         return ChatResult(
             content=content,
             tool_calls=tool_calls,
-            reasoning_text=reasoning_text,
-            reasoning_provenance=reasoning_provenance,
+            reasoning_text=extraction.text,
+            reasoning_provenance=extraction.provenance,
+            reasoning_detail_type=extraction.detail_type,
             usage=usage,
             latency_ms=latency_ms,
             model=model,

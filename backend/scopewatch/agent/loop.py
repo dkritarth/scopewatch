@@ -41,7 +41,7 @@ from scopewatch.agent.tools import (
     convert_tool_call_to_submit_request,
     get_gateway_tools,
 )
-from scopewatch.models import ApprovalStatus, PolicyOutcome
+from scopewatch.models import ApprovalStatus, PolicyOutcome, ReasoningProvenance
 from scopewatch.providers.client import ChatResult, ProviderClient
 from scopewatch.providers.loader import get_agent_profile
 from scopewatch.schemas import ActionResponse, Run
@@ -239,6 +239,12 @@ class AgentLoop:
                 reasoning_provenance = (
                     chat_result.reasoning_provenance if reasoning_trace else None
                 )
+                # #120: a summary-only provider response is a summary, not an
+                # exposed trace. Route it to reasoning_summary so persistence and
+                # the dashboard keep saying what it is.
+                summary_only = (
+                    reasoning_provenance == ReasoningProvenance.AGENT_AUTHORED_SUMMARY.value
+                )
 
                 # Append assistant turn to conversation
                 assistant_msg: dict[str, Any] = {"role": "assistant"}
@@ -307,9 +313,11 @@ class AgentLoop:
                         tool_name=tool_name,
                         tool_arguments=tool_args,
                         turn_id=turn_id,
-                        exposed_reasoning_trace=reasoning_trace,
+                        exposed_reasoning_trace=None if summary_only else reasoning_trace,
                         reasoning_provenance=reasoning_provenance,
-                        reasoning_summary=chat_result.content,
+                        reasoning_summary=(
+                            reasoning_trace if summary_only else chat_result.content
+                        ),
                         requested_by=self.requested_by,
                     )
 
