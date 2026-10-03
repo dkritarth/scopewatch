@@ -9,11 +9,20 @@ Design rules (following AGENTS.md and ADR-0001 invariants):
 
 * External adapter: The adapter NEVER touches the guarded files, subprocesses,
   or the controlled executor itself. Its sole effect channel is the gateway HTTP API
-  (``POST /api/v1/runs/{id}/actions`` plus approval polling).
+  (``POST /api/v1/runs/{id}/actions`` plus approval polling). Permission
+  preflight reads the gateway's side-effect-free policy dry-run
+  (``POST /api/v1/runs/{id}/actions/preview``) and has no effect channel.
 * A policy DENY is final and is surfaced to the ACP agent as a JSON-RPC error
   or a denied permission response. The adapter cannot bypass or relax a denial.
 * A HOLD suspends the ACP request until human approval resolves. On timeout
   the adapter fails closed: it reports ``HOLD_TIMEOUT`` and never executes.
+* Permission preflight (#122) reports the deterministic decision only, is
+  explicitly labelled provisional, and never creates an approval, consumes
+  budget, records evidence, or executes anything.
+* Policy authorization is not execution (#123): a success result requires an
+  ``EXECUTED`` receipt. ``FAILED``, ``NOT_EXECUTED``, and missing receipts
+  become sanitized JSON-RPC tool errors carrying the real action ID and the
+  gateway's failure code.
 * Reasoning provenance is strictly ``AGENT_AUTHORED_SUMMARY`` when the agent
   supplies a summary, and ``UNAVAILABLE`` otherwise. Per ADR-0001 and spike #48,
   the adapter never claims or forwards a raw provider trace.
@@ -33,6 +42,35 @@ from scopewatch.models import ReasoningProvenance
 
 GATEWAY_TOOL = "workspace"
 
+# Bounds on executor-supplied data relayed back to the agent. Command output
+# is what a terminal caller would legitimately see; directory listings are not,
+# and an unbounded relay there would hand the agent an arbitrarily large
+# payload straight out of the workspace.
+MAX_RELAYED_STREAM_CHARS = 2000
+MAX_RELAYED_ENTRIES = 500
+MAX_RELAYED_NAME_CHARS = 512
+
+
+def _bounded_entries(entries: Any) -> list[Any]:
+    """Cap a relayed directory listing by count and by per-entry name length."""
+    if not isinstance(entries, list):
+        return []
+    bounded: list[Any] = []
+    for entry in entries[:MAX_RELAYED_ENTRIES]:
+        if isinstance(entry, str):
+            bounded.append(entry[:MAX_RELAYED_NAME_CHARS])
+        elif isinstance(entry, dict):
+            clipped = dict(entry)
+            for key in ("name", "path"):
+                value = clipped.get(key)
+                if isinstance(value, str):
+                    clipped[key] = value[:MAX_RELAYED_NAME_CHARS]
+            bounded.append(clipped)
+        else:
+            bounded.append(entry)
+    return bounded
+
+
 MEDIATED_ACP_METHODS = (
     "initialize",
     "fs/read_text_file",
@@ -46,11 +84,14 @@ MEDIATED_ACP_METHODS = (
 COVERAGE_STATEMENT = (
     "Scopewatch mediates only file, command, and permission operations submitted "
     "through the Agent Client Protocol (ACP) adapter to the gateway API "
-    "(POST /api/v1/runs/{run_id}/actions). If the underlying agent executes "
-    "actions outside the negotiated ACP capabilities, such activity is outside "
-    "the observation boundary. A missing event never proves an action did not "
-    "occur. Gateway evidence represents a tamper-evident audit of mediated "
-    "operations only."
+    "(POST /api/v1/runs/{run_id}/actions). Permission preflight "
+    "(POST /api/v1/runs/{run_id}/actions/preview) reports the deterministic "
+    "policy decision only: it executes nothing, creates no approval, and a "
+    "preflight allow is provisional because the submit-time reasoning audit may "
+    "still hold the action. If the underlying agent executes actions outside "
+    "the negotiated ACP capabilities, such activity is outside the observation "
+    "boundary. A missing event never proves an action did not occur. Gateway "
+    "evidence represents a tamper-evident audit of mediated operations only."
 )
 
 
@@ -187,6 +228,44 @@ class AcpClientAdapter:
             raise AcpRpcError(code=-32602, message="Missing or invalid required parameter: 'path'")
         return path
 
+    @staticmethod
+    def _canonical_action(
+        operation: str, params: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        """Map ACP params to the gateway's canonical (resource, arguments).
+
+        Single source of truth for mediated submission and permission
+        preflight (#122): preflight is evaluated against exactly the request a
+        real submission would send, so the two cannot drift apart on resource,
+        command, or content handling.
+
+        ``run_command`` carries the working directory in the resource field
+        (the gateway's ``policy._evaluate_run_command`` reads ``action.resource``
+        as cwd), matching ``_handle_terminal_run``. File operations carry the
+        requested path as the resource. Only ``write_text`` forwards an
+        argument, and the deterministic policy ignores arguments, so preflight
+        and submission reach the same decision.
+        """
+        if operation == "run_command":
+            raw_cwd = params.get("cwd", "")
+            resource = raw_cwd if isinstance(raw_cwd, str) else ""
+            arguments: dict[str, Any] = {}
+            if "command" in params:
+                arguments["command"] = params["command"]
+            if resource:
+                arguments["cwd"] = resource
+            argv = params.get("argv")
+            if isinstance(argv, list):
+                arguments["argv"] = argv
+            return resource, arguments
+
+        raw_path = params.get("path", params.get("resource", ""))
+        resource = raw_path if isinstance(raw_path, str) else ""
+        arguments = {}
+        if operation == "write_text" and isinstance(params.get("content"), str):
+            arguments["content"] = params["content"]
+        return resource, arguments
+
     def _handle_initialize(self, params: dict[str, Any]) -> dict[str, Any]:
         """Negotiate ACP capabilities, advertising mediated client tools."""
         return {
@@ -215,10 +294,11 @@ class AcpClientAdapter:
 
     def _handle_read_text_file(self, params: dict[str, Any]) -> dict[str, Any]:
         path = self._extract_path(params)
+        resource, arguments = self._canonical_action("read_text", params)
         action_resp = self._submit_action(
             operation="read_text",
-            resource=path,
-            arguments={},
+            resource=resource,
+            arguments=arguments,
             reasoning_summary=params.get("reasoning_summary"),
             turn_id=params.get("turn_id"),
         )
@@ -237,28 +317,33 @@ class AcpClientAdapter:
         if content is None or not isinstance(content, str):
             raise AcpRpcError(code=-32602, message="Missing or invalid required parameter: 'content'")
 
+        resource, arguments = self._canonical_action("write_text", params)
         action_resp = self._submit_action(
             operation="write_text",
-            resource=path,
-            arguments={"content": content},
+            resource=resource,
+            arguments=arguments,
             reasoning_summary=params.get("reasoning_summary"),
             turn_id=params.get("turn_id"),
         )
         receipt = action_resp.get("execution_receipt") or {}
         sanitized = receipt.get("sanitized_result") or {}
+        # #123: an EXECUTED receipt is guaranteed by _require_executed_receipt,
+        # so "success" is earned. The byte count is still reported only when
+        # the executor measured it, never inferred from the request.
         return {
             "path": path,
-            "bytes_written": sanitized.get("bytes_written", len(content.encode("utf-8"))),
+            "bytes_written": sanitized.get("bytes_written"),
             "action_id": (action_resp.get("action_request") or {}).get("id"),
             "status": "success",
         }
 
     def _handle_delete_file(self, params: dict[str, Any]) -> dict[str, Any]:
         path = self._extract_path(params)
+        resource, arguments = self._canonical_action("delete_path", params)
         action_resp = self._submit_action(
             operation="delete_path",
-            resource=path,
-            arguments={},
+            resource=resource,
+            arguments=arguments,
             reasoning_summary=params.get("reasoning_summary"),
             turn_id=params.get("turn_id"),
         )
@@ -273,18 +358,22 @@ class AcpClientAdapter:
         if not isinstance(path, str):
             raise AcpRpcError(code=-32602, message="Invalid parameter: 'path' must be a string")
 
+        resource, arguments = self._canonical_action("list_directory", params)
         action_resp = self._submit_action(
             operation="list_directory",
-            resource=path,
-            arguments={},
+            resource=resource,
+            arguments=arguments,
             reasoning_summary=params.get("reasoning_summary"),
             turn_id=params.get("turn_id"),
         )
         receipt = action_resp.get("execution_receipt") or {}
         sanitized = receipt.get("sanitized_result") or {}
+        # Gateway executors report directory items under "items"; accept the
+        # legacy "entries" alias so mediated listings stay honest.
+        entries = sanitized.get("entries", sanitized.get("items", []))
         return {
             "path": path,
-            "entries": sanitized.get("entries", []),
+            "entries": _bounded_entries(entries),
             "action_id": (action_resp.get("action_request") or {}).get("id"),
         }
 
@@ -297,24 +386,22 @@ class AcpClientAdapter:
         if not isinstance(cwd, str):
             cwd = ""
 
-        arguments: dict[str, Any] = {"command": command}
-        if cwd:
-            arguments["cwd"] = cwd
-        if "argv" in params and isinstance(params["argv"], list):
-            arguments["argv"] = params["argv"]
-
+        resource, arguments = self._canonical_action("run_command", params)
         action_resp = self._submit_action(
             operation="run_command",
-            resource=cwd,
+            resource=resource,
             arguments=arguments,
             reasoning_summary=params.get("reasoning_summary"),
             turn_id=params.get("turn_id"),
         )
         receipt = action_resp.get("execution_receipt") or {}
         sanitized = receipt.get("sanitized_result") or {}
+        # #123: an EXECUTED receipt is guaranteed here, so exit_code and the
+        # output streams come from the executor. A missing exit_code is
+        # reported as unknown rather than invented as 0.
         return {
             "command": command,
-            "exit_code": sanitized.get("exit_code", 0),
+            "exit_code": sanitized.get("exit_code"),
             "stdout": sanitized.get("stdout", ""),
             "stderr": sanitized.get("stderr", ""),
             "action_id": (action_resp.get("action_request") or {}).get("id"),
@@ -331,76 +418,149 @@ class AcpClientAdapter:
         )
 
     def _handle_request_permission(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Dry-run permission query against the task scope without premature action execution.
+        """Side-effect-free permission preflight over the real gateway policy.
 
-        Evaluates whether the requested operation and path conform to the active
-        run's TaskScope without submitting a stateful ActionRequest that would
-        prematurely execute the command or create phantom single-use approvals.
+        #122: preflight used to be a separate partial evaluator reading
+        ``TaskScope`` from the run record. It disagreed with the engine that
+        actually decides — most visibly it stripped leading slashes before its
+        own absolute-path test, so a request the gateway denies
+        (``PATH_OUTSIDE_WORKSPACE``) was reported as an allowed, scope-verified
+        permission, and it checked no run state, tool, command prefix, or
+        approval rule.
+
+        Now preflight builds the exact request submission would send (through
+        the same ``_canonical_action`` mapping) and asks the gateway to evaluate
+        it with ``POST /api/v1/runs/{id}/actions/preview``. That seam runs the
+        real deterministic policy engine against the same run state, workspace
+        root, and task scope, so the two agree by construction rather than by
+        two implementations happening to match.
+
+        The preview performs no writes: it creates no action, decision,
+        approval, or receipt, emits no event, consumes no demo budget, and
+        executes nothing.
+
+        A preview ``ALLOW`` is deterministic-only and therefore **provisional**:
+        the submit-time reasoning audit may still escalate to HOLD, and
+        execution may still fail. It is labelled as such rather than presented
+        as a grant. Every transport, schema, or gateway failure fails closed to
+        ``deny``.
         """
         operation = params.get("operation")
-        path = params.get("path") or params.get("resource") or ""
         if not operation or not isinstance(operation, str):
             raise AcpRpcError(code=-32602, message="Missing required parameter: 'operation'")
 
-        # Fetch active run scope for preflight permission check
-        run_resp = self.http.get(f"/api/v1/runs/{self.run_id}")
-        if run_resp.status_code != 200:
+        resource, arguments = self._canonical_action(operation, params)
+        preview_payload = {
+            "tool": GATEWAY_TOOL,
+            "operation": operation,
+            "resource": resource,
+            "arguments": arguments,
+            "requested_by": self.requested_by,
+        }
+        try:
+            preview_resp = self.http.post(
+                f"/api/v1/runs/{self.run_id}/actions/preview", json=preview_payload
+            )
+        except Exception:
+            return self._preflight_denial(
+                "Permission preflight could not reach the gateway; failing closed.",
+                "POLICY_ERROR",
+            )
+
+        if preview_resp.status_code != 200:
+            # Fail closed on every non-decision response (missing run, schema
+            # rejection, demo-guard refusal, gateway error). Only the sanitized
+            # error code and HTTP status are surfaced: gateway response bodies
+            # are never echoed back to the agent.
+            return self._preflight_denial(
+                "Gateway policy preflight unavailable; failing closed.",
+                self._preflight_failure_code(preview_resp),
+                preview_status=preview_resp.status_code,
+            )
+
+        try:
+            decision = preview_resp.json()
+        except Exception:
+            return self._preflight_denial(
+                "Gateway policy preflight returned unreadable output; failing closed.",
+                "POLICY_ERROR",
+            )
+
+        if not isinstance(decision, dict):
+            return self._preflight_denial(
+                "Gateway policy preflight returned unreadable output; failing closed.",
+                "POLICY_ERROR",
+            )
+
+        outcome = decision.get("outcome")
+        reason_code = decision.get("reason_code") or "POLICY_ERROR"
+        explanation = decision.get("explanation") or ""
+        matched_rule = decision.get("matched_rule")
+
+        if outcome == "ALLOW":
+            # Provisional by construction: the deterministic layer allowed it,
+            # but the submit-time reasoning audit may still escalate to HOLD.
+            # An ALLOW here is never a promise that execution will happen.
             return {
-                "decision": "deny",
-                "reason": f"Run not found or unavailable: HTTP {run_resp.status_code}",
+                "decision": "allow",
+                "scope_verified": True,
+                "provisional": True,
+                "reason_code": reason_code,
+                "matched_rule": matched_rule,
+                "explanation": explanation,
+                "audit_note": (
+                    "Deterministic policy ALLOW only; submit-time reasoning "
+                    "audit may still escalate to HOLD, and execution may fail."
+                ),
             }
-
-        scope = run_resp.json().get("task_scope") or {}
-        allowed_ops = set(scope.get("allowed_operations") or [])
-        requires_approval = set(scope.get("requires_approval") or [])
-        blocked_paths = scope.get("blocked_paths") or []
-        allowed_paths = scope.get("allowed_paths") or []
-
-        if operation not in allowed_ops and operation not in requires_approval:
-            return {
-                "decision": "deny",
-                "reason": f"Operation '{operation}' not permitted in active task scope.",
-                "reason_code": "OPERATION_NOT_ALLOWED",
-            }
-
-        if path:
-            norm_path = str(path).strip().lstrip("/")
-            if ".." in norm_path.split("/") or norm_path.startswith("/"):
-                return {
-                    "decision": "deny",
-                    "reason": f"Path '{path}' outside workspace boundary.",
-                    "reason_code": "PATH_TRAVERSAL",
-                }
-            for blocked in blocked_paths:
-                if norm_path == blocked or norm_path.startswith(f"{blocked}/"):
-                    return {
-                        "decision": "deny",
-                        "reason": f"Path '{path}' matches blocked directory prefix '{blocked}'.",
-                        "reason_code": "BLOCKED_PATH",
-                    }
-            if allowed_paths and allowed_paths != ["."]:
-                in_allowed = any(
-                    norm_path == allow or norm_path.startswith(f"{allow}/")
-                    for allow in allowed_paths
-                )
-                if not in_allowed:
-                    return {
-                        "decision": "deny",
-                        "reason": f"Path '{path}' is not within allowed paths.",
-                        "reason_code": "PATH_NOT_ALLOWED",
-                    }
-
-        if operation in requires_approval:
+        if outcome == "HOLD":
             return {
                 "decision": "requires_approval",
-                "reason": f"Operation '{operation}' requires human approval before execution.",
-                "reason_code": "APPROVAL_REQUIRED",
+                "reason": explanation
+                or f"Operation '{operation}' requires human approval before execution.",
+                "reason_code": reason_code,
+                "matched_rule": matched_rule,
             }
+        if outcome == "DENY":
+            return {
+                "decision": "deny",
+                "reason": explanation or f"Operation '{operation}' denied by policy.",
+                "reason_code": reason_code,
+                "matched_rule": matched_rule,
+            }
+        return self._preflight_denial(
+            f"Gateway policy preflight returned an unknown outcome ({outcome!r}); failing closed.",
+            "POLICY_ERROR",
+        )
 
-        return {
-            "decision": "allow",
-            "scope_verified": True,
+    @staticmethod
+    def _preflight_denial(
+        reason: str, reason_code: str, *, preview_status: Optional[int] = None
+    ) -> dict[str, Any]:
+        """Build a fail-closed preflight denial without echoing gateway bodies."""
+        denial: dict[str, Any] = {
+            "decision": "deny",
+            "reason": reason,
+            "reason_code": reason_code,
+            "provisional": False,
         }
+        if preview_status is not None:
+            denial["preview_status"] = preview_status
+        return denial
+
+    @staticmethod
+    def _preflight_failure_code(response: Any) -> str:
+        """Classify a non-200 preflight response into a stable reason code.
+
+        Derived from the HTTP status only. The gateway's error body is never
+        read or echoed: it may carry provider output, prompts, or traces, and a
+        permission query has no need to relay it.
+        """
+        if response.status_code == 404:
+            return "RUN_NOT_FOUND"
+        if response.status_code == 422:
+            return "MALFORMED_REQUEST"
+        return "POLICY_ERROR"
 
     def _submit_action(
         self,
@@ -467,12 +627,68 @@ class AcpClientAdapter:
             return self._poll_hold(action_id, initial_response=data)
 
         if outcome == "ALLOW":
-            return data
+            return self._require_executed_receipt(data)
 
         raise AcpRpcError(
             code=-32000,
             message=f"Unknown gateway decision outcome: {outcome}",
             data={"outcome": outcome, "action_id": action_id},
+        )
+
+    def _require_executed_receipt(
+        self, data: dict[str, Any], *, context: str = "Action"
+    ) -> dict[str, Any]:
+        """Require an EXECUTED receipt before reporting a success result (#123).
+
+        Policy authorization is not proof of successful execution. An allowed
+        read of a missing file, an oversized write, or a nonzero-exit command
+        produces a FAILED receipt, and a NOT_EXECUTED or absent receipt proves
+        nothing at all. Either way the agent must see a sanitized JSON-RPC tool
+        error rather than empty content, invented byte counts, or exit_code 0.
+
+        Preserves the real action ID and the gateway's failure code so the
+        reviewer can join the tool error back to its evidence. The error detail
+        comes only from the gateway receipt, which is already sanitized
+        server-side; no provider body, trace, or stack trace is echoed.
+        """
+        receipt = data.get("execution_receipt")
+        action_id = (data.get("action_request") or {}).get("id")
+
+        if isinstance(receipt, dict) and receipt.get("status") == "EXECUTED":
+            return data
+
+        status = receipt.get("status") if isinstance(receipt, dict) else None
+        error_code = receipt.get("error_code") if isinstance(receipt, dict) else None
+        sanitized = receipt.get("sanitized_result") if isinstance(receipt, dict) else None
+        sanitized = sanitized if isinstance(sanitized, dict) else {}
+
+        error_data: dict[str, Any] = {
+            "action_id": action_id,
+            "status": status or "MISSING",
+            "error_code": error_code or "EXECUTION_FAILED",
+            "reason_code": error_code or "EXECUTION_FAILED",
+        }
+
+        detail = sanitized.get("error")
+        if isinstance(detail, str) and detail:
+            error_data["error"] = detail[:500]
+        # run_command failures carry the command's own output, which a terminal
+        # caller would legitimately see. Bounded and taken from the sanitized
+        # receipt only.
+        for key in ("exit_code", "stdout", "stderr"):
+            value = sanitized.get(key)
+            if isinstance(value, str):
+                error_data[key] = value[:MAX_RELAYED_STREAM_CHARS]
+            elif isinstance(value, int):
+                error_data[key] = value
+
+        raise AcpRpcError(
+            code=-32000,
+            message=(
+                f"{context} did not execute successfully "
+                f"(status={error_data['status']}): {error_data['error_code']}"
+            ),
+            data=error_data,
         )
 
     def _poll_hold(
@@ -488,23 +704,27 @@ class AcpClientAdapter:
             resp = self.http.get(url)
             if resp.status_code == 200:
                 action_data = resp.json()
-                receipt = action_data.get("execution_receipt")
-                if receipt and receipt.get("status") == "EXECUTED":
-                    return action_data
-                elif receipt and receipt.get("status") == "FAILED":
-                    raise AcpRpcError(
-                        code=-32000,
-                        message="Held action failed during execution",
-                        data={"action_id": action_id, "error_code": receipt.get("error_code")},
-                    )
 
+                # A hold that was never granted is reported as such first: the
+                # gateway records a NOT_EXECUTED receipt when a reviewer denies
+                # or an approval expires, and that is an approval outcome, not
+                # an execution failure.
                 approval = action_data.get("approval_request")
-                if approval and approval.get("status") in ("DENIED", "REJECTED", "EXPIRED"):
+                if isinstance(approval, dict) and approval.get("status") in (
+                    "DENIED",
+                    "REJECTED",
+                    "EXPIRED",
+                ):
                     raise AcpRpcError(
                         code=-32000,
                         message=f"Held action was not approved: {approval.get('status')}",
                         data={"action_id": action_id, "status": approval.get("status")},
                     )
+
+                # An approved hold reports success only on an EXECUTED
+                # receipt; FAILED, NOT_EXECUTED, or missing is a tool error.
+                if isinstance(action_data.get("execution_receipt"), dict):
+                    return self._require_executed_receipt(action_data, context="Held action")
 
             time.sleep(self.hold.poll_interval_s)
 

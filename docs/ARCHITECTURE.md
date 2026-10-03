@@ -62,6 +62,7 @@ Key endpoints:
 - `POST /api/v1/runs`: Initialize an isolated run with an explicit task scope.
 - `GET /api/v1/runs`: List active and historical runs.
 - `POST /api/v1/runs/{run_id}/actions`: Submit a candidate action for policy evaluation, reasoning audit, and controlled execution.
+- `POST /api/v1/runs/{run_id}/actions/preview`: Side-effect-free dry run of the deterministic policy for a would-be action. Returns the same `PolicyDecision` submission would reach, with no action, decision, approval, or receipt record, no event, no demo-budget spend, and no execution. Audit-dependent escalation is out of scope by design, so a preview `ALLOW` stays provisional (issue #122).
 - `GET /api/v1/runs/{run_id}/events`: Return the stored event list as JSON (`backend/scopewatch/app.py:221`).
 - `GET /api/v1/runs/{run_id}/events/stream`: Subscribe to live SSE events for a run (`backend/scopewatch/app.py:231`). Accepts `Last-Event-ID` or `?after_sequence=` query parameter; subscribes to future broadcast queues before querying stored events to ensure gap-free continuous delivery (issues #112, #113).
 - `GET /api/v1/approvals`: List pending, approved, or denied human review requests.
@@ -141,3 +142,5 @@ All tool actions go through the gateway API; actions that bypass the API are not
 | **7. Monotonic evidence sequence** | Monotonic event sequence; decisions precede execution. | `test_agent_end_to_end.py::test_invariant_7_*` |
 | **8. Agent-executor isolation** | Agent package has zero import path to executor. | `test_agent_end_to_end.py::test_invariant_8_*` |
 | **9. Evidence names its policy** | Every decision stores the evaluated `policy_version`; pre-version rows read as `unknown (legacy)` and are never backfilled; approvals resolve against the identity of their stored decision. | `test_issue_119_policy_version.py::*` |
+| **10. Authorization is not execution** | ACP adapter requires an `EXECUTED` receipt before returning a success result; `FAILED`, `NOT_EXECUTED`, and missing receipts become sanitized tool errors carrying the real action ID. | `test_issue_122_123_acp_preflight_and_receipts.py::test_*receipt*`, `::test_allowed_but_failed_read_surfaces_as_tool_error` |
+| **11. Preflight agrees with the decision** | ACP permission preflight evaluates the same request and the same deterministic engine as submission, via the side-effect-free `actions/preview` seam; an `ALLOW` is labelled provisional. | `test_issue_122_123_acp_preflight_and_receipts.py::test_preflight_*` |
