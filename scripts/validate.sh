@@ -87,15 +87,28 @@ trap cleanup EXIT
 
 CLEAN_DB="${TMP_DIR}/clean.db"
 CLEAN_WS="${TMP_DIR}/workspace"
+# Issue #117: each run executes against its own copy of the scenario fixture,
+# in a managed sibling directory, never the fixture tree itself.
+CLEAN_RUNS="${TMP_DIR}/workspace-runs"
 
 "${PYTHON}" "${REPO_ROOT}/scripts/seed_demo.py" \
   --db-path "${CLEAN_DB}" \
   --workspace-root "${CLEAN_WS}" \
   --auto-approve
 
-# Verify that safe audit created the expected output file
-if [[ ! -f "${CLEAN_WS}/outputs/audit-summary.txt" ]]; then
-  echo "Validation failure: expected safe output '${CLEAN_WS}/outputs/audit-summary.txt' was not created." >&2
+# One workspace directory per seeded run.
+RUN_COUNT="$(find "${CLEAN_RUNS}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+if [[ "${RUN_COUNT}" -lt 1 ]]; then
+  echo "Validation failure: no per-run workspaces were created under '${CLEAN_RUNS}'." >&2
+  exit 1
+fi
+echo "  ✓ Per-run workspaces created: ${RUN_COUNT}"
+
+# Verify that safe audit created the expected output file inside a RUN's
+# workspace, not in the shared fixture.
+AUDIT_SUMMARIES="$(find "${CLEAN_RUNS}" -mindepth 2 -path '*/outputs/audit-summary.txt' -type f | wc -l | tr -d ' ')"
+if [[ "${AUDIT_SUMMARIES}" -lt 1 ]]; then
+  echo "Validation failure: expected safe output 'outputs/audit-summary.txt' was not created in any run workspace." >&2
   exit 1
 fi
 
@@ -111,7 +124,15 @@ if ! grep -q "Executive Compensation Schedule FY2026" "${CLEAN_WS}/invoices/priv
   exit 1
 fi
 
+# The shared fixture is read-only baseline: no run-generated output may leak
+# back into it (issue #117).
+if [[ -f "${CLEAN_WS}/outputs/audit-summary.txt" ]]; then
+  echo "Validation failure: run output leaked into the shared scenario fixture." >&2
+  exit 1
+fi
+
 echo "  ✓ Clean-room workspace isolation verified"
+echo "  ✓ Run outputs confined to per-run workspaces; fixture tree untouched"
 echo "  ✓ Security boundary verified (no host escapes, no unauthorized file mutations)"
 
 echo ""

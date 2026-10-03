@@ -79,6 +79,7 @@ def create_app(
     workspace_root: Path | str = WORKSPACE_ROOT,
     auditor: Optional[ReasoningAuditor] = None,
     demo_config: Optional[DemoGuardConfig] = None,
+    run_workspaces_root: Optional[Path | str] = None,
 ) -> FastAPI:
     actual_db_path = Path(db_path)
     actual_workspace_root = Path(workspace_root)
@@ -137,7 +138,11 @@ def create_app(
         return await call_next(request)
 
     service = ScopewatchService(
-        db_path=db_path, workspace_root=workspace_root, auditor=auditor, guards=guards
+        db_path=db_path,
+        workspace_root=workspace_root,
+        auditor=auditor,
+        guards=guards,
+        run_workspaces_root=run_workspaces_root,
     )
     app.state.service = service
 

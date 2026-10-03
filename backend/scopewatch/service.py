@@ -60,6 +60,7 @@ from scopewatch.repository import (
     RepositoryNotFoundError,
     ScopewatchRepository,
 )
+from scopewatch.workspaces import RunWorkspaceError, RunWorkspaceManager
 from scopewatch.schemas import (
     ActionRequest,
     ActionResponse,
@@ -92,9 +93,16 @@ class ScopewatchService:
         workspace_root: Path | str,
         auditor: Optional[ReasoningAuditor] = None,
         guards: Optional[DemoGuardPolicy] = None,
+        run_workspaces_root: Optional[Path | str] = None,
     ) -> None:
         self.db_path = Path(db_path)
+        # Issue #117: workspace_root is the read-only synthetic scenario
+        # fixture. Runs never execute against it; each run executes against its
+        # own copy resolved through the stored run.
         self.workspace_root = Path(workspace_root)
+        self.run_workspaces = RunWorkspaceManager(
+            source_root=self.workspace_root, root=run_workspaces_root
+        )
         self._auditor = auditor
         # Demo guards (#76): one shared policy per service instance. The app
         # wires the same object into the token middleware so HTTP and service
@@ -317,6 +325,18 @@ class ScopewatchService:
                         conn.close()
             run_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc).isoformat()
+            # Issue #117: materialize this run's own workspace from the
+            # scenario fixture before the run exists, and store the identity
+            # on the run. A run whose workspace cannot be created is refused
+            # rather than created sharing someone else's tree.
+            try:
+                workspace = self.run_workspaces.initialize(run_id)
+            except RunWorkspaceError as exc:
+                raise ScopewatchAPIError(
+                    code="RUN_WORKSPACE_UNAVAILABLE",
+                    message="Could not initialize an isolated workspace for this run.",
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                ) from exc
             run = Run(
                 id=run_id,
                 name=name,
@@ -334,6 +354,7 @@ class ScopewatchService:
                     "synthetic fixtures are labeled explicitly."
                 ),
                 prompt_version=prompt_version,
+                workspace_path=str(workspace),
             )
 
             conn = self._get_conn()
@@ -356,6 +377,11 @@ class ScopewatchService:
                             "requires_approval": task_scope.requires_approval,
                             "token_budget": self._token_budget_snapshot(),
                             "prompt_version": prompt_version,
+                            # #117: the run owns a workspace copy. Recorded as
+                            # the key only; the fixture path never enters
+                            # evidence.
+                            "run_workspace": self.run_workspaces.workspace_key(run_id),
+                            "workspace_isolated": True,
                         },
                     )
                 return run, [event]
@@ -369,6 +395,51 @@ class ScopewatchService:
             if pending_added:
                 with self._creation_lock:
                     self._pending_creations = max(0, self._pending_creations - 1)
+
+    # ---------------- Per-run workspace identity (#117) ----------------
+    # Submit, approve, and execute all resolve the workspace through the
+    # stored run, so two runs never share a writable tree and the scenario
+    # fixture stays read-only. Resolution failures fail closed.
+
+    def _resolve_run_workspace(
+        self,
+        conn: sqlite3.Connection,
+        run: Run,
+    ) -> Path:
+        """Return this run's workspace, persisting a lazily created one."""
+        try:
+            workspace = self.run_workspaces.resolve(
+                run.id, stored_path=run.workspace_path
+            )
+        except RunWorkspaceError as exc:
+            raise ScopewatchAPIError(
+                code="RUN_WORKSPACE_UNAVAILABLE",
+                message="This run's isolated workspace is unavailable; refusing to execute.",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            ) from exc
+        if not run.workspace_path:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            with db_transaction(conn):
+                ScopewatchRepository.update_run_workspace_path(
+                    conn, run.id, str(workspace), now_iso
+                )
+            run.workspace_path = str(workspace)
+        return workspace
+
+    def get_run_workspace(self, run_id: str) -> Path:
+        """Public accessor for a run's workspace (tests, operations, review)."""
+        conn = self._get_conn()
+        try:
+            run = ScopewatchRepository.get_run(conn, run_id)
+            if not run:
+                raise ScopewatchAPIError(
+                    code="RUN_NOT_FOUND",
+                    message=f"Run '{run_id}' not found.",
+                    status_code=status.HTTP_404_NOT_FOUND,
+                )
+            return self._resolve_run_workspace(conn, run)
+        finally:
+            conn.close()
 
     def get_run(self, run_id: str) -> Run:
         conn = self._get_conn()
@@ -520,8 +591,13 @@ class ScopewatchService:
                 reasoning_audit_id=None,
             )
 
+            # Issue #117: the run evaluates against its own workspace copy, not
+            # the shared scenario fixture, so a path one run wrote is not
+            # visible to another run's policy decision.
+            workspace = self._resolve_run_workspace(conn, run)
+
             # Invariant: Deterministic policy first!
-            decision = evaluate_policy(action, run, self.workspace_root)
+            decision = evaluate_policy(action, run, workspace)
 
             # Feature flag check
             reasoning_audit_enabled = os.environ.get(
@@ -907,7 +983,7 @@ class ScopewatchService:
                 try:
                     receipt = execute_action(
                         action,
-                        self.workspace_root,
+                        workspace,
                         policy_decision=decision,
                         db_path=conn,
                         task_scope=fresh_run.task_scope,
@@ -1140,6 +1216,12 @@ class ScopewatchService:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
+            # Issue #117: an approved HOLD executes against the ORIGINAL
+            # run's workspace. Resolved from the stored run, so it survives a
+            # service restart and never drifts to the fixture root or to
+            # another run's tree.
+            run_workspace = self._resolve_run_workspace(conn, run)
+
             # Invariant: Cannot approve if deterministic decision is DENY
             if approve and decision.outcome == PolicyOutcome.DENY:
                 raise ScopewatchAPIError(
@@ -1281,7 +1363,7 @@ class ScopewatchService:
                 try:
                     receipt = execute_action(
                         action,
-                        self.workspace_root,
+                        run_workspace,
                         policy_decision=decision,
                         approval_request=updated_approval,
                         db_path=conn,

@@ -185,8 +185,9 @@ async def test_issue_109_persist_decisions_and_events_before_effect(service_env,
     with pytest.raises(sqlite3.OperationalError, match="Simulated post-execution receipt persistence error"):
         await service.submit_action(run.id, req)
 
-    # Verify the file was written to disk by the executor
-    report_file = workspace_dir / "outputs" / "report109.txt"
+    # Verify the file was written to disk by the executor, into the run's own
+    # workspace copy (#117), not into the shared scenario fixture.
+    report_file = service.get_run_workspace(run.id) / "outputs" / "report109.txt"
     assert report_file.exists()
     assert report_file.read_text(encoding="utf-8") == "Report data that survived disk write"
 

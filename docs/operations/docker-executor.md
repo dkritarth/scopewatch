@@ -30,17 +30,25 @@ Each dispatch builds one `docker run` (`build_docker_command`) with:
   `--cap-drop ALL`, `--security-opt no-new-privileges`,
   `--pids-limit 64`, `--memory 256m` (+ `--memory-swap 256m`),
   `--cpus 1.0`, `--workdir /workspace`;
-- exactly one mount: the run's staged workspace copy at
+- exactly one mount: a staged copy of the run's own workspace at
   `/workspace:rw`. Host home, the Docker socket, SSH material, and cloud
   credential variables are never mounted or referenced.
+
+There are two copies in play (issue #117). `workspace_root` handed to the
+executor is already the **run's own workspace**, a copy of the synthetic
+scenario fixture owned by that run (`scopewatch/workspaces.py`). Staging
+(`_stage_workspace_copy`) then makes a throwaway per-dispatch copy of *that*
+directory for the container. The container never mounts the shared fixture,
+and never mounts another run's workspace.
 
 The staged copy (`_stage_workspace_copy`) is a fresh `mkdtemp`
 `scopewatch-run-*` directory per dispatch, opened to UID 65534 with world
 bits so the non-root container can write; the source tree keeps its own
 permissions. The staging root is removed in a `finally` block and the
 container is removed best-effort (`docker rm -f`), including on timeouts.
-Successful `write_text`/`run_command` results sync back to the host
-workspace; reads, listings, and simulated deletes do not.
+Successful `write_text`/`run_command` results sync back to the **run's**
+workspace; reads, listings, and simulated deletes do not. Copy-back never
+touches the shared fixture or a sibling run's directory.
 
 ## Image pin
 

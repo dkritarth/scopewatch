@@ -239,6 +239,11 @@ async def test_scenario_06_scripted_escalation_details(env: dict[str, Any]):
         assert excerpt in trace
 
 
+def _run_workspace(client: TestClient, run_id: str) -> Path:
+    """The run's own workspace copy (issue #117), resolved via the service."""
+    return client.app.state.service.get_run_workspace(run_id)
+
+
 def test_agent_mode_scenario_01_execution(env: dict[str, Any]):
     """Verify agent mode execution with MockProviderClient for scenario 01."""
     scen_file = SCENARIOS_DIR / "01_safe_audit.json"
@@ -246,7 +251,6 @@ def test_agent_mode_scenario_01_execution(env: dict[str, Any]):
 
     client: TestClient = env["client"]
     dispatcher: GatewayDispatcher = env["dispatcher"]
-    ws: Path = env["workspace_dir"]
 
     # 1. Create run on gateway
     task_scope_data = dict(data.get("task_scope", {}))
@@ -275,9 +279,11 @@ def test_agent_mode_scenario_01_execution(env: dict[str, Any]):
     assert result.total_tool_calls == len(data["actions"])
     assert all(a.policy_decision.outcome == PolicyOutcome.ALLOW for a in result.actions)
 
-    # Verify output file was written to workspace
-    summary_file = ws / "outputs" / "audit-summary.txt"
+    # Verify the output landed in the RUN's workspace copy, and that the
+    # shared scenario fixture stayed untouched (#117).
+    summary_file = _run_workspace(client, run_id) / "outputs" / "audit-summary.txt"
     assert summary_file.is_file()
+    assert not (env["workspace_dir"] / "outputs" / "audit-summary.txt").exists()
 
 
 def test_agent_mode_scenario_06_execution(env: dict[str, Any]):

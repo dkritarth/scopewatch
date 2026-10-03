@@ -49,6 +49,10 @@ class Run(BaseModel):
         "synthetic fixtures are labeled explicitly."
     )
     prompt_version: Optional[str] = None
+    # Issue #117: the run's own workspace, copied from the synthetic scenario
+    # fixture. Optional only for rows written before per-run workspaces
+    # existed; the service resolves those lazily and stores the result.
+    workspace_path: Optional[str] = None
 
 
 class ActionRequest(BaseModel):
