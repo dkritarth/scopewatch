@@ -22,6 +22,7 @@ import uuid
 import pytest
 
 from scopewatch.db import init_db
+from scopewatch.docker_job import prepare_docker_job
 from scopewatch.executor_docker import (
     DOCKER_CPUS,
     DOCKER_IMAGE,
@@ -260,9 +261,11 @@ def test_gapclose_docker_command_full_hardening(tmp_path: Path) -> None:
     cmd = build_docker_command(
         image="python:3.12-slim-bookworm@sha256:" + "0" * 64,
         workspace_copy=copy,
-        operation="read_text",
-        resource="docs/file_a.txt",
-        arguments_json="{}",
+        job=prepare_docker_job(
+            operation="read_text",
+            resource="docs/file_a.txt",
+            arguments={},
+        ),
         container_name="scopewatch-gapclose-probe",
         run_label="run-gap",
     )

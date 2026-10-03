@@ -15,6 +15,7 @@ import uuid
 import pytest
 
 from scopewatch.db import init_db
+from scopewatch.docker_job import prepare_docker_job
 from scopewatch.errors import ScopewatchAPIError
 from scopewatch.executor import ExecutionSecurityError, execute_action
 from scopewatch.executor_docker import (
@@ -1172,9 +1173,11 @@ def test_bypass_docker_command_never_mounts_socket_or_host_net(
     cmd = build_docker_command(
         image="python:3.12-slim-bookworm@sha256:" + "0" * 64,
         workspace_copy=copy,
-        operation="read_text",
-        resource="docs/file_a.txt",
-        arguments_json="{}",
+        job=prepare_docker_job(
+            operation="read_text",
+            resource="docs/file_a.txt",
+            arguments={},
+        ),
         container_name="scopewatch-bypass-probe",
         run_label="run-1",
     )

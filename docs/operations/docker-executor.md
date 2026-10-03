@@ -44,8 +44,10 @@ workspace; reads, listings, and simulated deletes do not.
 
 ## Image pin
 
-`DOCKER_IMAGE` in `executor_docker.py` is a digest-pinned
-`python:3.12-slim-bookworm@sha256:<64 hex>` base. CI builds
+`DOCKER_IMAGE` in `docker_job.py` is a digest-pinned
+`python:3.12-slim-bookworm@sha256:<64 hex>` base, and is re-exported from
+`executor_docker.py` for existing callers. The executor-runner sidecar imports
+the same constant, so there is one pin to bump (issue #106). CI builds
 `backend/executor/Dockerfile` (same base digest + the hashed backend
 lock, so `python -m pytest` exists inside) and selects it at runtime with
 `SCOPEWATCH_EXECUTOR_IMAGE=scopewatch-executor:ci`. Constructor arguments

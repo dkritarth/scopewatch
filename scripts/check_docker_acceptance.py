@@ -4,7 +4,13 @@
 Checks structural acceptance properties without a Docker daemon:
 pinned image digest, hardening flags, mount hygiene (no socket/home/creds),
 run_command docker-only gating, helper re-validation, fail-closed strings,
-single entry point, dedicated CI workflow, and skip-cleanly fixtures.
+single entry point, gateway/runner agreement on job construction (issue #106),
+dedicated CI workflow, and skip-cleanly fixtures.
+
+Since #106 the image pin, hardening flag list, helper source, staging, and
+copy-back walk live in ``backend/scopewatch/docker_job.py``, which the gateway
+and the executor-runner sidecar both import; those checks read that file and
+additionally assert neither caller re-declares the flag list.
 
 Usage: python3 scripts/check_docker_acceptance.py [--quiet]
 Exit 0 when every check passes, 1 otherwise.
@@ -18,6 +24,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 EXEC_DOCKER = REPO / "backend" / "scopewatch" / "executor_docker.py"
+# Shared Docker job construction, imported by both the gateway and the
+# executor-runner sidecar (issue #106). The image pin, hardening flag list,
+# helper source, staging, and copy-back walk are checked here.
+DOCKER_JOB = REPO / "backend" / "scopewatch" / "docker_job.py"
+RUNNER = REPO / "deploy" / "executor-runner" / "runner.py"
+RUNNER_DOCKERFILE = REPO / "deploy" / "executor-runner" / "Dockerfile"
 EXECUTOR = REPO / "backend" / "scopewatch" / "executor.py"
 POLICY = REPO / "backend" / "scopewatch" / "policy.py"
 DOCKERFILE = REPO / "backend" / "executor" / "Dockerfile"
@@ -35,6 +47,9 @@ def main() -> int:
     quiet = "--quiet" in sys.argv[1:]
     try:
         docker_src = EXEC_DOCKER.read_text(encoding="utf-8")
+        job_src = DOCKER_JOB.read_text(encoding="utf-8")
+        runner_src = RUNNER.read_text(encoding="utf-8")
+        runner_dockerfile_src = RUNNER_DOCKERFILE.read_text(encoding="utf-8")
         executor_src = EXECUTOR.read_text(encoding="utf-8")
         policy_src = POLICY.read_text(encoding="utf-8")
         dockerfile_src = DOCKERFILE.read_text(encoding="utf-8")
@@ -44,8 +59,11 @@ def main() -> int:
         print(f"MISSING FILE: {exc.filename}")
         return 1
 
-    # --- 1. Image digest pinned ---
-    m = re.search(r'DOCKER_IMAGE = \(\s*"([^"]+)"\s*"([^"]+)"', docker_src)
+    # Job construction (flag list, helper, image pin, staging, copy-back) is
+    # shared between the gateway and the runner sidecar (issue #106), so these
+    # static checks read backend/scopewatch/docker_job.py. The gates that
+    # decide whether to dispatch stay in executor_docker.py.
+    m = re.search(r'DOCKER_IMAGE = \(\s*"([^"]+)"\s*"([^"]+)"', job_src)
     image = "".join(m.groups()) if m else ""
     check("image-has-digest-pin", "@sha256:" in image, image[:60])
     digest = image.split("@sha256:")[1] if "@sha256:" in image else ""
@@ -55,6 +73,11 @@ def main() -> int:
     check("dockerfile-matches-pin", digest != "" and digest in dockerfile_src,
           "CI image FROM digest")
     check("no-floating-latest", ":latest" not in image, image[:40])
+    # The runner must not restate the pin; it takes it from the shared module.
+    check("runner-shares-the-pin", digest != "" and digest not in runner_src,
+          "runner imports the pin instead of repeating it")
+    check("runner-imports-the-pin", "DOCKER_IMAGE as RUNNER_DOCKER_IMAGE" in runner_src,
+          "runner aliases the shared pin")
 
     # --- 2. Hardening flags in build_docker_command ---
     for flag in ["--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp",
@@ -62,18 +85,25 @@ def main() -> int:
                  "--security-opt", "no-new-privileges", "--pids-limit", "64",
                  "--memory", "256m", "--memory-swap", "--cpus",
                  "--workdir", "/workspace"]:
-        check(f"flag:{flag}", f'"{flag}"' in docker_src, "build_docker_command")
-    check("no-privileged", "--privileged" not in docker_src, "never privileged")
+        check(f"flag:{flag}", f'"{flag}"' in job_src, "build_docker_command")
+    check("no-privileged", "--privileged" not in job_src, "never privileged")
+    # The flag list must exist once, not twice (issue #106).
+    for caller, src in (("executor_docker", docker_src), ("runner", runner_src)):
+        check(f"flag-list-single-source:{caller}",
+              '"--cap-drop"' not in src,
+              "flag list must live only in docker_job.py")
 
     # --- 3. Mount hygiene: only the workspace copy ---
-    check("mount-workspace-rw", ':/workspace:rw"' in docker_src or
-          ":/workspace:rw" in docker_src, "single :rw mount")
+    check("mount-workspace-rw",
+          f"{{workspace_copy}}:{{CONTAINER_WORKSPACE}}:rw" in job_src
+          and 'CONTAINER_WORKSPACE = "/workspace"' in job_src,
+          "single :rw mount onto the container workspace")
     for bad, label in [("docker.sock", "no-docker-socket"),
                        ("Path.home()", "no-home-mount"),
                        (".ssh", "no-ssh-mount")]:
-        check(label, bad not in docker_src, label)
+        check(label, bad not in job_src, label)
     for token in ["AWS_", "NEBIUS_", "SSH_AUTH_SOCK", "GITHUB_TOKEN"]:
-        check(f"no-cred-{token}", token not in docker_src, "no credential leak")
+        check(f"no-cred-{token}", token not in job_src, "no credential leak")
 
     # --- 4. run_command docker-only ---
     check("policy-docker-gate", "RULE_RUN_COMMAND_REQUIRES_DOCKER" in policy_src,
@@ -96,7 +126,7 @@ def main() -> int:
                          ("...[truncated", "helper-truncation-marker"),
                          ("SCOPEWATCH_WORKSPACE", "helper-workspace-env"),
                          ("/workspace", "helper-workspace-path")]:
-        check(label, token in docker_src, "in-container helper")
+        check(label, token in job_src, "in-container helper")
 
     # --- 6. Fail-closed, single entry ---
     check("fail-closed-message", "failing closed" in docker_src.lower(),
@@ -113,7 +143,15 @@ def main() -> int:
           or 'f"scopewatch-{uuid' in docker_src, "unique container names")
     check("best-effort-remove", "_best_effort_remove" in docker_src,
           "container cleanup")
-    check("run-label", "scopewatch.run" in docker_src, "per-run label")
+    check("run-label", "scopewatch.run" in job_src, "per-run label")
+
+    # --- 6b. The runner imports the shared module and nothing else (#106) ---
+    check("runner-imports-shared-job-module",
+          "from scopewatch.docker_job import" in runner_src,
+          "runner uses the shared job module")
+    check("runner-ships-shared-module",
+          "backend/scopewatch/docker_job.py" in runner_dockerfile_src,
+          "runner image COPYs the shared module")
 
     # --- 7. CI workflow + skip-cleanly ---
     check("workflow-exists", WORKFLOW.exists(), str(WORKFLOW))
