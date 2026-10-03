@@ -187,3 +187,114 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     }
   }
 });
+
+test("live run discovery and terminal status broadcast (#113, #114)", { timeout: 35000 }, async () => {
+  const repoRoot = join(import.meta.dirname, "..", "..", "..");
+  const venvPython = join(repoRoot, ".venv", "bin", "python");
+  const pythonBin = existsSync(venvPython) ? venvPython : "python3";
+  const tmpDir = mkdtempSync(join(tmpdir(), "scopewatch-live-sync-test-"));
+  const dbPath = join(tmpDir, "test.db");
+  const workspacePath = join(tmpDir, "workspace");
+  mkdirSync(workspacePath, { recursive: true });
+
+  const port = await getFreePort();
+  const runnerScript = `
+import uvicorn
+from pathlib import Path
+from scopewatch.app import create_app
+from scopewatch.db import init_db
+
+db_path = Path("${dbPath}")
+init_db(db_path)
+app = create_app(db_path=db_path, workspace_root=Path("${workspacePath}"))
+uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
+`;
+
+  const backendProc = spawn(
+    pythonBin,
+    ["-c", runnerScript],
+    {
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        PYTHONPATH: join(repoRoot, "backend"),
+      },
+    }
+  );
+
+  let healthy = false;
+  for (let i = 0; i < 30; i++) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/v1/health`);
+      if (res.ok) {
+        healthy = true;
+        break;
+      }
+    } catch {
+      // Retry
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  assert.equal(healthy, true, "Backend failed to become healthy");
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const origin = `http://127.0.0.1:${port}/?live=1`;
+
+    await page.goto(origin);
+    await page.locator("#timeline button").first().waitFor();
+
+    // 1. Create a new run via REST API while page is open (#114)
+    const newRunRes = await fetch(`http://127.0.0.1:${port}/api/v1/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Discovered Run",
+        task_scope: {
+          schema_version: "1",
+          task_description: "Run discovered live",
+          allowed_paths: ["outputs"],
+          blocked_paths: [],
+          allowed_tools: ["workspace"],
+          allowed_operations: ["read_text"],
+          allowed_network_destinations: [],
+          requires_approval: [],
+          created_at: new Date().toISOString(),
+        },
+      }),
+    });
+    assert.equal(newRunRes.status, 201);
+    const newRun = await newRunRes.json();
+
+    // 2. Verify the new run button appears in the dashboard without page reload
+    const newRunBtn = page.locator("#run-buttons button:has-text(\"Discovered Run\")");
+    await newRunBtn.waitFor({ timeout: 8000 });
+    assert.ok(await newRunBtn.isVisible());
+
+    // 3. Select the newly discovered run
+    await newRunBtn.click();
+    assert.equal(await newRunBtn.getAttribute("aria-pressed"), "true");
+
+    // 4. Complete the run via API and verify live SSE broadcasts terminal status (#113)
+    const completeRes = await fetch(`http://127.0.0.1:${port}/api/v1/runs/${newRun.id}/complete`, {
+      method: "POST",
+    });
+    assert.equal(completeRes.status, 200);
+
+    // Verify timeline shows RUN_COMPLETED event and runTask shows COMPLETED status
+    await page.waitForFunction(() => {
+      const taskEl = document.getElementById("run-task");
+      return taskEl && taskEl.textContent.includes("[COMPLETED]");
+    }, { timeout: 8000 });
+  } finally {
+    if (browser) await browser.close();
+    backendProc.kill("SIGKILL");
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // Cleanup
+    }
+  }
+});

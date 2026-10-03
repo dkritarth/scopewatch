@@ -306,7 +306,9 @@ export function connectLiveEvents(runId, { onEvent, onStatusChange, initialSeque
 
   if (typeof EventSource !== "undefined") {
     try {
-      const url = `/api/v1/runs/${encodeURIComponent(runId)}/events/stream`;
+      const url = initialSequence > 0
+        ? `/api/v1/runs/${encodeURIComponent(runId)}/events/stream?after_sequence=${encodeURIComponent(initialSequence)}`
+        : `/api/v1/runs/${encodeURIComponent(runId)}/events/stream`;
       eventSource = new EventSource(url);
 
       eventSource.onopen = () => {

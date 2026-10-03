@@ -294,6 +294,7 @@ def create_app(
         run_id: str,
         request: Request,
         last_event_id: Optional[str] = Header(None, alias="Last-Event-ID"),
+        after_sequence: Optional[int] = Query(None),
         limit: Optional[int] = Query(None),
         svc: ScopewatchService = Depends(get_service),
     ) -> EventSourceResponse:
@@ -306,23 +307,35 @@ def create_app(
             if limit is not None and count >= limit:
                 return
 
+            cursor = None
             if last_event_id and last_event_id.isdigit():
-                stored_events = svc.get_events(run_id, after_sequence=int(last_event_id))
-                for ev in stored_events:
-                    yield ServerSentEvent(
-                        id=str(ev.sequence),
-                        event=ev.event_type.value,
-                        data=ev.model_dump_json(),
-                    )
-                    count += 1
-                    if limit is not None and count >= limit:
-                        return
+                cursor = int(last_event_id)
+            elif after_sequence is not None:
+                cursor = after_sequence
 
+            # Subscribe to future events BEFORE fetching replay events to eliminate race gap (#112)
             queue = await broadcaster.subscribe(run_id)
+            seen_sequences: set[int] = set()
             try:
+                if cursor is not None:
+                    stored_events = svc.get_events(run_id, after_sequence=cursor)
+                    for ev in stored_events:
+                        seen_sequences.add(ev.sequence)
+                        yield ServerSentEvent(
+                            id=str(ev.sequence),
+                            event=ev.event_type.value,
+                            data=ev.model_dump_json(),
+                        )
+                        count += 1
+                        if limit is not None and count >= limit:
+                            return
+
                 while True:
                     try:
                         event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                        if event.sequence in seen_sequences:
+                            continue
+                        seen_sequences.add(event.sequence)
                         yield ServerSentEvent(
                             id=str(event.sequence),
                             event=event.event_type.value,

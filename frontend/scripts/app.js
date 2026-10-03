@@ -234,6 +234,7 @@ export function formatLiveRun(backendRun, rawEvents = []) {
     id: backendRun.id,
     name: `${backendRun.name} (Live)`,
     task: scope?.task_description || "Synthetic live run",
+    status: backendRun.status || "ACTIVE",
     scope: [
       `Allowed: ${scope?.allowed_paths?.join(", ") || "none"}`,
       `Blocked: ${scope?.blocked_paths?.join(", ") || "none"}`,
@@ -497,6 +498,7 @@ function renderRunButtons() {
     button.type = "button";
     button.className = "run-button";
     button.dataset.runId = run.id;
+    button.dataset.status = run.status || "ACTIVE";
     button.setAttribute("aria-pressed", String(run.id === selectedRun?.id));
     button.textContent = run.name;
     if (!existingButton) {
@@ -517,7 +519,8 @@ function renderRunButtons() {
 function renderScope() {
   const run = getSelectedRun();
   if (!run || !elements.runTask || !elements.runScope) return;
-  elements.runTask.textContent = run.task || "No task description.";
+  const statusSuffix = run.status && run.status !== "ACTIVE" ? ` [${run.status}]` : "";
+  elements.runTask.textContent = `${run.task || "No task description."}${statusSuffix}`;
   elements.runScope.replaceChildren(
     ...(run.scope || []).map((item) => {
       const listItem = document.createElement("li");
@@ -1389,16 +1392,29 @@ function subscribeToRun(runId) {
     liveStreamHandle = null;
   }
 
+  const run = activeRuns.find((r) => r.id === runId);
+  const maxSeq = run?.events?.reduce((max, e) => (e.sequence > max ? e.sequence : max), 0) || 0;
+
   liveStreamHandle = connectLiveEvents(runId, {
+    initialSequence: maxSeq,
     onEvent: (apiEvent) => {
-      const run = activeRuns.find((r) => r.id === runId);
-      if (!run) return;
+      const targetRun = activeRuns.find((r) => r.id === runId);
+      if (!targetRun) return;
 
       // Malformed frames are logged + skipped, never crash the timeline.
       const formatted = safeTransformApiEvent(apiEvent);
       if (!formatted) return;
-      if (!run.events.some((e) => e.sequence === formatted.sequence)) {
-        run.events.push(formatted);
+      if (!targetRun.events.some((e) => e.sequence === formatted.sequence)) {
+        targetRun.events.push(formatted);
+        if (apiEvent.event_type === "RUN_COMPLETED" || formatted.type === "RUN_COMPLETED") {
+          targetRun.status = "COMPLETED";
+          renderRunButtons();
+          renderScope();
+        } else if (apiEvent.event_type === "SYSTEM_ERROR" || formatted.type === "SYSTEM_ERROR") {
+          targetRun.status = "FAILED";
+          renderRunButtons();
+          renderScope();
+        }
         renderTimeline();
         if (state.eventId === formatted.id || !state.eventId) {
           state.eventId = formatted.id;
@@ -1738,6 +1754,42 @@ export function isLiveRequested(search = "", port = "", liveFlag = false) {
 }
 
 // Bootstrapping: check if live backend is requested and available
+
+export async function refreshRuns() {
+  if (!isLiveMode) return;
+  try {
+    const backendRuns = await getRuns();
+    if (!backendRuns || !Array.isArray(backendRuns)) return;
+    let runsChanged = false;
+    for (const bRun of backendRuns) {
+      let existing = activeRuns.find((r) => r.id === bRun.id);
+      if (!existing) {
+        let events = [];
+        try {
+          events = await getEvents(bRun.id);
+        } catch {
+          events = [];
+        }
+        const formatted = formatLiveRun(bRun, events);
+        activeRuns.push(formatted);
+        runsChanged = true;
+      } else {
+        const currentStatus = bRun.status || "ACTIVE";
+        if (existing.status !== currentStatus) {
+          existing.status = currentStatus;
+          runsChanged = true;
+        }
+      }
+    }
+    if (runsChanged) {
+      renderRunButtons();
+      renderScope();
+    }
+  } catch (err) {
+    console.warn("Could not refresh live runs:", err);
+  }
+}
+
 async function bootstrap() {
   if (typeof window === "undefined") return;
   const liveRequested = isLiveRequested(
@@ -1812,6 +1864,13 @@ async function bootstrap() {
       renderTimeline();
       renderEvidence();
       refreshApprovals();
+
+      if (typeof window !== "undefined") {
+        if (window.__runRefreshInterval) {
+          clearInterval(window.__runRefreshInterval);
+        }
+        window.__runRefreshInterval = setInterval(refreshRuns, 3000);
+      }
     } catch (err) {
       console.warn("Could not initialize live runs, falling back to fixtures:", err);
       isLiveMode = false;
@@ -1833,6 +1892,7 @@ if (typeof document !== "undefined") {
 if (typeof window !== "undefined") {
   window.__scopewatch = {
     safeTransformApiEvent,
+    refreshRuns,
     approvalConfirmStep,
     panelStatus,
     getSseBannerCopy,
