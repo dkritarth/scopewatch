@@ -42,6 +42,35 @@ from scopewatch.models import ReasoningProvenance
 
 GATEWAY_TOOL = "workspace"
 
+# Bounds on executor-supplied data relayed back to the agent. Command output
+# is what a terminal caller would legitimately see; directory listings are not,
+# and an unbounded relay there would hand the agent an arbitrarily large
+# payload straight out of the workspace.
+MAX_RELAYED_STREAM_CHARS = 2000
+MAX_RELAYED_ENTRIES = 500
+MAX_RELAYED_NAME_CHARS = 512
+
+
+def _bounded_entries(entries: Any) -> list[Any]:
+    """Cap a relayed directory listing by count and by per-entry name length."""
+    if not isinstance(entries, list):
+        return []
+    bounded: list[Any] = []
+    for entry in entries[:MAX_RELAYED_ENTRIES]:
+        if isinstance(entry, str):
+            bounded.append(entry[:MAX_RELAYED_NAME_CHARS])
+        elif isinstance(entry, dict):
+            clipped = dict(entry)
+            for key in ("name", "path"):
+                value = clipped.get(key)
+                if isinstance(value, str):
+                    clipped[key] = value[:MAX_RELAYED_NAME_CHARS]
+            bounded.append(clipped)
+        else:
+            bounded.append(entry)
+    return bounded
+
+
 MEDIATED_ACP_METHODS = (
     "initialize",
     "fs/read_text_file",
@@ -344,7 +373,7 @@ class AcpClientAdapter:
         entries = sanitized.get("entries", sanitized.get("items", []))
         return {
             "path": path,
-            "entries": entries,
+            "entries": _bounded_entries(entries),
             "action_id": (action_resp.get("action_request") or {}).get("id"),
         }
 
@@ -649,7 +678,7 @@ class AcpClientAdapter:
         for key in ("exit_code", "stdout", "stderr"):
             value = sanitized.get(key)
             if isinstance(value, str):
-                error_data[key] = value[:2000]
+                error_data[key] = value[:MAX_RELAYED_STREAM_CHARS]
             elif isinstance(value, int):
                 error_data[key] = value
 
