@@ -746,6 +746,7 @@ class ScopewatchService:
                         action,
                         self.workspace_root,
                         policy_decision=decision,
+                        db_path=conn,
                         task_scope=run.task_scope,
                     )
                     ScopewatchRepository.create_execution_receipt(conn, receipt)
@@ -1137,6 +1138,7 @@ class ScopewatchService:
                         self.workspace_root,
                         policy_decision=decision,
                         approval_request=updated_approval,
+                        db_path=conn,
                         task_scope=run.task_scope,
                     )
                     ScopewatchRepository.create_execution_receipt(conn, receipt)

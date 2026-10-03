@@ -21,6 +21,7 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
 from typing import Any, Optional
 
 from scopewatch.config import MAX_READ_BYTES, MAX_WRITE_BYTES
@@ -449,18 +450,19 @@ def _stage_workspace_copy(workspace_root: Path) -> tuple[Path, Path]:
 
 
 def _load_scope_from_store(
-    action: ActionRequest, db_path: Path | str
+    action: ActionRequest, db_path: Path | str | sqlite3.Connection
 ) -> Optional[TaskScope]:
     """Best-effort load of the run's task scope; None when unverifiable."""
     try:
-        from scopewatch.db import get_connection
+        from scopewatch.executor import _resolve_connection
         from scopewatch.repository import ScopewatchRepository
 
-        conn = get_connection(db_path)
+        conn, should_close = _resolve_connection(db_path)
         try:
             run = ScopewatchRepository.get_run(conn, action.run_id)
         finally:
-            conn.close()
+            if should_close:
+                conn.close()
     except Exception:
         return None
     return run.task_scope if run is not None else None
@@ -483,7 +485,7 @@ class DockerExecutor:
         workspace_root: Path,
         policy_decision: Optional[PolicyDecision] = None,
         approval_request: Optional[ApprovalRequest] = None,
-        db_path: Optional[Path | str] = None,
+        db_path: Optional[Path | str | sqlite3.Connection] = None,
         task_scope: Optional[TaskScope] = None,
     ) -> ExecutionReceipt:
         receipt_id = str(uuid.uuid4())
@@ -724,7 +726,7 @@ def execute_action_docker(
     policy_decision: Optional[PolicyDecision] = None,
     approval_request: Optional[ApprovalRequest] = None,
     image: Optional[str] = None,
-    db_path: Optional[Path | str] = None,
+    db_path: Optional[Path | str | sqlite3.Connection] = None,
     task_scope: Optional[TaskScope] = None,
 ) -> ExecutionReceipt:
     """Convenience wrapper used by the gateway entry point and tests."""
