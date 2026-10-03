@@ -169,7 +169,14 @@ def svc_env(tmp_path: Path):
         created_at=NOW,
     )
     run, _ = service.create_run(name="Bypass Service Run", task_scope=scope)
-    return {"service": service, "run": run, "workspace": ws}
+    # Issue #117: the run executes against its own workspace copy, so probes
+    # planted for the gateway must be planted there, not in the fixture.
+    return {
+        "service": service,
+        "run": run,
+        "workspace": ws,
+        "run_workspace": service.get_run_workspace(run.id),
+    }
 
 
 
@@ -358,7 +365,7 @@ def test_bypass_symlink_to_blocked_serves_content_KNOWN_GAP(
 
 def test_gateway_denies_symlink_to_blocked_content(svc_env: dict) -> None:
     service: ScopewatchService = svc_env["service"]
-    workspace: Path = svc_env["workspace"]
+    workspace: Path = svc_env["run_workspace"]
     (workspace / "outputs" / "evil.txt").symlink_to(
         Path("..") / "invoices" / "private" / "salaries.txt"
     )

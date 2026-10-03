@@ -45,8 +45,9 @@ class ScopewatchRepository:
             """
             INSERT INTO runs (
                 id, name, task_scope_json, status, created_at, updated_at,
-                synthetic, interception_coverage, reasoning_availability, prompt_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                synthetic, interception_coverage, reasoning_availability,
+                prompt_version, workspace_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run.id,
@@ -59,6 +60,7 @@ class ScopewatchRepository:
                 run.interception_coverage,
                 run.reasoning_availability,
                 run.prompt_version,
+                run.workspace_path,
             ),
         )
         return run
@@ -70,7 +72,9 @@ class ScopewatchRepository:
         if not row:
             return None
         scope_data = json.loads(row["task_scope_json"])
-        prompt_version = row["prompt_version"] if "prompt_version" in row.keys() else None
+        keys = row.keys()
+        prompt_version = row["prompt_version"] if "prompt_version" in keys else None
+        workspace_path = row["workspace_path"] if "workspace_path" in keys else None
         return Run(
             id=row["id"],
             name=row["name"],
@@ -82,6 +86,7 @@ class ScopewatchRepository:
             interception_coverage=row["interception_coverage"],
             reasoning_availability=row["reasoning_availability"],
             prompt_version=prompt_version,
+            workspace_path=workspace_path,
         )
 
     @staticmethod
@@ -90,7 +95,9 @@ class ScopewatchRepository:
         runs = []
         for row in cur.fetchall():
             scope_data = json.loads(row["task_scope_json"])
-            prompt_version = row["prompt_version"] if "prompt_version" in row.keys() else None
+            keys = row.keys()
+            prompt_version = row["prompt_version"] if "prompt_version" in keys else None
+            workspace_path = row["workspace_path"] if "workspace_path" in keys else None
             runs.append(
                 Run(
                     id=row["id"],
@@ -103,9 +110,20 @@ class ScopewatchRepository:
                     interception_coverage=row["interception_coverage"],
                     reasoning_availability=row["reasoning_availability"],
                     prompt_version=prompt_version,
+                    workspace_path=workspace_path,
                 )
             )
         return runs
+
+    @staticmethod
+    def update_run_workspace_path(
+        conn: sqlite3.Connection, run_id: str, workspace_path: str, updated_at: str
+    ) -> None:
+        """Persist a lazily resolved workspace identity (legacy rows, #117)."""
+        conn.execute(
+            "UPDATE runs SET workspace_path = ?, updated_at = ? WHERE id = ?",
+            (workspace_path, updated_at, run_id),
+        )
 
     @staticmethod
     def update_run_prompt_version(

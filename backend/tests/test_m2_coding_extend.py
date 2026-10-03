@@ -451,11 +451,13 @@ async def test_m2_coding_11_symlink_dir_denied(
     therefore return DENY BLOCKED_PATH, leave the receipt NOT_EXECUTED, keep
     the blocked fixture bytes unchanged, and not include the blocked secret
     in the receipt."""
-    ws: Path = m2_coding_env["workspace_dir"]
-    (ws / "outputs" / "linkdir").symlink_to(ws, target_is_directory=True)
-    before = (ws / ".env").read_bytes()
     service: ScopewatchService = m2_coding_env["service"]
     run, _ = service.create_run(name="M2 symlink-dir probe", task_scope=_m2_secret_scope())
+    # Issue #117: the alias must point into the RUN's workspace copy, which is
+    # what policy and execution actually see, not the shared fixture.
+    ws: Path = service.get_run_workspace(run.id)
+    (ws / "outputs" / "linkdir").symlink_to(ws, target_is_directory=True)
+    before = (ws / ".env").read_bytes()
     res = await service.submit_action(
         run.id,
         SubmitActionRequest(

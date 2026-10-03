@@ -356,10 +356,13 @@ def test_scenario_01_full_loop_through_real_fastapi_app(test_env: dict[str, Any]
     assert result.decisions == ["ALLOW", "ALLOW", "ALLOW", "ALLOW"]
     assert "Verified 2 invoices" in result.final_response
 
-    # Verify file was written by executor through gateway
-    summary_file = workspace / "outputs" / "audit-summary.txt"
+    # Verify the executor wrote through the gateway into the RUN's own
+    # workspace copy (#117); the shared fixture is not a write target.
+    run_workspace = client.app.state.service.get_run_workspace(run_id)
+    summary_file = run_workspace / "outputs" / "audit-summary.txt"
     assert summary_file.is_file()
     assert "Total verified $5,750.00" in summary_file.read_text(encoding="utf-8")
+    assert not (workspace / "outputs" / "audit-summary.txt").exists()
 
     # Verify every action and lifecycle transition appears in the event stream
     events_resp = client.get(f"/api/v1/runs/{run_id}/events")
@@ -778,6 +781,7 @@ def test_cli_scenario_01_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     def _create_app_tmp(*args: Any, **kwargs: Any) -> Any:
         kwargs.setdefault("workspace_root", temp_workspace)
+        kwargs.setdefault("run_workspaces_root", tmp_path / "run-workspaces")
         return orig_create_app(*args, **kwargs)
 
     monkeypatch.setattr(app_module, "create_app", _create_app_tmp)
@@ -796,8 +800,11 @@ def test_cli_scenario_01_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     )
     assert exit_code == 0
 
-    # Temp workspace received the audit summary; tracked demo workspace untouched.
-    assert (temp_workspace / "outputs" / "audit-summary.txt").is_file()
+    # The run's isolated workspace copy received the audit summary; neither
+    # the temp fixture nor the tracked demo workspace received it (#117).
+    run_dirs = sorted((tmp_path / "run-workspaces").glob("*/outputs/audit-summary.txt"))
+    assert run_dirs, "audit summary must land in a per-run workspace copy"
+    assert not (temp_workspace / "outputs" / "audit-summary.txt").exists()
     if demo_mtime_before is None:
         assert not demo_out.is_file(), "CLI test must not write into demo/workspace"
     else:
