@@ -8,6 +8,7 @@ import asyncio
 from datetime import datetime, timezone
 import json
 import logging
+import os
 from pathlib import Path
 import sys
 import threading
@@ -361,7 +362,18 @@ def seed_scenarios_agent(
     return results
 
 
-def main() -> None:
+def default_agent_profile(env: Optional[dict[str, str]] = None) -> Optional[str]:
+    """Agent profile from SCOPEWATCH_AGENT_PROFILE, or None for the mock replay.
+
+    providers.toml documents this variable as the agent selection, so
+    ``--mode agent`` honours it when ``--profile`` is not given.
+    """
+    source = os.environ if env is None else env
+    value = str(source.get("SCOPEWATCH_AGENT_PROFILE", "") or "").strip()
+    return value or None
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Seed Scopewatch synthetic demo scenarios.")
     parser.add_argument(
         "--db-path",
@@ -395,8 +407,9 @@ def main() -> None:
     parser.add_argument(
         "--profile",
         type=str,
-        default=None,
-        help="Provider profile name for agent mode (default: mock provider, "
+        default=default_agent_profile(),
+        help="Provider profile name for agent mode (default: "
+        "$SCOPEWATCH_AGENT_PROFILE if set, otherwise the mock provider, "
         "which replays the scenario verbatim). A non-mock profile makes live "
         "model calls that choose actions.",
     )
@@ -425,8 +438,11 @@ def main() -> None:
         help="Seed only scenario files starting with PREFIX (repeatable; "
         "overrides the default set selection)",
     )
+    return parser
 
-    args = parser.parse_args()
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     if args.coding:
         include_prefixes: list[str] | None = list(CODING_SCENARIO_PREFIXES)
