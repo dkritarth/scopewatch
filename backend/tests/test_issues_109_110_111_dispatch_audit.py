@@ -10,17 +10,13 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
+import threading
+import time
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-from scopewatch.reasoning_audit import (
-    MockAuditorProvider,
-    ReasoningAuditor,
-    ReasoningAuditResult,
-    ReasoningAuditVerdict,
-)
 from scopewatch.db import get_connection, init_db
 from scopewatch.errors import ScopewatchAPIError
 from scopewatch.models import (
@@ -29,6 +25,13 @@ from scopewatch.models import (
     PolicyOutcome,
     ReasonCode,
     RunStatus,
+)
+from scopewatch.reasoning_audit import (
+    AuditorChatResponse,
+    MockAuditorProvider,
+    ReasoningAuditor,
+    ReasoningAuditResult,
+    ReasoningAuditVerdict,
 )
 from scopewatch.repository import ScopewatchRepository
 from scopewatch.schemas import SubmitActionRequest, TaskScope
@@ -78,18 +81,20 @@ async def test_issue_110_reject_action_when_run_completes_during_audit(service_e
     run = service_env["run"]
     workspace_dir: Path = service_env["workspace_dir"]
 
-    audit_started = asyncio.Event()
-    release_auditor = asyncio.Event()
+    audit_started = threading.Event()
+    release_auditor = threading.Event()
 
     class PausingAuditorProvider(MockAuditorProvider):
-        async def audit_chat(self, *args, **kwargs):
+        def audit_chat(self, *args, **kwargs):
             audit_started.set()
-            await release_auditor.wait()
-            return ReasoningAuditResult(
-                verdict=ReasoningAuditVerdict.NO_CONCERN,
-                concern_type=None,
-                flagged_excerpts=[],
-                explanation="Audit looks clean.",
+            release_auditor.wait(timeout=5.0)
+            return AuditorChatResponse(
+                content=json.dumps({
+                    "verdict": "NO_CONCERN",
+                    "concern_type": None,
+                    "flagged_excerpts": [],
+                    "explanation": "Audit looks clean.",
+                }),
                 model="mock-pausing-auditor",
                 profile="mock",
                 latency_ms=10.0,
@@ -111,11 +116,12 @@ async def test_issue_110_reject_action_when_run_completes_during_audit(service_e
 
     action_task = asyncio.create_task(service.submit_action(run.id, req))
 
-    # Wait until audit is running
-    await audit_started.wait()
+    # Wait until audit is running in worker thread
+    while not audit_started.is_set():
+        await asyncio.sleep(0.01)
 
     # Complete the run while audit is in flight
-    service.complete_run(run.id, summary="Operator completed run during audit")
+    service.complete_run(run.id)
 
     # Now let the auditor finish
     release_auditor.set()
@@ -218,26 +224,30 @@ async def test_issue_111_do_not_reuse_audit_verdict_for_different_actions_in_tur
     call_count = 0
 
     class ContextualAuditorProvider(MockAuditorProvider):
-        async def audit_chat(self, planned_actions, *args, **kwargs):
+        def audit_chat(self, messages, *args, **kwargs):
             nonlocal call_count
             call_count += 1
-            # Inspect planned actions
-            for a in planned_actions:
-                if a.get("resource") == "outputs/blocked.txt":
-                    return ReasoningAuditResult(
-                        verdict=ReasoningAuditVerdict.CONCERN,
-                        concern_type="UNAUTHORIZED_EXFIL",
-                        flagged_excerpts=["exfiltrating secret data to blocked.txt"],
-                        explanation="Auditor detected concern targeting blocked.txt",
-                        model="mock-contextual-auditor",
-                        profile="mock",
-                        latency_ms=15.0,
-                    )
-            return ReasoningAuditResult(
-                verdict=ReasoningAuditVerdict.NO_CONCERN,
-                concern_type=None,
-                flagged_excerpts=[],
-                explanation="Safe operation on safe.txt",
+            # Inspect messages
+            user_msg = next((m["content"] for m in messages if m["role"] == "user"), "")
+            if "outputs/blocked.txt" in user_msg:
+                return AuditorChatResponse(
+                    content=json.dumps({
+                        "verdict": "CONCERN",
+                        "concern_type": "POLICY_EVASION",
+                        "flagged_excerpts": ["instructed by user prompt"],
+                        "explanation": "Auditor detected concern targeting blocked.txt",
+                    }),
+                    model="mock-contextual-auditor",
+                    profile="mock",
+                    latency_ms=15.0,
+                )
+            return AuditorChatResponse(
+                content=json.dumps({
+                    "verdict": "NO_CONCERN",
+                    "concern_type": None,
+                    "flagged_excerpts": [],
+                    "explanation": "Safe operation on safe.txt",
+                }),
                 model="mock-contextual-auditor",
                 profile="mock",
                 latency_ms=10.0,
