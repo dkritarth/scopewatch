@@ -29,11 +29,15 @@ import uuid
 
 import pytest
 
+from fastapi.testclient import TestClient
+
+from scopewatch.app import create_app
 from scopewatch.db import init_db
 from scopewatch.errors import ScopewatchAPIError
 from scopewatch.executor import ExecutionSecurityError, execute_action
 from scopewatch.models import ApprovalStatus, ExecutionStatus, PolicyOutcome
 from scopewatch.schemas import (
+    CreateRunRequest,
     PolicyDecision,
     SubmitActionRequest,
     TaskScope,
@@ -44,6 +48,8 @@ from scopewatch.workspaces import (
     RunWorkspaceManager,
     WORKSPACE_MARKER_NAME,
 )
+
+NOW = datetime.now(timezone.utc).isoformat()
 
 RUN_A_CONTENT = "SYNTHETIC RUN A CONTENT"
 
@@ -1202,3 +1208,86 @@ def test_init_db_migrates_a_legacy_runs_table(tmp_path: Path) -> None:
     finally:
         check.close()
     assert "workspace_path" in cols
+
+def test_preview_agrees_with_submission_after_fixture_changes(
+    tmp_path: Path,
+) -> None:
+    """Preflight must evaluate the run's workspace, not the shared fixture.
+
+    Regression for the interaction between #117 (per-run workspaces) and #122
+    (preflight must agree with the deterministic decision it previews).
+
+    While preview_action still passed ``self.workspace_root``, the two paths
+    read different trees: submission resolved the run's own copy, preview read
+    the shared fixture. An escaping symlink planted in the fixture after the
+    run's copy existed therefore previewed ``DENY / SYMLINK_ESCAPE`` while the
+    real submission returned ``ALLOW`` -- preflight reporting a denial for an
+    action the gateway then permitted, which is the exact defect #122 exists to
+    prevent.
+    """
+    workspace = tmp_path / "workspace"
+    (workspace / "outputs").mkdir(parents=True)
+    (workspace / "outside_target").mkdir(parents=True)
+    (workspace / "outside_target" / "loot.txt").write_text("synthetic secret")
+    (workspace / "outputs" / "ok.txt").write_text("synthetic")
+
+    runs_root = tmp_path / "runs"
+    app = create_app(
+        db_path=str(tmp_path / "preview.db"),
+        workspace_root=str(workspace),
+        run_workspaces_root=runs_root,
+    )
+    client = TestClient(app)
+
+    run = client.post(
+        "/api/v1/runs",
+        json=CreateRunRequest(
+            name="preview parity run",
+            task_scope=TaskScope(
+                schema_version="1",
+                task_description="Read the outputs directory.",
+                allowed_paths=["outputs"],
+                blocked_paths=[],
+                allowed_tools=["workspace"],
+                allowed_operations=["read_text"],
+                allowed_network_destinations=[],
+                requires_approval=[],
+                allowed_commands=[],
+                created_at=NOW,
+            ),
+        ).model_dump(),
+    )
+    assert run.status_code == 201, run.text
+    run_id = run.json()["id"]
+
+    def _read(resource: str) -> tuple[str, str]:
+        body = {
+            "tool": "workspace",
+            "operation": "read_text",
+            "resource": resource,
+            "arguments": {},
+            "requested_by": "acp-agent",
+        }
+        preview = client.post(f"/api/v1/runs/{run_id}/actions/preview", json=body)
+        submitted = client.post(f"/api/v1/runs/{run_id}/actions", json=body)
+        assert preview.status_code == 200, preview.text
+        assert submitted.status_code == 201, submitted.text
+        return (
+            preview.json()["outcome"],
+            submitted.json()["policy_decision"]["outcome"],
+        )
+
+    # Force the run's workspace to be created from today's fixture.
+    assert _read("outputs/ok.txt") == ("ALLOW", "ALLOW")
+
+    # The shared fixture changes afterwards. The run's workspace is a copy, so
+    # submission is unaffected -- and preview must be too.
+    (workspace / "outputs" / "escape.txt").symlink_to(
+        "../../outside_target/loot.txt"
+    )
+
+    preview_outcome, submitted_outcome = _read("outputs/escape.txt")
+    assert preview_outcome == submitted_outcome, (
+        "preflight must agree with the deterministic decision it previews "
+        f"(preview={preview_outcome}, submission={submitted_outcome})"
+    )

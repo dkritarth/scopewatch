@@ -675,11 +675,12 @@ capture_token: Optional[str] = None,
 
         Shared dry-run seam for permission preflight: builds the same
         ActionRequest that submit_action would evaluate, through the same
-        _build_action_request, runs the exact gateway policy engine against the
-        same workspace root and run scope, and returns the deterministic
-        decision. Performs no DB writes, creates no action/decision/approval/
-        receipt records, emits no events, consumes no approvals and no demo
-        budget, executes nothing, and runs no reasoning audit.
+        _build_action_request, and runs the exact gateway policy engine against
+        the SAME run workspace and run scope that submit_action would use
+        (#117) so the two cannot disagree. Performs no DB writes, creates no
+        action/decision/approval/receipt records, emits no events, consumes no
+        approvals and no demo budget, executes nothing, and runs no reasoning
+        audit.
 
         Audit-dependent escalation is deliberately out of scope: a preview
         ALLOW stays provisional because the submit-time reasoning audit may
@@ -695,6 +696,27 @@ capture_token: Optional[str] = None,
                     message=f"Run '{run_id}' not found.",
                     status_code=status.HTTP_404_NOT_FOUND,
                 )
+            # #117: evaluate against the SAME workspace submission will use.
+            # Reading the shared fixture here instead made preflight disagree
+            # with the deterministic decision it is supposed to preview: an
+            # escaping symlink planted in the fixture after this run's copy
+            # existed previewed DENY/SYMLINK_ESCAPE while the real submission
+            # returned ALLOW. That is the exact defect #122 was filed for.
+            #
+            # resolve() is safe to call here because it does not persist: it
+            # returns the run's existing workspace, and only initializes one
+            # for a pre-#117 row that carries no stored path -- which the next
+            # real submission would create anyway. A preview still writes no
+            # action, decision, approval, or receipt record.
+            workspace = self.run_workspaces.resolve(
+                run.id, stored_path=run.workspace_path
+            )
+        except RunWorkspaceError as exc:
+            raise ScopewatchAPIError(
+                code="WORKSPACE_UNAVAILABLE",
+                message=f"Run workspace is unavailable: {exc}",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            ) from exc
         finally:
             conn.close()
 
@@ -710,7 +732,7 @@ capture_token: Optional[str] = None,
             # unverified here exactly as it would on submission.
             capture_verified=False,
         )
-        return evaluate_policy(action, run, self.workspace_root)
+        return evaluate_policy(action, run, workspace)
 
     async def submit_action(
         self,
