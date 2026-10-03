@@ -10,8 +10,8 @@ secrets). Core code never hard-codes a model ID — use `profile.model` or
 | Profile | Endpoint | Model | Key env | Use |
 | --- | --- | --- | --- | --- |
 | `mock` | `mock://localhost` | `mock-rules-auditor` | none | Tests and CI. Deterministic queues, no network. |
-| `openrouter-dev` | `https://openrouter.ai/api/v1` | `nvidia/nemotron-3.5-lightning` | `OPENROUTER_API_KEY` | Current catalog ID; inference is blocked by a 401 from the supplied key. |
-| `nebius-demo` | `https://api.tokenfactory.nebius.com/v1` | `nvidia/Nemotron-3_5-Lightning` | `NEBIUS_API_KEY` | Auditor profile; thinking is disabled so bounded JSON output completes. |
+| `openrouter-dev` | `https://openrouter.ai/api/v1` | `nvidia/nemotron-3.5-lightning` | `OPENROUTER_API_KEY` | Default live profile. Serves reasoning in `message.reasoning`, including on tool-call turns. |
+| `nebius-demo` | `https://api.tokenfactory.nebius.com/v1` | `nvidia/Nemotron-3_5-Lightning` | `NEBIUS_API_KEY` | Auditor profile; thinking is disabled so bounded JSON output completes. Unverified since 2026-10-03: the supplied key returns HTTP 401. |
 
 Model IDs appear only in `providers.toml` and tests. `mock-rules-auditor`
 is the single mock label resolved via `get_mock_model_name()`.
@@ -132,7 +132,38 @@ With reasoning on, the auditor request (`max_tokens` 256) hit
 `finish_reason=length` with no JSON, so every audit failed closed. The
 `openrouter-dev` profile therefore sets `auditor_body.reasoning.enabled=false`;
 agent calls keep `reasoning.effort`. The payload is covered by
-`backend/tests/test_openrouter_auditor_profile.py`; a live re-check of the
-committed profile through the gateway was blocked when the free tier's 50
-requests per day ran out. See `docs/spikes/2026-10-live-gateway-verification.md`
-once merged. CI continues to use `mock` / `httpx.MockTransport` with no network.
+`backend/tests/test_openrouter_auditor_profile.py`. See
+`docs/spikes/2026-10-live-gateway-verification.md`.
+
+Re-checked on 2026-10-03 on the **paid** model ID
+`nvidia/nemotron-3.5-lightning` (the free tier's daily quota had been exhausted,
+so the `:free` variant could not be used):
+
+- 20 calls, 0 non-200 responses. Requested and served model IDs were identical
+  on every call. The dedicated reasoning field is `message.reasoning`;
+  `message.reasoning_details` is also present, `message.reasoning_content` is
+  not. Reasoning was returned without sending `include_reasoning`.
+- Reasoning **survives tool-call turns**: `message.reasoning` was non-empty
+  (67 chars, 17 reasoning tokens) on all four tool-call turns while `content`
+  was null and `finish_reason` was `tool_calls`, and again on the following turn
+  after a tool result (101 chars, 26 reasoning tokens).
+- Latency p50 / p95: plain chat 2.2 s / 2.9 s; tool-calling turn 11.5 s /
+  14.4 s; turn after a tool result 12.3 s / 14.4 s; auditor verdict with
+  reasoning disabled 0.46 s / 0.57 s. The tool-calling turn, not the audit, is
+  the latency that matters for the agent loop.
+- The committed `auditor_body.reasoning.enabled = false` setting is confirmed:
+  4 of 4 valid JSON with 0 reasoning tokens, versus 2 of 4 with
+  `finish_reason=length` and the whole 256-token budget spent on reasoning when
+  reasoning is left on. That is the mechanism behind #128.
+- **Residual live auditor failure mode is `UNGROUNDED_EXCERPT`, not
+  `PARSE_ERROR`.** On the `dev` split with this profile, 12 of 13 audits
+  produced a valid verdict; the one failure parsed as JSON but its
+  `flagged_excerpts` entry was not an exact substring of the bounded trace, so
+  grounding validation failed closed to `HOLD`.
+
+The supplied `NEBIUS_API_KEY` returned HTTP 401 for every authentication shape
+tried on 2026-10-03 (`Authorization: Bearer`, `x-api-key`, trailing slash, and a
+no-auth control), so no live Nebius call was made in that pass. #101 stays open
+until a working key restores the Nebius half. Full evidence:
+`docs/spikes/2026-10-nemotron-provider-verification.md`. CI continues to use
+`mock` / `httpx.MockTransport` with no network.

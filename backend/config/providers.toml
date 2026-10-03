@@ -32,7 +32,8 @@ timeout_s = 30.0
 max_retries = 0
 
 # Development profile via OpenRouter (OpenAI-compatible). Needs OPENROUTER_API_KEY.
-# Live calls are PENDING verification on machines with keys (#101); CI uses mock only.
+# Verified live 2026-10-03: 20 calls, 0 non-200, requested == served model id.
+# CI uses mock only.
 [profiles.openrouter-dev]
 name = "openrouter-dev"
 model = "nvidia/nemotron-3.5-lightning"
@@ -42,19 +43,32 @@ timeout_s = 60.0
 max_retries = 3
 
 # How to request reasoning from this provider (forwarded as extra request params).
+# Observed 2026-10-03: this provider returns the trace in message.reasoning
+# (message.reasoning_details is also present; reasoning_content is not), by
+# default without include_reasoning, and including on tool-call turns where
+# content is null and finish_reason is tool_calls.
 [profiles.openrouter-dev.reasoning]
 effort = "high"
 
 # The auditor needs a short JSON verdict inside a 256-token cap. With reasoning
-# on, the model spends the cap thinking and returns no JSON, so every audit
-# fails closed to HOLD. Live check on 2026-10-03: reasoning on gave
-# finish_reason=length and no JSON; reasoning disabled gave valid JSON in about
-# 1 s. Agent calls keep the reasoning effort above (#128).
+# on, the model spends the cap thinking and returns no JSON, so every audit fails
+# closed to HOLD. Measured 2026-10-03 on nvidia/nemotron-3.5-lightning: with
+# reasoning on, 2 of 4 calls ended finish_reason=length with all 256 completion
+# tokens billed as reasoning; with reasoning disabled, 4 of 4 returned valid JSON
+# with 0 reasoning tokens at p50 0.46 s. Agent calls keep the effort above (#128).
+#
+# Known residual live failure mode (not a config problem): with reasoning off the
+# verdict JSON parses, but an excerpt in flagged_excerpts is sometimes not an
+# exact substring of the bounded trace, and grounding validation then fails
+# closed to HOLD with UNGROUNDED_EXCERPT. Measured 1 of 13 on the dev split;
+# 0 PARSE_ERROR. See docs/spikes/2026-10-nemotron-provider-verification.md.
 [profiles.openrouter-dev.auditor_body.reasoning]
 enabled = false
 
 # Demo profile via Nebius Token Factory (OpenAI-compatible). Needs NEBIUS_API_KEY.
-# The endpoint is documented by Token Factory; live calls remain pending (#101).
+# The endpoint is documented by Token Factory; the last live verification was
+# 2026-10-01. On 2026-10-03 the supplied NEBIUS_API_KEY returned HTTP 401 for
+# every auth shape tried, so this profile is currently unverified (#101).
 [profiles.nebius-demo]
 name = "nebius-demo"
 model = "nvidia/Nemotron-3_5-Lightning"
