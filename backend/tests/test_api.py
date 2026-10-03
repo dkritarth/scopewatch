@@ -63,6 +63,9 @@ def test_health_check(test_env) -> None:
     assert data["status"] == "ok"
     assert data["database"] == "ok"
     assert "version" in data
+    # Public, non-secret flag the dashboard reads to decide whether to offer
+    # the reviewer-token control (#115). No DEMO_TOKEN here, so it is off.
+    assert data["demo_mode"] is False
 
 
 def test_get_run_and_404(test_env, created_run_id: str) -> None:
