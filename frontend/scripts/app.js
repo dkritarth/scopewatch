@@ -11,12 +11,15 @@ import {
 import {
   approveAction,
   checkHealth,
+  clearReviewerToken,
   connectLiveEvents,
   createRun,
   denyAction,
   getApprovals,
   getEvents,
+  getReviewerToken,
   getRuns,
+  setReviewerToken,
   submitAction,
   withRetry,
 } from "./api.js";
@@ -423,6 +426,12 @@ const elements = typeof document !== "undefined" ? {
   approvalsList: document.getElementById("approvals-list"),
   approvalsStatus: document.getElementById("approvals-status"),
   approvalsRetry: document.getElementById("approvals-retry"),
+  // Reviewer credential panel (#115); hidden until the gateway reports demo mode.
+  reviewerAccessPanel: document.getElementById("reviewer-access-panel"),
+  reviewerTokenInput: document.getElementById("reviewer-token-input"),
+  reviewerTokenSave: document.getElementById("reviewer-token-save"),
+  reviewerTokenClear: document.getElementById("reviewer-token-clear"),
+  reviewerAccessState: document.getElementById("reviewer-access-state"),
   // Stream + panel status regions (hardening: loading/error/stale states)
   sseBanner: document.getElementById("sse-banner"),
   sseBannerText: document.getElementById("sse-banner-text"),
@@ -471,6 +480,86 @@ function updateSseBanner(status, detail = "") {
   if (elements.sseRetry) {
     elements.sseRetry.hidden = !copy.visible;
   }
+}
+
+/**
+ * Reviewer credential panel (#115).
+ *
+ * The panel is shown only when the gateway reports `demo_mode`, so a local
+ * `run_demo.sh` gateway (no DEMO_TOKEN, no guard) never displays a control it
+ * does not need. When demo mode is on, the gate refuses every mutating call
+ * without the token, so the panel explains that and offers a paste field.
+ *
+ * The token itself is never rendered back: the input is a password field that
+ * is emptied immediately after use, and the state line reports only whether a
+ * token is held. Nothing here is written to storage or logged.
+ */
+export const REVIEWER_ACCESS_COPY = {
+  noToken:
+    "No token set: mutating actions are refused by the demo gate. Reading runs, events, and evidence still works.",
+  tokenSet:
+    "Token held in memory for this page only. Mutating actions will include it; reads do not.",
+};
+
+export function reviewerAccessState(hasToken) {
+  return hasToken ? REVIEWER_ACCESS_COPY.tokenSet : REVIEWER_ACCESS_COPY.noToken;
+}
+
+function renderReviewerAccess() {
+  if (!elements.reviewerAccessPanel) return;
+  const hasToken = Boolean(getReviewerToken());
+  if (elements.reviewerAccessState) {
+    elements.reviewerAccessState.textContent = reviewerAccessState(hasToken);
+  }
+  if (elements.reviewerTokenClear) {
+    elements.reviewerTokenClear.disabled = !hasToken;
+  }
+}
+
+/**
+ * Extra guidance for a refused mutation (#115).
+ *
+ * A 401/503 from the gate or the gateway's demo guard means the request needed
+ * the reviewer token, so the credential panel is revealed when it was hidden.
+ * The sentence names the panel instead of restating the refusal. The token is
+ * never echoed: only the server's own message and status are used.
+ *
+ * Returns "" for anything else so ordinary failures keep their old copy.
+ */
+export function authFailureHint(err) {
+  if (!err || (err.status !== 401 && err.status !== 503)) return "";
+  revealReviewerAccess();
+  return (
+    " This demo needs a reviewer token: open Reviewer access at the top of the " +
+    "page, paste the token from the testing instructions, then retry."
+  );
+}
+
+function revealReviewerAccess() {
+  if (elements.reviewerAccessPanel) {
+    elements.reviewerAccessPanel.hidden = false;
+  }
+}
+
+function wireReviewerAccess() {
+  if (!elements.reviewerAccessPanel) return;
+  elements.reviewerAccessPanel.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const value = elements.reviewerTokenInput ? elements.reviewerTokenInput.value : "";
+    setReviewerToken(value);
+    // Clear the field immediately: the token lives in memory only, so it is
+    // not left sitting in a visible form control.
+    if (elements.reviewerTokenInput) elements.reviewerTokenInput.value = "";
+    renderReviewerAccess();
+  });
+  if (elements.reviewerTokenClear) {
+    elements.reviewerTokenClear.addEventListener("click", () => {
+      clearReviewerToken();
+      if (elements.reviewerTokenInput) elements.reviewerTokenInput.value = "";
+      renderReviewerAccess();
+    });
+  }
+  renderReviewerAccess();
 }
 
 function renderRunButtons() {
@@ -1071,7 +1160,7 @@ function renderApprovals() {
           denyBtn.disabled = false;
           syncConfirmUi();
           errorNote.hidden = false;
-          errorNote.textContent = `Resolution failed: ${err.message}. No change was applied; try again.`;
+          errorNote.textContent = `Resolution failed: ${err.message}. No change was applied; try again.${authFailureHint(err)}`;
         }
       }
 
@@ -1577,6 +1666,7 @@ function resubscribeLiveRun() {
 }
 
 if (typeof document !== "undefined") {
+  wireReviewerAccess();
   if (elements.sseRetry) {
     elements.sseRetry.addEventListener("click", resubscribeLiveRun);
   }
@@ -1672,7 +1762,7 @@ if (typeof document !== "undefined") {
           await refreshApprovals();
         } catch (err) {
           if (elements.actionStatusMsg) {
-            elements.actionStatusMsg.textContent = `Submission error: ${err.message}`;
+            elements.actionStatusMsg.textContent = `Submission error: ${err.message}${authFailureHint(err)}`;
           }
         } finally {
           if (elements.submitActionBtn) elements.submitActionBtn.disabled = false;
@@ -1937,6 +2027,12 @@ async function bootstrap() {
   if (health && health.status === "ok") {
     isLiveMode = true;
     updateGatewayStatus("Live gateway connected", "connected");
+    // Demo mode means the gate requires the reviewer token for every mutating
+    // call (#115), so offer the credential panel up front instead of letting a
+    // judge discover it through a 401.
+    if (health.demo_mode === true) {
+      revealReviewerAccess();
+    }
 
     try {
       let backendRuns;
@@ -2003,6 +2099,18 @@ async function bootstrap() {
       console.warn("Could not initialize live runs, falling back to fixtures:", err);
       isLiveMode = false;
       updateGatewayStatus("Static replay mode", "disconnected");
+      // An empty hosted gateway has to create its first run, which needs the
+      // reviewer token. Say so instead of silently showing replay fixtures
+      // that no longer match the deployment (#115).
+      authFailureHint(err);
+      if (elements.runsStatus) {
+        renderPanelStatus(
+          elements.runsStatus,
+          panelStatus({ error: err }, {
+            errorText: `Could not load runs from the gateway.${authFailureHint(err)}`,
+          }),
+        );
+      }
     }
   } else {
     isLiveMode = false;
@@ -2027,5 +2135,7 @@ if (typeof window !== "undefined") {
     getHoldKind,
     getHoldIcon,
     getProvenanceLabel,
+    reviewerAccessState,
+    authFailureHint,
   };
 }
