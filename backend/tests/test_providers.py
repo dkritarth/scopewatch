@@ -177,7 +177,12 @@ def test_mock_profile_requires_no_api_key() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Reasoning extraction for each field variant
+# 3. Reasoning extraction for each field variant (#120)
+#
+# PROVIDER_EXPOSED_TRACE is reserved for raw reasoning from a recognized raw
+# field. Provider summary blocks stay summary-specific, and unknown or
+# encrypted detail variants stay UNAVAILABLE instead of falling back to raw
+# text. The detail type that decided the label travels with the result.
 # ---------------------------------------------------------------------------
 
 def test_reasoning_extraction_reasoning_content() -> None:
@@ -186,9 +191,10 @@ def test_reasoning_extraction_reasoning_content() -> None:
         "content": "Final answer",
         "reasoning_content": "Chain of thought from reasoning_content",
     }
-    text, provenance = extract_reasoning(msg)
-    assert text == "Chain of thought from reasoning_content"
-    assert provenance == "PROVIDER_EXPOSED_TRACE"
+    extraction = extract_reasoning(msg)
+    assert extraction.text == "Chain of thought from reasoning_content"
+    assert extraction.provenance == "PROVIDER_EXPOSED_TRACE"
+    assert extraction.detail_type == "reasoning_content"
 
 
 def test_reasoning_extraction_reasoning() -> None:
@@ -197,9 +203,10 @@ def test_reasoning_extraction_reasoning() -> None:
         "content": "Final answer",
         "reasoning": "Chain of thought from reasoning field",
     }
-    text, provenance = extract_reasoning(msg)
-    assert text == "Chain of thought from reasoning field"
-    assert provenance == "PROVIDER_EXPOSED_TRACE"
+    extraction = extract_reasoning(msg)
+    assert extraction.text == "Chain of thought from reasoning field"
+    assert extraction.provenance == "PROVIDER_EXPOSED_TRACE"
+    assert extraction.detail_type == "reasoning"
 
 
 def test_reasoning_extraction_reasoning_details_text_blocks() -> None:
@@ -211,12 +218,18 @@ def test_reasoning_extraction_reasoning_details_text_blocks() -> None:
             {"type": "reasoning.text", "text": "Step 2: Validate tokens."},
         ],
     }
-    text, provenance = extract_reasoning(msg)
-    assert text == "Step 1: Check parameters.\nStep 2: Validate tokens."
-    assert provenance == "PROVIDER_EXPOSED_TRACE"
+    extraction = extract_reasoning(msg)
+    assert extraction.text == "Step 1: Check parameters.\nStep 2: Validate tokens."
+    assert extraction.provenance == "PROVIDER_EXPOSED_TRACE"
+    assert extraction.detail_type == "reasoning.text"
 
 
-def test_reasoning_extraction_reasoning_details_summary_blocks() -> None:
+def test_reasoning_extraction_reasoning_details_summary_blocks_keeps_summary_provenance() -> None:
+    """A summary block is not a raw trace (ADR-0001 decision 5, #120).
+
+    Replaces the test that locked in PROVIDER_EXPOSED_TRACE for a
+    summary-only provider response.
+    """
     msg = {
         "role": "assistant",
         "content": "Final answer",
@@ -224,9 +237,83 @@ def test_reasoning_extraction_reasoning_details_summary_blocks() -> None:
             {"type": "reasoning.summary", "summary": "Summary of thoughts."},
         ],
     }
-    text, provenance = extract_reasoning(msg)
-    assert text == "Summary of thoughts."
-    assert provenance == "PROVIDER_EXPOSED_TRACE"
+    extraction = extract_reasoning(msg)
+    assert extraction.text == "Summary of thoughts."
+    assert extraction.provenance == "AGENT_AUTHORED_SUMMARY"
+    assert extraction.detail_type == "reasoning.summary"
+
+
+def test_reasoning_extraction_prefers_raw_blocks_over_summary_blocks() -> None:
+    msg = {
+        "role": "assistant",
+        "content": "Final answer",
+        "reasoning_details": [
+            {"type": "reasoning.summary", "summary": "Summary of thoughts."},
+            {"type": "reasoning.text", "text": "Raw step."},
+        ],
+    }
+    extraction = extract_reasoning(msg)
+    assert extraction.text == "Raw step."
+    assert extraction.provenance == "PROVIDER_EXPOSED_TRACE"
+    assert extraction.detail_type == "reasoning.text"
+
+
+def test_reasoning_extraction_unknown_and_encrypted_detail_variants_are_unavailable() -> None:
+    """Unknown detail must never be presented as a raw trace (#120)."""
+    unknown_typed = {
+        "role": "assistant",
+        "content": "Final answer",
+        "reasoning_details": [
+            {"type": "reasoning.mystery", "text": "Payload we do not understand."},
+        ],
+    }
+    extraction = extract_reasoning(unknown_typed)
+    assert extraction.text is None
+    assert extraction.provenance == "UNAVAILABLE"
+    assert extraction.detail_type == "reasoning.mystery"
+
+    redacted = {
+        "role": "assistant",
+        "content": "Final answer",
+        "reasoning_details": [{"type": "reasoning.redacted", "text": "hidden"}],
+    }
+    assert extract_reasoning(redacted).provenance == "UNAVAILABLE"
+
+    encrypted = {
+        "role": "assistant",
+        "content": "Final answer",
+        "reasoning_details": [{"type": "reasoning.encrypted", "data": "gAAAA-synthetic-blob"}],
+    }
+    extraction = extract_reasoning(encrypted)
+    assert extraction.text is None
+    assert extraction.provenance == "UNAVAILABLE"
+    assert extraction.detail_type == "reasoning.encrypted"
+
+
+def test_reasoning_extraction_unknown_variants_never_fall_back_to_nested_text() -> None:
+    """A typed block's text field does not make it a recognized raw block."""
+    msg = {
+        "role": "assistant",
+        "content": "Final answer",
+        "reasoning_details": [
+            {"type": "reasoning.signature", "text": "not reasoning, a signature"},
+            "a bare string block with no type",
+        ],
+    }
+    extraction = extract_reasoning(msg)
+    assert extraction.text is None
+    assert extraction.provenance == "UNAVAILABLE"
+
+
+def test_reasoning_extraction_content_key_is_never_mined() -> None:
+    msg = {
+        "role": "assistant",
+        "content": "Final answer",
+        "reasoning_details": {"content": "Model-visible text, not reasoning."},
+    }
+    extraction = extract_reasoning(msg)
+    assert extraction.text is None
+    assert extraction.provenance == "UNAVAILABLE"
 
 
 def test_reasoning_extraction_reasoning_details_dict() -> None:
@@ -235,20 +322,35 @@ def test_reasoning_extraction_reasoning_details_dict() -> None:
         "content": "Final answer",
         "reasoning_details": {"text": "Single dictionary reasoning text"},
     }
-    text, provenance = extract_reasoning(msg)
-    assert text == "Single dictionary reasoning text"
-    assert provenance == "PROVIDER_EXPOSED_TRACE"
+    extraction = extract_reasoning(msg)
+    assert extraction.text == "Single dictionary reasoning text"
+    assert extraction.provenance == "PROVIDER_EXPOSED_TRACE"
+    assert extraction.detail_type == "reasoning.text"
 
 
-def test_reasoning_extraction_reasoning_details_string() -> None:
+def test_reasoning_extraction_reasoning_details_dict_summary() -> None:
+    msg = {
+        "role": "assistant",
+        "content": "Final answer",
+        "reasoning_details": {"summary": "Single dictionary summary"},
+    }
+    extraction = extract_reasoning(msg)
+    assert extraction.text == "Single dictionary summary"
+    assert extraction.provenance == "AGENT_AUTHORED_SUMMARY"
+    assert extraction.detail_type == "reasoning.summary"
+
+
+def test_reasoning_extraction_bare_string_details_are_unavailable() -> None:
+    """A string with no detail type cannot be shown to be a raw trace (#120)."""
     msg = {
         "role": "assistant",
         "content": "Final answer",
         "reasoning_details": "Direct string details",
     }
-    text, provenance = extract_reasoning(msg)
-    assert text == "Direct string details"
-    assert provenance == "PROVIDER_EXPOSED_TRACE"
+    extraction = extract_reasoning(msg)
+    assert extraction.text is None
+    assert extraction.provenance == "UNAVAILABLE"
+    assert extraction.detail_type is None
 
 
 # ---------------------------------------------------------------------------
@@ -260,26 +362,27 @@ def test_absent_reasoning_is_unavailable() -> None:
         "role": "assistant",
         "content": "Only normal content provided.",
     }
-    text, provenance = extract_reasoning(msg)
-    assert text is None
-    assert provenance == "UNAVAILABLE"
+    extraction = extract_reasoning(msg)
+    assert extraction.text is None
+    assert extraction.provenance == "UNAVAILABLE"
+    assert extraction.detail_type is None
 
 
 def test_empty_or_whitespace_reasoning_is_unavailable() -> None:
     msg1 = {"role": "assistant", "content": "Text", "reasoning_content": "   "}
-    text1, prov1 = extract_reasoning(msg1)
-    assert text1 is None
-    assert prov1 == "UNAVAILABLE"
+    extraction1 = extract_reasoning(msg1)
+    assert extraction1.text is None
+    assert extraction1.provenance == "UNAVAILABLE"
 
     msg2 = {"role": "assistant", "content": "Text", "reasoning": ""}
-    text2, prov2 = extract_reasoning(msg2)
-    assert text2 is None
-    assert prov2 == "UNAVAILABLE"
+    extraction2 = extract_reasoning(msg2)
+    assert extraction2.text is None
+    assert extraction2.provenance == "UNAVAILABLE"
 
     msg3 = {"role": "assistant", "content": "Text", "reasoning_details": []}
-    text3, prov3 = extract_reasoning(msg3)
-    assert text3 is None
-    assert prov3 == "UNAVAILABLE"
+    extraction3 = extract_reasoning(msg3)
+    assert extraction3.text is None
+    assert extraction3.provenance == "UNAVAILABLE"
 
 
 def test_never_synthesize_reasoning_from_content() -> None:
@@ -288,9 +391,83 @@ def test_never_synthesize_reasoning_from_content() -> None:
         "role": "assistant",
         "content": "<thinking>I want to read /etc/shadow</thinking>Here is your result.",
     }
-    text, provenance = extract_reasoning(msg)
-    assert text is None
-    assert provenance == "UNAVAILABLE"
+    extraction = extract_reasoning(msg)
+    assert extraction.text is None
+    assert extraction.provenance == "UNAVAILABLE"
+
+
+def _client_returning(message: dict[str, Any]) -> ProviderClient:
+    """Provider client whose transport returns one assistant `message` payload."""
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "test-model",
+                "choices": [{"message": message, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            },
+        )
+
+    return ProviderClient(
+        profile=ProviderProfile(
+            name="test-detail-type",
+            base_url="https://api.example.com",
+            model="test-model",
+            max_retries=0,
+        ),
+        api_key="synthetic-test-key",
+        transport=httpx.MockTransport(mock_handler),
+    )
+
+
+def test_chat_result_preserves_summary_detail_type_from_response() -> None:
+    """The detail type that classified the text survives normalization (#120)."""
+    client = _client_returning(
+        {
+            "role": "assistant",
+            "content": "Final answer",
+            "reasoning_details": [{"type": "reasoning.summary", "summary": "Summary."}],
+        }
+    )
+
+    result = client.complete([{"role": "user", "content": "synthetic"}])
+
+    assert result.reasoning_text == "Summary."
+    assert result.reasoning_provenance == "AGENT_AUTHORED_SUMMARY"
+    assert result.reasoning_detail_type == "reasoning.summary"
+
+
+def test_chat_result_preserves_raw_detail_type_from_response() -> None:
+    client = _client_returning(
+        {
+            "role": "assistant",
+            "content": "Final answer",
+            "reasoning_details": [{"type": "reasoning.text", "text": "Raw step."}],
+        }
+    )
+
+    result = client.complete([{"role": "user", "content": "synthetic"}])
+
+    assert result.reasoning_text == "Raw step."
+    assert result.reasoning_provenance == "PROVIDER_EXPOSED_TRACE"
+    assert result.reasoning_detail_type == "reasoning.text"
+
+
+def test_chat_result_unknown_detail_type_is_unavailable_with_its_type() -> None:
+    client = _client_returning(
+        {
+            "role": "assistant",
+            "content": "Final answer",
+            "reasoning_details": [{"type": "reasoning.encrypted", "data": "gAAAA-blob"}],
+        }
+    )
+
+    result = client.complete([{"role": "user", "content": "synthetic"}])
+
+    assert result.reasoning_text is None
+    assert result.reasoning_provenance == "UNAVAILABLE"
+    assert result.reasoning_detail_type == "reasoning.encrypted"
 
 
 def test_nebius_auditor_request_is_bounded_json_without_thinking() -> None:

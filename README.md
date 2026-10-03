@@ -14,7 +14,9 @@ It enforces a strict defense-in-depth model:
 >
 > Reasoning traces are isolated inside `<untrusted_reasoning_trace>` boundary delimiters. Reasoning is evidence, not proof of intent.
 >
-> **Reasoning statement:** raw reasoning reaches the auditor only through provider response fields, checked in order in `backend/scopewatch/providers/client.py:50-69`: `message.reasoning_content`, then `message.reasoning`, then `message.reasoning_details`. Anything else (including `<thinking>` blocks inside message content) is ignored and recorded as `UNAVAILABLE`. Visible reasoning can be unfaithful or incomplete: a model may rationalize, omit, or misstate its own plan, so a clean trace never proves benign intent. Closed models typically expose no reasoning fields at all and yield agent-authored summaries (`AGENT_AUTHORED_SUMMARY`) at best.
+> **Reasoning statement:** raw reasoning reaches the auditor only through provider response fields, checked in order in `backend/scopewatch/providers/client.py`: `message.reasoning_content`, then `message.reasoning`, then `message.reasoning_details`. Within `reasoning_details`, only `reasoning.text` blocks are raw traces (`PROVIDER_EXPOSED_TRACE`); `reasoning.summary` blocks are summaries (`AGENT_AUTHORED_SUMMARY`), and unknown, redacted, or encrypted variants are `UNAVAILABLE` rather than being shown as raw text. Anything else (including `<thinking>` blocks inside message content) is ignored and recorded as `UNAVAILABLE`. Visible reasoning can be unfaithful or incomplete: a model may rationalize, omit, or misstate its own plan, so a clean trace never proves benign intent. Closed models typically expose no reasoning fields at all and yield agent-authored summaries (`AGENT_AUTHORED_SUMMARY`) at best.
+>
+> **Who is allowed to claim provenance:** the action API cannot tell a trace captured in-process by the provider client from a label typed into a JSON body. Only a submission carrying the operator-issued capture credential (`SCOPEWATCH_CAPTURE_TOKEN`, held by the agent loop and the demo seeder, never by a browser or a relayed adapter) is stored as a verified provider trace. Any other claim is stored as `CALLER_ASSERTED_PROVIDER_TRACE` or `CALLER_ASSERTED_SUMMARY`, with the raw claim kept in `caller_claimed_provenance` for diagnostics. Provenance labels are evidence metadata: they never affect a policy decision, and reasoning can still only escalate.
 >
 > **Model data policy:** only synthetic fixtures and invented content are ever sent to model providers. Free and stealth endpoints may log prompts, so provider calls carry nothing real by construction. Evaluation reports pin the profile, the served model ID, the date, and the case-file hash (`docs/evaluation.md`).
 
@@ -114,7 +116,7 @@ Verify the entire repository (backend unit/integration tests, PoC tests, fronten
    - **Policy decision:** Outcome (`ALLOW`, `DENY`, `HOLD`), reason code, and matched rule.
    - **Human approval:** Resolution state, reviewer identity, and timestamp.
    - **Execution receipt:** Execution status, output summary, and sanitized output data.
-   - **Reasoning provenance:** Explicit disclosures distinguishing provider-level traces (`PROVIDER_EXPOSED_TRACE`) from agent-authored summaries (`AGENT_AUTHORED_SUMMARY`), with verbatim excerpt highlighting.
+   - **Reasoning provenance:** Explicit disclosures distinguishing provider-level traces (`PROVIDER_EXPOSED_TRACE`) from agent-authored summaries (`AGENT_AUTHORED_SUMMARY`), synthetic fixtures (`SYNTHETIC_FIXTURE`), and unverified caller assertions (`CALLER_ASSERTED_PROVIDER_TRACE`, `CALLER_ASSERTED_SUMMARY`), with verbatim excerpt highlighting.
 
 7. **Live SSE streaming** (`GET /api/v1/runs/{run_id}/events/stream` at `backend/scopewatch/app.py:231`; JSON list at `app.py:221`; `frontend/scripts/api.js`)
    Real-time event updates stream directly to the reviewer dashboard via Server-Sent Events (SSE) with automated fallback polling.

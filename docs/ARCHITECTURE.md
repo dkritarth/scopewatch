@@ -113,7 +113,7 @@ The frontend (`frontend/`) is a vanilla HTML/CSS/JS dashboard displaying:
 - Five-part evidence panel:
   1. Observation (tool, operation, resource, arguments, timestamp).
   2. Policy decision (outcome, reason code, matched rule).
-  3. Reasoning provenance and audit card (verdict, concern type, model, profile, highlighted trace excerpts, and permanent disclaimer: *"Reasoning is evidence, not proof of intent."*).
+  3. Reasoning provenance and audit card (verdict, concern type, model, profile, highlighted trace excerpts, and permanent disclaimer: *"Reasoning is evidence, not proof of intent."*). Provenance badges distinguish verified provider traces from agent-authored summaries, synthetic fixtures, and unverified caller assertions (`CALLER_ASSERTED_*`).
   4. Human approval card with single-use action tokens.
   5. Execution receipt with sanitized outputs.
 - Visually and textually distinct badges: `HOLD (policy)`, `HOLD (reasoning concern)`, `HOLD (audit failed)`.

@@ -39,6 +39,10 @@ Neither the agent loop nor the reasoning auditor hardcodes specific model IDs in
 ### 5. Agent model requirement: Open-weight reasoning model
 The agent model must be an open-weight reasoning model whose provider returns raw reasoning tokens (NVIDIA Nemotron by default). Closed commercial models expose only summarized thought traces, severely limiting auditor scrutiny. Closed models remain permitted only in "summary-only" mode, where any evidence presented must be strictly labeled `AGENT_AUTHORED_SUMMARY` and never confused with raw traces.
 
+Summary-only responses are labelled `AGENT_AUTHORED_SUMMARY`, never `PROVIDER_EXPOSED_TRACE`: a provider field is not automatically a raw reasoning trace. Within `reasoning_details`, only `reasoning.text` blocks are raw traces, and unknown or encrypted detail variants stay `UNAVAILABLE` rather than falling back to raw text (issues #116 and #120).
+
+Separately, a provenance label asserts an origin and a credential asserts the claimer. The gateway accepts a verified `PROVIDER_EXPOSED_TRACE` label only from a submission carrying the operator-issued capture credential (`SCOPEWATCH_CAPTURE_TOKEN`), which is held only by integrations that call the provider client in-process. Any other submission is stored as a caller assertion (`CALLER_ASSERTED_PROVIDER_TRACE`, `CALLER_ASSERTED_SUMMARY`) with the raw claim preserved separately for diagnostics. Provenance never affects a decision outcome; this only constrains how evidence describes itself.
+
 ### 6. Amendment to architecture doc: Raw chain-of-thought dependency
 We explicitly reverse the line in `docs/architecture/proposed-scopewatch-architecture.md` that stated "avoid making raw chain-of-thought a dependency" for the agent role. Raw chain-of-thought is a required dependency for the agent monitoring pipeline. However, reasoning is treated strictly as evidence, never proof. Visible reasoning may be unfaithful, incomplete, or manipulated via prompt injection from untrusted files. Untrusted trace isolation in the auditor is mandatory.
 
