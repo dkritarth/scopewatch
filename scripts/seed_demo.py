@@ -32,6 +32,7 @@ from scopewatch.schemas import (
     TaskScope,
 )
 from scopewatch.service import ScopewatchService
+from scopewatch.agent.prompt import PROMPT_VERSION
 
 logger = logging.getLogger("scopewatch.seed")
 
@@ -170,7 +171,7 @@ async def seed_scenarios(
             created_at=task_scope_data.get("created_at", datetime.now(timezone.utc).isoformat()),
         )
 
-        run, _ = service.create_run(name=name, task_scope=task_scope)
+        run, _ = service.create_run(name=name, task_scope=task_scope, prompt_version=PROMPT_VERSION)
         print(f"\n[RUN] Created run '{run.name}' (id: {run.id})")
 
         actions = data.get("actions", [])

@@ -284,3 +284,11 @@ class GatewayDispatcher:
         if resp.status_code == 200:
             return Run.model_validate(resp.json())
         return None
+
+    def record_prompt_version(self, run_id: str, prompt_version: str) -> Optional[Run]:
+        """Record the prompt version for the run via PATCH /api/v1/runs/{run_id}."""
+        url = f"/api/v1/runs/{run_id}"
+        resp = self._client.patch(url, json={"prompt_version": prompt_version})
+        if resp.status_code == 200:
+            return Run.model_validate(resp.json())
+        return None

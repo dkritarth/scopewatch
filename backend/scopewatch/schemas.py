@@ -48,6 +48,7 @@ class Run(BaseModel):
         "Provider traces unavailable in local baseline. Agent-authored summaries or "
         "synthetic fixtures are labeled explicitly."
     )
+    prompt_version: Optional[str] = None
 
 
 class ActionRequest(BaseModel):
@@ -159,6 +160,13 @@ class CreateRunRequest(BaseModel):
 
     name: str = Field(min_length=1)
     task_scope: TaskScope
+    prompt_version: Optional[str] = None
+
+
+class UpdateRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt_version: Optional[str] = None
 
 
 class SubmitActionRequest(BaseModel):

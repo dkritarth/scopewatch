@@ -290,6 +290,7 @@ class ScopewatchService:
         name: str,
         task_scope: TaskScope,
         client_ip: Optional[str] = None,
+        prompt_version: Optional[str] = None,
     ) -> tuple[Run, list[EvidenceEvent]]:
         # #77: cost control first — refuse before any spend is possible.
         self._check_agent_token_budget()
@@ -332,6 +333,7 @@ class ScopewatchService:
                     "Provider traces unavailable in local baseline. Agent-authored summaries or "
                     "synthetic fixtures are labeled explicitly."
                 ),
+                prompt_version=prompt_version,
             )
 
             conn = self._get_conn()
@@ -353,6 +355,7 @@ class ScopewatchService:
                             "allowed_operations": task_scope.allowed_operations,
                             "requires_approval": task_scope.requires_approval,
                             "token_budget": self._token_budget_snapshot(),
+                            "prompt_version": prompt_version,
                         },
                     )
                 return run, [event]
@@ -385,6 +388,24 @@ class ScopewatchService:
         conn = self._get_conn()
         try:
             return ScopewatchRepository.list_runs(conn)
+        finally:
+            conn.close()
+
+    def set_run_prompt_version(self, run_id: str, prompt_version: str) -> Run:
+        conn = self._get_conn()
+        try:
+            run = ScopewatchRepository.get_run(conn, run_id)
+            if not run:
+                raise ScopewatchAPIError(
+                    code="RUN_NOT_FOUND",
+                    message=f"Run '{run_id}' not found.",
+                    status_code=status.HTTP_404_NOT_FOUND,
+                )
+            now = datetime.now(timezone.utc).isoformat()
+            with db_transaction(conn):
+                ScopewatchRepository.update_run_prompt_version(conn, run_id, prompt_version, now)
+            updated = ScopewatchRepository.get_run(conn, run_id)
+            return updated or run
         finally:
             conn.close()
 
