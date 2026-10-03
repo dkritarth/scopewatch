@@ -335,7 +335,11 @@ def test_acp_request_permission_dry_run_invariants(clean_client: TestClient, act
 
 
 def test_acp_provenance_invariant(clean_client: TestClient, active_run_id: str) -> None:
-    """ACP adapter records AGENT_AUTHORED_SUMMARY when provided and UNAVAILABLE otherwise."""
+    """An ACP client is a gateway API caller, so its claim stays unverified.
+
+    The adapter relays text an external ACP client wrote, so the gateway cannot
+    authenticate its origin and stores the claim as a caller assertion (#116).
+    """
     adapter = AcpClientAdapter(clean_client, active_run_id)
 
     # With summary
@@ -353,7 +357,14 @@ def test_acp_provenance_invariant(clean_client: TestClient, active_run_id: str) 
 
     event_resp_1 = clean_client.get(f"/api/v1/runs/{active_run_id}/actions/{action_id_1}")
     action_record_1 = event_resp_1.json()["action_request"]
-    assert action_record_1["reasoning_provenance"] == ReasoningProvenance.AGENT_AUTHORED_SUMMARY.value
+    assert (
+        action_record_1["reasoning_provenance"]
+        == ReasoningProvenance.CALLER_ASSERTED_SUMMARY.value
+    )
+    assert (
+        action_record_1["caller_claimed_provenance"]
+        == ReasoningProvenance.AGENT_AUTHORED_SUMMARY.value
+    )
     assert action_record_1["reasoning_summary"] == "Checking vendor A subtotal before calculation"
     assert action_record_1["exposed_reasoning_trace"] is None
 

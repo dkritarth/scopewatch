@@ -62,6 +62,10 @@ from scopewatch.reasoning_audit import (
 )
 from scopewatch.schemas import TaskScope
 
+# Synthetic capture credential for tests (#116). Not a real secret: it stands in
+# for the operator-issued value held by in-process provider-capture integrations.
+TEST_CAPTURE_TOKEN = "synthetic-test-capture-token"
+
 
 def _sample_scope() -> TaskScope:
     return TaskScope(
@@ -76,14 +80,16 @@ def _sample_scope() -> TaskScope:
     )
 
 
-def _isolated_client(tmp_path: Path) -> tuple[TestClient, Path]:
+def _isolated_client(
+    tmp_path: Path, capture_token: str | None = None
+) -> tuple[TestClient, Path]:
     db_file = tmp_path / "m1_test.db"
     init_db(db_file)
     ws = tmp_path / "workspace"
     (ws / "invoices" / "approved").mkdir(parents=True)
     (ws / "invoices" / "approved" / "vendor-a.txt").write_text("Vendor A: $10\n", encoding="utf-8")
     (ws / "outputs").mkdir(parents=True)
-    app = create_app(db_path=db_file, workspace_root=ws)
+    app = create_app(db_path=db_file, workspace_root=ws, capture_token=capture_token)
     return TestClient(app), ws
 
 
@@ -161,18 +167,20 @@ def test_m1_mock_requires_no_key() -> None:
 
 
 def test_m1_reasoning_variants() -> None:
-    text, prov = extract_reasoning({"reasoning_content": "deep thought"})
-    assert text == "deep thought" and prov == "PROVIDER_EXPOSED_TRACE"
-    text, prov = extract_reasoning({"reasoning": "r2"})
-    assert text == "r2" and prov == "PROVIDER_EXPOSED_TRACE"
-    text, _ = extract_reasoning({"reasoning_details": [{"type": "reasoning.text", "text": "block block"}]})
-    assert text is not None and "block" in text
+    extraction = extract_reasoning({"reasoning_content": "deep thought"})
+    assert extraction.text == "deep thought"
+    assert extraction.provenance == "PROVIDER_EXPOSED_TRACE"
+    extraction = extract_reasoning({"reasoning": "r2"})
+    assert extraction.text == "r2" and extraction.provenance == "PROVIDER_EXPOSED_TRACE"
+    extraction = extract_reasoning({"reasoning_details": [{"type": "reasoning.text", "text": "block block"}]})
+    assert extraction.text is not None and "block" in extraction.text
+    assert extraction.provenance == "PROVIDER_EXPOSED_TRACE"
 
 
 def test_m1_absent_reasoning_unavailable() -> None:
-    text, prov = extract_reasoning({"content": "plain answer"})
-    assert text is None
-    assert prov == "UNAVAILABLE"
+    extraction = extract_reasoning({"content": "plain answer"})
+    assert extraction.text is None
+    assert extraction.provenance == "UNAVAILABLE"
 
 
 def test_m1_retry_429_only() -> None:
@@ -289,7 +297,7 @@ def test_m1_prompt_version_recorded(tmp_path: Path) -> None:
 
 
 def test_m1_turn_id_shared_trace_provenance(tmp_path: Path) -> None:
-    client, _ = _isolated_client(tmp_path)
+    client, _ = _isolated_client(tmp_path, capture_token=TEST_CAPTURE_TOKEN)
     run_id = _create_run(client)
     mock = MockProviderClient()
     trace = "Inspecting approved directory for audit."
@@ -304,7 +312,8 @@ def test_m1_turn_id_shared_trace_provenance(tmp_path: Path) -> None:
                             reasoning_provenance=ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value,
                             model="mm", profile="mock"))
     loop = AgentLoop(run_id=run_id, provider_client=mock,
-                     dispatcher=GatewayDispatcher(base_url="http://t", http_client=client))
+                     dispatcher=GatewayDispatcher(base_url="http://t", http_client=client,
+                                                 capture_token=TEST_CAPTURE_TOKEN))
     result = loop.run()
     assert result.status == "COMPLETED"
     assert len(result.actions) == 1
@@ -312,6 +321,8 @@ def test_m1_turn_id_shared_trace_provenance(tmp_path: Path) -> None:
     assert act.action_request.turn_id is not None and act.action_request.turn_id.startswith("turn-")
     assert act.action_request.exposed_reasoning_trace == trace
     assert act.action_request.reasoning_provenance == ReasoningProvenance.PROVIDER_EXPOSED_TRACE
+    # An authenticated in-process capture leaves nothing caller-asserted (#116).
+    assert act.action_request.caller_claimed_provenance is None
 
 
 def test_m1_allow_returns_result(tmp_path: Path) -> None:

@@ -36,6 +36,11 @@ from scopewatch.providers.client import ChatResult, MockProviderClient
 from scopewatch.schemas import TaskScope
 
 
+# Synthetic capture credential for tests (#116). Never a real secret: it only
+# stands in for the operator-issued value an in-process capture integration holds.
+TEST_CAPTURE_TOKEN = "synthetic-test-capture-token"
+
+
 # ---------------- Invariant Tests ----------------
 
 
@@ -832,10 +837,31 @@ def _single_list_directory_turn(
     return provider
 
 
-def _run_one_turn(test_env: dict[str, Any], provider: MockProviderClient) -> AgentRunResult:
-    client: TestClient = test_env["client"]
+def _run_one_turn(
+    test_env: dict[str, Any],
+    provider: MockProviderClient,
+    capture_token: str | None = None,
+) -> AgentRunResult:
+    """Run one scripted turn through the gateway.
+
+    Pass `capture_token` to act as the trusted in-process provider-capture
+    integration (#116); without it the gateway records the agent loop's
+    provenance claim as a caller assertion.
+    """
+    if capture_token is None:
+        client: TestClient = test_env["client"]
+    else:
+        client = TestClient(
+            create_app(
+                db_path=test_env["db_file"],
+                workspace_root=test_env["workspace"],
+                capture_token=capture_token,
+            )
+        )
     run_id = create_test_run(client)
-    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    dispatcher = GatewayDispatcher(
+        base_url="http://testserver", http_client=client, capture_token=capture_token
+    )
     loop = AgentLoop(run_id=run_id, provider_client=provider, dispatcher=dispatcher, max_turns=5)
     return loop.run()
 
@@ -847,7 +873,7 @@ def test_visible_text_without_provider_trace_is_agent_authored_summary(test_env:
         reasoning_text=None,
         reasoning_provenance=ReasoningProvenance.UNAVAILABLE.value,
     )
-    result = _run_one_turn(test_env, provider)
+    result = _run_one_turn(test_env, provider, capture_token=TEST_CAPTURE_TOKEN)
 
     action = result.actions[0].action_request
     assert action.reasoning_summary == "I will list the approved invoices."
@@ -875,11 +901,33 @@ def test_provider_trace_keeps_provider_provenance_alongside_visible_text(test_en
         reasoning_text="The task asks for approved invoices, so I list that folder first.",
         reasoning_provenance=ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value,
     )
-    result = _run_one_turn(test_env, provider)
+    result = _run_one_turn(test_env, provider, capture_token=TEST_CAPTURE_TOKEN)
 
     action = result.actions[0].action_request
     assert action.exposed_reasoning_trace == "The task asks for approved invoices, so I list that folder first."
     assert action.reasoning_provenance == ReasoningProvenance.PROVIDER_EXPOSED_TRACE
+
+
+def test_provider_summary_keeps_summary_provenance_through_the_gateway(
+    test_env: dict[str, Any],
+) -> None:
+    """A summary-only provider response stays a summary end to end (#120).
+
+    The trace label is reserved for raw reasoning fields, so summary text must
+    persist as an agent-authored summary rather than an exposed trace.
+    """
+    provider = _single_list_directory_turn(
+        content="Listing the approved invoices.",
+        reasoning_text="Summary of the provider's reasoning: list invoices/approved first.",
+        reasoning_provenance=ReasoningProvenance.AGENT_AUTHORED_SUMMARY.value,
+    )
+    result = _run_one_turn(test_env, provider, capture_token=TEST_CAPTURE_TOKEN)
+
+    action = result.actions[0].action_request
+    assert action.reasoning_provenance == ReasoningProvenance.AGENT_AUTHORED_SUMMARY
+    assert action.exposed_reasoning_trace is None
+    assert action.reasoning_summary == "Summary of the provider's reasoning: list invoices/approved first."
+    assert action.caller_claimed_provenance is None
 
 
 # ---------------- Wall-Clock Timeout Bounded Provider Tests (#125) ----------------

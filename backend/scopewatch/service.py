@@ -48,6 +48,11 @@ from scopewatch.models import (
     get_policy_version,
 )
 from scopewatch.policy import evaluate_policy
+from scopewatch.provenance import (
+    capture_credential_verified,
+    configured_capture_token,
+    provenance_for_submission,
+)
 from scopewatch.providers.loader import get_auditor_profile
 from scopewatch.reasoning_audit import (
     AuditErrorCode,
@@ -131,6 +136,7 @@ class ScopewatchService:
         workspace_root: Path | str,
         auditor: Optional[ReasoningAuditor] = None,
         guards: Optional[DemoGuardPolicy] = None,
+        capture_token: Optional[str] = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.workspace_root = Path(workspace_root)
@@ -140,6 +146,11 @@ class ScopewatchService:
         # checks share rate/budget state.
         self.guards = guards if guards is not None else DemoGuardPolicy(
             DemoGuardConfig.from_env()
+        )
+        # Capture credential (#116): unset means nothing authenticates and every
+        # submitted provenance claim stays a caller assertion.
+        self.capture_token = (
+            capture_token if capture_token is not None else configured_capture_token()
         )
         # Concurrency-cap accounting: DB busy count + in-flight creations,
         # guarded by one lock so simultaneous creates fail closed to one
@@ -508,7 +519,12 @@ class ScopewatchService:
 
     # ---------------- Actions ----------------
 
-    async def submit_action(self, run_id: str, request: SubmitActionRequest) -> ActionResponse:
+    async def submit_action(
+        self,
+        run_id: str,
+        request: SubmitActionRequest,
+        capture_credential: Optional[str] = None,
+    ) -> ActionResponse:
         conn = self._get_conn()
         try:
             run = ScopewatchRepository.get_run(conn, run_id)
@@ -534,6 +550,32 @@ class ScopewatchService:
             now_iso = datetime.now(timezone.utc).isoformat()
             effective_turn_id = request.turn_id or f"turn-{action_id}"
 
+            # #116: the API cannot tell a trace captured by the in-process
+            # provider client from a label typed into the request body. Only a
+            # submission carrying the capture credential may keep a verified
+            # provenance label; every other claim is stored as an unverified
+            # caller assertion, with the raw value kept for diagnostics.
+            capture_verified = capture_credential_verified(
+                self.capture_token, capture_credential
+            )
+            claimed_provenance = request.reasoning_provenance or (
+                ReasoningProvenance.PROVIDER_EXPOSED_TRACE
+                if request.exposed_reasoning_trace
+                else (
+                    ReasoningProvenance.AGENT_AUTHORED_SUMMARY
+                    if request.reasoning_summary
+                    else ReasoningProvenance.UNAVAILABLE
+                )
+            )
+            action_provenance = provenance_for_submission(
+                claimed_provenance, capture_verified
+            )
+            caller_claimed_provenance = (
+                None
+                if capture_verified or claimed_provenance == ReasoningProvenance.UNAVAILABLE
+                else claimed_provenance
+            )
+
             action = ActionRequest(
                 id=action_id,
                 run_id=run_id,
@@ -545,16 +587,8 @@ class ScopewatchService:
                 requested_at=now_iso,
                 reasoning_summary=request.reasoning_summary,
                 exposed_reasoning_trace=request.exposed_reasoning_trace,
-                reasoning_provenance=request.reasoning_provenance
-                or (
-                    ReasoningProvenance.PROVIDER_EXPOSED_TRACE
-                    if request.exposed_reasoning_trace
-                    else (
-                        ReasoningProvenance.AGENT_AUTHORED_SUMMARY
-                        if request.reasoning_summary
-                        else ReasoningProvenance.UNAVAILABLE
-                    )
-                ),
+                reasoning_provenance=action_provenance,
+                caller_claimed_provenance=caller_claimed_provenance,
                 turn_id=effective_turn_id,
                 reasoning_audit_id=None,
             )
@@ -577,6 +611,17 @@ class ScopewatchService:
             trace_text = (action.exposed_reasoning_trace or "").strip() or (
                 action.reasoning_summary or ""
             ).strip()
+
+# #116: reviewer-visible provenance diagnostics. The stored label
+            # already says caller-asserted when it is; these fields say so
+            # explicitly and preserve the raw claim for integration triage.
+            provenance_event_fields: dict[str, Any] = {
+                "reasoning_provenance_verified": capture_verified,
+            }
+            if caller_claimed_provenance:
+                provenance_event_fields["caller_claimed_provenance"] = (
+                    caller_claimed_provenance.value
+                )
 
             audit_record: Optional[ReasoningAuditRecord] = None
             audit_event_type: Optional[EventType] = None
@@ -764,6 +809,7 @@ class ScopewatchService:
                         "reasoning_summary": action.reasoning_summary,
                         "exposed_reasoning_trace": action.exposed_reasoning_trace,
                         "reasoning_provenance": action.reasoning_provenance.value,
+                        **provenance_event_fields,
                     },
                 )
                 generated_events.append(ev_req)
@@ -845,6 +891,7 @@ class ScopewatchService:
                         "reasoning_summary": action.reasoning_summary,
                         "exposed_reasoning_trace": action.exposed_reasoning_trace,
                         "reasoning_provenance": action.reasoning_provenance.value,
+                        **provenance_event_fields,
                     }
                     if audit_record:
                         details_held["reasoning_audit"] = {

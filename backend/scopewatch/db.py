@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS action_requests (
     reasoning_summary TEXT,
     exposed_reasoning_trace TEXT,
     reasoning_provenance TEXT NOT NULL,
+    caller_claimed_provenance TEXT,
     turn_id TEXT,
     reasoning_audit_id TEXT
 );
@@ -172,6 +173,8 @@ def init_db(db_path: Path | str) -> None:
             conn.execute("ALTER TABLE action_requests ADD COLUMN turn_id TEXT")
         if cols and "reasoning_audit_id" not in cols:
             conn.execute("ALTER TABLE action_requests ADD COLUMN reasoning_audit_id TEXT")
+        if cols and "caller_claimed_provenance" not in cols:
+            conn.execute("ALTER TABLE action_requests ADD COLUMN caller_claimed_provenance TEXT")
 
         cur = conn.execute("PRAGMA table_info(policy_decisions)")
         decision_cols = {row["name"] for row in cur.fetchall()}

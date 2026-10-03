@@ -192,10 +192,11 @@ test("escalated hold displays flagged excerpt highlighted, distinct hold badge, 
     // 5. Inspect evidence panel for the escalated hold
     await holdBtn.click();
 
-    // Provenance badge
+    // Provenance badge: this preview trace was written in the browser, so it
+    // is labelled as a synthetic fixture rather than a verified provider trace.
     const provBadge = page.locator(".provenance-badge");
     await provBadge.waitFor();
-    assert.equal(await provBadge.innerText(), "Provider-exposed trace");
+    assert.equal(await provBadge.innerText(), "Synthetic fixture");
 
     // Reasoning audit card and verdict
     const verdictBadge = page.locator(".verdict-badge");
@@ -413,8 +414,13 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     assert.equal(await holdBtn.locator(".event-status .hold-icon").innerText(), "▲");
     await holdBtn.click();
 
-    // Provenance + audit verdict from the real gateway decision
-    assert.equal(await page.locator(".provenance-badge").first().innerText(), "Provider-exposed trace");
+    // Provenance + audit verdict from the real gateway decision. This action
+    // was submitted from the browser, so the gateway stores its provenance
+    // claim as unverified caller-asserted (#116).
+    assert.equal(
+      await page.locator(".provenance-badge").first().innerText(),
+      "Caller-asserted trace (unverified)",
+    );
     assert.equal(await page.locator(".verdict-badge").first().innerText(), "CONCERN");
     assert.match(await page.locator(".audit-concern").first().innerText(), /EXFILTRATION_INTENT/);
     assert.match(await page.locator(".audit-model-profile").first().innerText(), /mock-rules-auditor/);

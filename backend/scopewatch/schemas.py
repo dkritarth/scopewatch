@@ -67,6 +67,9 @@ class ActionRequest(BaseModel):
     reasoning_summary: Optional[str] = None
     exposed_reasoning_trace: Optional[str] = None
     reasoning_provenance: ReasoningProvenance = ReasoningProvenance.UNAVAILABLE
+    # #116: the raw provenance label the submitting caller asserted, kept only
+    # when the gateway could not verify it. Never a second source of truth.
+    caller_claimed_provenance: Optional[ReasoningProvenance] = None
     turn_id: Optional[str] = None
     reasoning_audit_id: Optional[str] = None
 

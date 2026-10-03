@@ -10,6 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import secrets
 import sys
 import threading
 import time
@@ -26,6 +27,7 @@ from scopewatch.models import (
     ReasoningProvenance,
     RunStatus,
 )
+from scopewatch.provenance import CAPTURE_TOKEN_ENV_VAR, configured_capture_token
 from scopewatch.schemas import (
     CreateRunRequest,
     SubmitActionRequest,
@@ -227,6 +229,23 @@ async def seed_scenarios(
     return results
 
 
+def _demo_capture_token() -> Optional[str]:
+    """Capture credential for this demo process (#116).
+
+    The seeder runs the provider client in-process, so it is a trusted capture
+    integration and its provenance claims may be stored as verified. Reuse an
+    operator-provided token when present so a live agent CLI started from the
+    same shell authenticates the same way; otherwise generate a throwaway one
+    for this run. It is never written to disk or echoed.
+    """
+    existing = configured_capture_token()
+    if existing:
+        return existing
+    token = secrets.token_urlsafe(32)
+    os.environ[CAPTURE_TOKEN_ENV_VAR] = token
+    return token
+
+
 def seed_scenarios_agent(
     db_path: Path,
     workspace_root: Path,
@@ -256,9 +275,14 @@ def seed_scenarios_agent(
         print(f"No scenario files found in {scenarios_dir}")
         return []
 
-    app = create_app(db_path=db_path, workspace_root=workspace_root)
+    # This process holds the provider client, so it authenticates its own
+    # captures (#116). Replay labels stay as the provider client set them.
+    capture_token = _demo_capture_token()
+    app = create_app(db_path=db_path, workspace_root=workspace_root, capture_token=capture_token)
     client = TestClient(app, base_url="http://gateway.local")
-    dispatcher = GatewayDispatcher(base_url="http://gateway.local", http_client=client)
+    dispatcher = GatewayDispatcher(
+        base_url="http://gateway.local", http_client=client, capture_token=capture_token
+    )
 
     results = []
 
@@ -473,6 +497,11 @@ def main() -> None:
         print(f"Coding workspace fixture seeded: {args.workspace_root}")
 
     # 3. Seed scenarios according to mode
+    capture_token = _demo_capture_token()
+    print(
+        "Reasoning provenance capture: authenticated for this seeder process "
+        "(submissions from outside it, such as the browser UI, stay caller-asserted)."
+    )
     if args.mode == "agent":
         results = seed_scenarios_agent(
             db_path=args.db_path,
@@ -484,7 +513,11 @@ def main() -> None:
             include_prefixes=include_prefixes,
         )
     else:
-        service = ScopewatchService(db_path=args.db_path, workspace_root=args.workspace_root)
+        service = ScopewatchService(
+            db_path=args.db_path,
+            workspace_root=args.workspace_root,
+            capture_token=capture_token,
+        )
         results = asyncio.run(
             seed_scenarios(
                 service,

@@ -135,6 +135,15 @@ echo "agent operations."
 echo "=================================================================="
 echo ""
 
+# Capture credential (#116). Held by integrations that call the provider
+# client in-process (this shell's demo seeder, a live agent CLI started from
+# it). Generated per run, never committed. Submissions without it are recorded
+# as caller-asserted reasoning provenance.
+if [[ -z "${SCOPEWATCH_CAPTURE_TOKEN:-}" ]]; then
+  SCOPEWATCH_CAPTURE_TOKEN="$("${PYTHON}" -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  export SCOPEWATCH_CAPTURE_TOKEN
+fi
+
 # 1. Seed workspace fixtures and scenarios
 echo "[1/2] Seeding synthetic workspace and demonstration scenarios..."
 mkdir -p "$(dirname "${DB_PATH}")"

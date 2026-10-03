@@ -248,6 +248,7 @@ def test_contract_approval_single_use(contract_env) -> None:
 
 
 def test_contract_provenance_summary_or_unavailable(contract_env) -> None:
+    """The PoC MCP adapter is an API caller, so its summary claim stays unverified (#116)."""
     env = contract_env
     with_summary = env["adapter"].call_tool(
         "read_text", {"path": "docs/notes.txt"}, reasoning_summary="synthetic why"
@@ -256,7 +257,8 @@ def test_contract_provenance_summary_or_unavailable(contract_env) -> None:
         f"/api/v1/runs/{env['run_id']}/actions/{with_summary['action_id']}"
     )
     action = resp.json()["action_request"]
-    assert action["reasoning_provenance"] == "AGENT_AUTHORED_SUMMARY"
+    assert action["reasoning_provenance"] == "CALLER_ASSERTED_SUMMARY"
+    assert action["caller_claimed_provenance"] == "AGENT_AUTHORED_SUMMARY"
     assert action["exposed_reasoning_trace"] is None
 
     without_summary = env["adapter"].call_tool("list_directory", {"path": "docs"})
