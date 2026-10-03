@@ -1,4 +1,12 @@
-"""Deterministic policy engine for Scopewatch baseline."""
+"""Deterministic policy engine for Scopewatch baseline.
+
+Policy identity (issue #119): every decision carries ``policy_version``, the
+deterministic implementation/rule-set revision that evaluated it (see
+``scopewatch.models`` for the format and its update semantics). It is stamped
+in one place -- the :func:`evaluate_policy` wrapper below -- so no rule path
+can omit it, and so a decision built without going through the engine fails
+closed to "unknown" instead of claiming a revision that never ran.
+"""
 
 import shlex
 from datetime import datetime, timezone
@@ -13,13 +21,19 @@ from scopewatch.path_access import (
     scoped_path_reason,
 )
 from scopewatch.models import (
+    RUN_COMMAND_METACHARACTERS,
     PolicyOutcome,
     ReasonCode,
     RunStatus,
     SUPPORTED_OPERATIONS,
     SUPPORTED_TOOLS,
+    get_policy_version,
 )
 from scopewatch.schemas import ActionRequest, PolicyDecision, Run, TaskScope
+
+# The shell metacharacter set lives in scopewatch.models so the policy
+# fingerprint can cover it; kept under its historical private name here.
+_RUN_COMMAND_METACHARACTERS = RUN_COMMAND_METACHARACTERS
 
 
 def evaluate_policy(
@@ -29,7 +43,24 @@ def evaluate_policy(
 ) -> PolicyDecision:
     """Evaluate an ActionRequest deterministically against the Run's TaskScope.
 
-    Follows the 15-step evaluation order specified in baseline requirements.
+    Public entry point for the deterministic engine. Follows the 15-step
+    evaluation order specified in baseline requirements, then stamps the
+    evaluated policy identity (issue #119) on the result.
+    """
+    decision = _evaluate_policy_rules(action, run, workspace_root)
+    return decision.model_copy(update={"policy_version": get_policy_version()})
+
+
+def _evaluate_policy_rules(
+    action: ActionRequest,
+    run: Run,
+    workspace_root: Path,
+) -> PolicyDecision:
+    """Apply the 15-step rule order. Returns an unstamped decision.
+
+    Callers go through :func:`evaluate_policy`, which adds the policy
+    identity; this function stays policy-only so every rule branch returns a
+    plain decision.
     """
     decision_id = str(uuid.uuid4())
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -282,10 +313,9 @@ def evaluate_policy(
     )
 
 
-# Characters rejected before parsing a run_command string. Checked against the
-# raw submission (not post-split tokens) so quoting cannot smuggle shell
-# syntax past the gateway; execution itself never uses a shell.
-_RUN_COMMAND_METACHARACTERS = (";", "&", "|", ">", "<", "`", "$(", "\n", "\r", "\x00")
+# Characters rejected before parsing a run_command string are declared in
+# scopewatch.models (see RUN_COMMAND_METACHARACTERS and _RUN_COMMAND_METACHARACTERS
+# above) so the policy fingerprint covers them too.
 
 
 def _contains_shell_metacharacter(text: str) -> bool:
