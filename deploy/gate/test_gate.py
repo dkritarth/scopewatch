@@ -5,6 +5,7 @@ tests replace the standard-library transport and use synthetic credentials.
 """
 
 import io
+import json
 import sys
 import urllib.request
 from pathlib import Path
@@ -104,6 +105,47 @@ def test_run_creation_without_token_is_401():
     assert decision.error_code == "demo_token_required"
     body = denial_body(decision)
     assert b"X-Demo-Token" in body
+
+
+def test_denial_body_uses_the_gateway_flat_envelope():
+    """Gate refusals must match the gateway's {"error", "message"} shape (#107).
+
+    backend/scopewatch/app.py demo_token_middleware answers with flat
+    {"error": "<code>", "message": "..."}. The gate used to answer with
+    {"error_code", "detail"}, which forced every client to know which layer
+    refused. A client in front of both now parses one shape.
+    """
+    payload = json.loads(
+        denial_body(
+            DemoGatePolicy.decide(make_policy()[0], "POST", "/api/v1/runs", {}, "10.0.0.1")
+        ).decode("utf-8")
+    )
+    assert payload["error"] == "demo_token_required"
+    assert "X-Demo-Token" in payload["message"]
+    # The legacy keys must be gone, not merely duplicated.
+    assert "error_code" not in payload
+    assert "detail" not in payload
+
+
+def test_every_gate_denial_path_shares_one_envelope():
+    """401, 503, and 429 refusals all serialise the same two keys."""
+    policy, _ = make_policy(busy_runs=5)
+    denied = [
+        policy.decide("POST", "/api/v1/runs", {}, "10.0.0.1"),  # 401 token
+        policy.decide("POST", "/api/v1/runs", headers(), "10.0.0.1"),  # 429 cap
+        DemoGatePolicy(
+            GateConfig.from_env({"DEMO_TOKEN": ""}),
+            now=lambda: 1.0,
+            count_busy_runs=lambda: 0,
+        ).decide("POST", "/api/v1/runs", {}, "10.0.0.1"),  # 503 misconfigured
+    ]
+    for decision in denied:
+        assert not decision.allowed
+        payload = json.loads(denial_body(decision).decode("utf-8"))
+        assert set(payload) == {"error", "message"}, payload
+        assert payload["error"] and payload["message"]
+        # Never echo the configured secret back to the caller.
+        assert "test-token" not in json.dumps(payload)
 
 
 def test_run_creation_with_token_is_allowed_and_counted():
