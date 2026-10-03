@@ -10,6 +10,14 @@ Stdlib only (no third-party deps): ``http.server`` + ``json`` +
 ``subprocess``. Import-safe: unit tests import the validation helpers
 without starting the server; ``python3 runner.py`` serves.
 
+The pre-dispatch authorization rules (decision required, ``DENY`` final,
+``HOLD`` needs an ``APPROVED`` approval bound to the action, no
+``network_request``) are **not** written here. They live in one module,
+``scopewatch.dispatch_gate``, which the three gateway backends import and the
+image COPYs in from its single authored location (issue #105). The rules the
+gateways cannot check stay here as signed-protocol checks; this sidecar renders
+the shared verdict with its own HTTP vocabulary (``GATE_REFUSALS``).
+
 Request contract (gateway: ``backend/scopewatch/executor_remote.py``)::
 
     POST /execute
@@ -30,10 +38,15 @@ Validation order (fail closed, static messages, no secret in output):
 3. Action digest recomputed with the same canonicalization as the gateway;
    mismatches refused (409) so a token minted for one action cannot run
    another.
-4. Operation allowlisted; resource relative with no null bytes, no absolute
+4. Shared pre-dispatch gate (``scopewatch.dispatch_gate``): an authorizing
+   outcome, an ``APPROVED`` approval for a ``HOLD``, no ``network_request``.
+   Plus this sidecar's own bindings: the decision names this action, and a
+   ``HOLD`` approval names this run and decision; ``ALLOW`` carries no
+   approval (403). Verdict-to-HTTP mapping is ``GATE_REFUSALS``.
+5. Operation allowlisted; resource relative with no null bytes, no absolute
    paths, no ``..`` escape; resolved target must stay inside ``/workspace``
    (symlink escapes refused). ``network_request`` is never executed.
-5. Docker dispatch with the same hardening flags as the gateway Docker
+6. Docker dispatch with the same hardening flags as the gateway Docker
    backend (no network, read-only rootfs, nobody user, cap-drop, pids/mem
    caps, workspace-only mount). Any Docker error, timeout, or malformed
    helper output becomes a ``FAILED`` payload (HTTP 200 with
@@ -73,7 +86,7 @@ from typing import Any, Optional
 # the sidecar cannot drift (that drift already cost us one incident: #104).
 #
 # Deployed as ``/app/scopewatch/docker_job.py`` in the runner image, so the
-# plain import below resolves. When run straight from a checkout without
+# plain imports below resolve. When run straight from a checkout without
 # ``PYTHONPATH=backend``, add the backend package first.
 if not (Path(__file__).resolve().parent / "scopewatch" / "docker_job.py").is_file():
     _REPO_BACKEND = Path(__file__).resolve().parents[2] / "backend"
@@ -94,6 +107,12 @@ from scopewatch.docker_job import (  # noqa: E402
     sync_copy_back,
 )
 
+# Shared pre-dispatch authorization gate (issue #105). The approval-status and
+# outcome rules are authored once, in ``backend/scopewatch/dispatch_gate.py``,
+# which the three gateway backends import too; the image COPYs it in beside
+# ``docker_job.py`` so the plain import resolves. Stdlib-only like that module.
+from scopewatch import dispatch_gate  # noqa: E402
+
 # Single-use dispatch tokens expire after 60s (issue #78).
 DISPATCH_TOKEN_TTL_S = 60.0
 # Cap request bodies (actions are small synthetic ops).
@@ -102,6 +121,21 @@ MAX_BODY_BYTES = 256 * 1024
 ALLOWED_OPERATIONS = frozenset(
     {"list_directory", "read_text", "write_text", "delete_path", "run_command"}
 )
+
+# How this runner renders each shared-gate refusal (issue #105). The gate owns
+# the rule and its machine-readable code; this sidecar keeps its own HTTP
+# vocabulary and status codes, which are part of the gateway contract.
+GATE_REFUSALS: dict[str, tuple[int, dict[str, str]]] = {
+    dispatch_gate.NO_DECISION: (403, {"error": "policy decision required"}),
+    dispatch_gate.POLICY_DENY: (403, {"error": "policy outcome does not authorize execution"}),
+    dispatch_gate.OUTCOME_REFUSED: (403, {"error": "policy outcome does not authorize execution"}),
+    dispatch_gate.APPROVAL_REQUIRED: (403, {"error": "valid approval required"}),
+    # 400 "unsupported operation" is what this sidecar returned for
+    # network_request before the gate existed (it is absent from
+    # ALLOWED_OPERATIONS), and the response is part of the runner contract, so
+    # the status is preserved even though the rule now comes from the gate.
+    dispatch_gate.NETWORK_FORBIDDEN: (400, {"error": "unsupported operation"}),
+}
 
 
 def canonical_action_digest(
@@ -288,18 +322,20 @@ def handle_execute(
         return 409, {"error": "action digest mismatch"}
 
     # A signed dispatch still needs an authorizing decision and exact approval.
-    outcome = decision.get("outcome")
-    if outcome not in ("ALLOW", "HOLD"):
-        return 403, {"error": "policy outcome does not authorize execution"}
+    # The outcome, approval-status, and network rules come from the one shared
+    # gate (issue #105); the run/decision binding below stays here because it
+    # is a signed-protocol check the gateways do not receive.
+    verdict = dispatch_gate.authorize_dispatch(action, decision, body.get("approval"))
+    refused = GATE_REFUSALS.get(verdict.code)
+    if refused is not None:
+        return refused
     if decision.get("action_request_id") != action.get("id"):
         return 403, {"error": "policy decision does not match action"}
     approval = body.get("approval")
-    if outcome == "HOLD":
+    if verdict.outcome == "HOLD":
         if (
             not isinstance(approval, dict)
-            or approval.get("status") != "APPROVED"
             or not approval.get("id")
-            or approval.get("action_request_id") != action.get("id")
             or approval.get("run_id") != action.get("run_id")
             or approval.get("policy_decision_id") != decision.get("id")
         ):
@@ -310,10 +346,11 @@ def handle_execute(
     operation = action.get("operation")
     resource = action.get("resource")
     run_id = action.get("run_id") or "unknown-run"
+    # The network_request ban is the shared gate's (NETWORK_FORBIDDEN above),
+    # so it is not repeated here; this allowlist covers the remaining
+    # operations, including anything unknown.
     if operation not in ALLOWED_OPERATIONS:
         return 400, {"error": "unsupported operation"}
-    if operation == "network_request":
-        return 403, {"error": "operation forbidden"}
     if not isinstance(resource, str):
         return 400, {"error": "invalid resource"}
 

@@ -13,6 +13,7 @@ from typing import Any, Optional
 import uuid
 
 from scopewatch.config import MAX_READ_BYTES, MAX_WRITE_BYTES
+from scopewatch.dispatch_gate import authorize_dispatch
 from scopewatch.models import (
     ApprovalStatus,
     ExecutionStatus,
@@ -176,13 +177,16 @@ def _execute_local(
     receipt_id = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc).isoformat()
 
-    # Invariant: Must have policy evidence
-    if policy_decision is None:
-        raise ExecutionSecurityError("Direct execution without policy evidence is prohibited.")
-
-    # Invariant: If policy decision is DENY, cannot execute
-    if policy_decision.outcome == PolicyOutcome.DENY:
+    # Pre-dispatch gate (issue #105): one shared authorization decision.
+    # Invariants enforced here: policy evidence required, DENY is final,
+    # HOLD needs an APPROVED approval bound to this exact action, and
+    # network operations never execute. Stored-approval verification, the
+    # run-lifecycle check, scoped-target revalidation, and run_command
+    # routing below stay backend-specific and run only on PROCEED.
+    verdict = authorize_dispatch(action, policy_decision, approval_request)
+    if verdict.kind == "deny":
         completed_at = datetime.now(timezone.utc).isoformat()
+        assert policy_decision is not None  # DENY verdict implies a decision
         return ExecutionReceipt(
             id=receipt_id,
             action_request_id=action.id,
@@ -195,33 +199,19 @@ def _execute_local(
             resource=action.resource,
             operation=action.operation,
         )
+    if not verdict.proceed:
+        raise ExecutionSecurityError(verdict.reason)
 
-    # Invariant: If policy decision is HOLD, must have an APPROVED approval
-    # request bound to this exact action. CONSUMED approvals never execute:
-    # single-use means a consumed approval cannot authorize a replay, and the
-    # service always presents the APPROVED object (it consumes afterwards).
-    if policy_decision.outcome == PolicyOutcome.HOLD:
-        if (
-            approval_request is None
-            or approval_request.status != ApprovalStatus.APPROVED
-            or approval_request.action_request_id != action.id
-        ):
-            raise ExecutionSecurityError(
-                "Held action requires valid approved status to execute."
-            )
-        # Verifiable single-use: when given a store handle, the executor
-        # consults the stored approval, the execution receipt, and the run
-        # status instead of trusting the in-memory object alone.
+    # Verifiable single-use: when given a store handle, the executor
+    # consults the stored approval, the execution receipt, and the run
+    # status instead of trusting the in-memory object alone. Non-held
+    # actions carry no approval, but a store handle still binds them to
+    # the run lifecycle: terminal runs execute nothing.
+    if policy_decision is not None and policy_decision.outcome == PolicyOutcome.HOLD:
         if db_path is not None:
             _verify_stored_approval_single_use(action, approval_request, db_path)
     elif db_path is not None:
-        # Non-held actions carry no approval, but a store handle still binds
-        # them to the run lifecycle: terminal runs execute nothing.
         _verify_stored_run_not_terminal(action, db_path)
-
-    # Invariant: Network operations must never execute
-    if action.operation == "network_request":
-        raise ExecutionSecurityError("Network requests are forbidden in synthetic executor.")
 
     # Invariant: run_command is Docker-only (policy denies it for the local
     # backend, but the executor refuses it too as defence in depth).

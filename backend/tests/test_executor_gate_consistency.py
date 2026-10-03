@@ -1,7 +1,7 @@
-"""Cross-backend pre-dispatch gate consistency (issue #104).
+"""Cross-backend pre-dispatch gate consistency (issue #104, kept after #105).
 
-The evidence gates before execution are written out four times: once per
-executor backend and once inside the ``executor-runner`` sidecar. Two of
+The evidence gates before execution used to be written out four times: once
+per executor backend and once inside the ``executor-runner`` sidecar. Two of
 those four copies had drifted out of agreement with the other two, and no
 test compared them, so CI stayed green while:
 
@@ -12,6 +12,23 @@ test compared them, so CI stayed green while:
   never matched and every remote ``run_command`` failed with HTTP 409, and
 - the runner performed no policy-outcome check, so a bearer-token holder
   could hand-craft a matching digest with outcome ``DENY`` and execute.
+
+Issue #105 moved the approval-status and outcome rules into one module
+(``scopewatch.dispatch_gate``), which every backend and the runner call.
+This file is **kept, not superseded**, because what it checks is still
+per-backend and outside the gate:
+
+- the digest/normalization behaviour of the gateway's remote client, which
+  the gate does not own, and
+- the runner's signed-protocol layers (signature, one-shot token with TTL,
+  digest, run/decision binding, "``ALLOW`` carries no approval"), which the
+  gateways construct rather than receive.
+
+The gate's own rules are unit-tested directly in
+``backend/tests/test_dispatch_gate.py``, which also asserts that the runner
+loads that same authored file rather than a private copy. A fifth backend
+satisfies both: it calls ``authorize_dispatch`` and must reproduce this
+protocol.
 
 These tests pin the agreement instead of the individual copies, so a
 fifth backend has to satisfy them too.
