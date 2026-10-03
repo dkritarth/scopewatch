@@ -11,6 +11,7 @@ from scopewatch.models import (
     ReasonCode,
     ReasoningProvenance,
     RunStatus,
+    format_policy_version,
 )
 
 
@@ -82,6 +83,22 @@ class PolicyDecision(BaseModel):
     decided_at: str
     deterministic: bool = True
     reasoning_audit_id: Optional[str] = None
+    # Identity of the deterministic policy implementation and rule set that
+    # produced this decision (issue #119), independent of the data
+    # ``schema_version``. See scopewatch.models for update semantics.
+    #
+    # The default is None, not the current version, so the field fails closed:
+    # `evaluate_policy` stamps the identity at its single public entry point,
+    # and anything that builds a decision without going through the engine --
+    # above all a read of a row written before policy versions existed -- ends
+    # up visibly unknown instead of silently claiming today's revision.
+    # Repository read paths therefore pass the stored value through verbatim.
+    policy_version: Optional[str] = None
+
+    @property
+    def policy_version_label(self) -> str:
+        """Display label: the stored identity, or "unknown (legacy)"."""
+        return format_policy_version(self.policy_version)
 
 
 class ApprovalRequest(BaseModel):
@@ -101,6 +118,12 @@ class ApprovalRequest(BaseModel):
     operation: Optional[str] = None
     resource: Optional[str] = None
     tool: Optional[str] = None
+    # Policy identity evaluated for the held action (issue #119), resolved
+    # from the bound policy decision on every read. It is deliberately not a
+    # second stored column: an approval authorizes one stored decision, so the
+    # decision stays the single source of truth and the two cannot disagree.
+    # None means the decision predates policy-version tracking.
+    policy_version: Optional[str] = None
 
 
 class ExecutionReceipt(BaseModel):
