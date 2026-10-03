@@ -1941,6 +1941,20 @@ mark.highlight-excerpt,
   padding: 5px 10px;
   cursor: pointer;
 }
+/* Compact sizing: .primary-btn is tuned for the full-width simulator form. */
+.reviewer-access-actions .primary-btn {
+  margin-top: 0;
+  min-height: 0;
+  font-size: 0.78rem;
+  padding: 5px 10px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+.reviewer-access-actions .primary-btn:hover,
+.reviewer-access-actions .primary-btn:active {
+  transform: none;
+}
 
 /* State is carried by the sentence, not by colour alone. */
 .reviewer-access-state {

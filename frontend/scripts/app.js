@@ -516,6 +516,12 @@ function renderReviewerAccess() {
   }
 }
 
+function revealReviewerAccess() {
+  if (elements.reviewerAccessPanel) {
+    elements.reviewerAccessPanel.hidden = false;
+  }
+}
+
 /**
  * Extra guidance for a refused mutation (#115).
  *
@@ -533,12 +539,6 @@ export function authFailureHint(err) {
     " This demo needs a reviewer token: open Reviewer access at the top of the " +
     "page, paste the token from the testing instructions, then retry."
   );
-}
-
-function revealReviewerAccess() {
-  if (elements.reviewerAccessPanel) {
-    elements.reviewerAccessPanel.hidden = false;
-  }
 }
 
 function wireReviewerAccess() {
@@ -2102,12 +2102,12 @@ async function bootstrap() {
       // An empty hosted gateway has to create its first run, which needs the
       // reviewer token. Say so instead of silently showing replay fixtures
       // that no longer match the deployment (#115).
-      authFailureHint(err);
-      if (elements.runsStatus) {
+      const hint = authFailureHint(err);
+      if (hint && elements.runsStatus) {
         renderPanelStatus(
           elements.runsStatus,
           panelStatus({ error: err }, {
-            errorText: `Could not load runs from the gateway.${authFailureHint(err)}`,
+            errorText: `Could not load runs from the gateway.${hint}`,
           }),
         );
       }
