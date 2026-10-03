@@ -36,12 +36,18 @@ RUN python3 -c "import sys; sys.path.insert(0, '/app'); \
 RUN python3 -m compileall -q /app/runner.py /app/scopewatch/docker_job.py \
     /app/scopewatch/dispatch_gate.py
 
+# /runs is where the gateway materialises per-run workspaces (#117). The
+# compose fragment mounts the gateway's own `scopewatch-run-workspaces` volume
+# here; this ENV is only the in-image default and MUST agree with the gateway's
+# SCOPEWATCH_RUN_WORKSPACES_DIR. It is not the scenario fixture — the fixture
+# volume is deliberately not mounted into this container.
+
 # Internal-only port; the compose fragment publishes nothing to the host.
 EXPOSE 8091
 
 ENV EXECUTOR_RUNNER_HOST=0.0.0.0 \
     EXECUTOR_RUNNER_PORT=8091 \
-    EXECUTOR_RUNNER_WORKSPACE=/workspace
+    EXECUTOR_RUNNER_WORKSPACE=/runs
 
 # Runs as root inside this minimal container because the Docker socket is
 # root-owned by default; see README.md risk section. The container has no

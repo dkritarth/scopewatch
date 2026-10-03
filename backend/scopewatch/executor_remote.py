@@ -90,6 +90,7 @@ def compute_action_digest(
     action: ActionRequest,
     policy_decision: PolicyDecision,
     arguments: Optional[dict[str, Any]] = None,
+    run_workspace: Optional[str] = None,
 ) -> str:
     """Bind one dispatch to one approved action (hex SHA-256).
 
@@ -102,6 +103,11 @@ def compute_action_digest(
     normalizes arguments before sending must pass the normalized form here
     too, so the digest describes the payload the runner receives. Prefer
     :func:`prepare_dispatch`, which cannot be called inconsistently.
+
+    ``run_workspace`` (issue #117) binds the dispatch to one run's workspace
+    identity, not just one run id, so a token minted against one run's
+    workspace cannot be replayed against another run's directory on the
+    shared runner volume.
     """
     canonical = {
         "action_id": action.id,
@@ -111,6 +117,7 @@ def compute_action_digest(
         "arguments": (action.arguments or {}) if arguments is None else arguments,
         "policy_decision_id": policy_decision.id,
         "policy_outcome": policy_decision.outcome.value,
+        "run_workspace": run_workspace or "",
     }
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -151,6 +158,7 @@ def prepare_dispatch(
     policy_decision: PolicyDecision,
     dispatch_token: Optional[str] = None,
     approval_request: Optional[ApprovalRequest] = None,
+    run_workspace: Optional[str] = None,
 ) -> tuple[dict[str, Any], str]:
     """Build the runner request body and the digest that describes it.
 
@@ -168,6 +176,9 @@ def prepare_dispatch(
             dispatch_token if dispatch_token is not None else _new_dispatch_token()
         ),
         "action_digest": "",
+        # Issue #117: the runner resolves its per-run subdirectory from this
+        # key, so a dispatch cannot be pointed at another run's workspace.
+        "run_workspace": run_workspace,
         "action": {
             "id": action.id,
             "run_id": action.run_id,
@@ -192,7 +203,9 @@ def prepare_dispatch(
             else None
         ),
     }
-    digest = compute_action_digest(action, policy_decision, action_arguments)
+    digest = compute_action_digest(
+        action, policy_decision, action_arguments, run_workspace
+    )
     payload["action_digest"] = digest
     return payload, digest
 
@@ -233,6 +246,7 @@ class RemoteExecutor:
         workspace_root: Path,
         policy_decision: Optional[PolicyDecision] = None,
         approval_request: Optional[ApprovalRequest] = None,
+        run_workspace: Optional[str] = None,
     ) -> ExecutionReceipt:
         receipt_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc).isoformat()
@@ -287,12 +301,27 @@ class RemoteExecutor:
         ):
             return _failed("EXECUTION_FAILED", "Remote executor unavailable; failing closed.")
 
+        # Issue #117: the runner mounts one volume holding every run's workspace
+        # side by side, so the dispatch must say WHICH run's directory to use.
+        # ``workspace_root`` is this host's path, which tells the runner nothing:
+        # it is a different container with its own mount of the same volume. So
+        # the key comes from the caller, which owns the workspace identity, and
+        # is the run id — which is also how the service names the directory.
+        # Deriving it from ``workspace_root`` instead would couple the wire
+        # contract to a host path name and make a mismatch between the announced
+        # key and the actual directory silent rather than loud.
+        workspace_key = run_workspace or action.run_id
+
         # Build the body and its digest together so the digest always
         # describes the arguments the runner receives (#104).
         dispatch_token = _new_dispatch_token()
         try:
             payload, _digest = prepare_dispatch(
-                action, policy_decision, dispatch_token, approval_request
+                action,
+                policy_decision,
+                dispatch_token,
+                approval_request,
+                run_workspace=workspace_key,
             )
             payload["dispatch_signature"] = sign_dispatch_payload(payload, self._signing_key)
         except ValueError:
@@ -348,6 +377,7 @@ def execute_action_remote(
     runner_url: Optional[str] = None,
     runner_token: Optional[str] = None,
     transport: Optional[httpx.BaseTransport] = None,
+    run_workspace: Optional[str] = None,
 ) -> ExecutionReceipt:
     """Convenience wrapper used by the gateway entry point and tests."""
     return RemoteExecutor(
@@ -359,4 +389,5 @@ def execute_action_remote(
         workspace_root,
         policy_decision=policy_decision,
         approval_request=approval_request,
+        run_workspace=run_workspace,
     )

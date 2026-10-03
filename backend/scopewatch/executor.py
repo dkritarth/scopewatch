@@ -405,6 +405,7 @@ def execute_action(
     approval_request: Optional[ApprovalRequest] = None,
     db_path: Optional[Path | str | sqlite3.Connection] = None,
     task_scope: Optional[TaskScope] = None,
+    run_workspace: Optional[str] = None,
 ) -> ExecutionReceipt:
     """Single gateway entry point; dispatches to the configured backend.
 
@@ -414,6 +415,13 @@ def execute_action(
     (including unset) selects the local backend. Remote and Docker failures
     fail closed inside their own backend and never fall back to local
     execution.
+
+    ``workspace_root`` is the run's own workspace directory. ``run_workspace``
+    is the key naming that directory on the wire (issue #117): it is passed
+    explicitly rather than re-derived inside the remote backend, so the
+    caller that owns the workspace identity is the one that states it, and a
+    mismatch between the announced key and the directory is a visible error
+    rather than a coincidence that happens to hold.
     """
     backend = get_executor_backend()
     if backend == "docker":
@@ -435,6 +443,7 @@ def execute_action(
             workspace_root,
             policy_decision=policy_decision,
             approval_request=approval_request,
+            run_workspace=run_workspace,
         )
     return _execute_local(
         action,

@@ -45,6 +45,22 @@ services:
       SCOPEWATCH_AUDITOR_PROFILE: ${SCOPEWATCH_AUDITOR_PROFILE:-mock}
       SCOPEWATCH_PROVIDERS_CONFIG: /app/backend/config/providers.toml
       SCOPEWATCH_APPROVAL_TTL: ${SCOPEWATCH_APPROVAL_TTL:-300}
+      # Per-run workspace root (#117). Every run gets its own copy of the
+      # fixture here. Two rules, both enforced by tests in
+      # backend/tests/test_run_workspaces_deployment.py:
+      #  1. It MUST be a mounted, writable path. This service runs
+      #     `read_only: true` with volumes for /data, /workspace and /runs
+      #     only, so any other path can neither exist nor be created — and
+      #     `docker-entrypoint.sh` seeds with `set -euo pipefail`, so an
+      #     unwritable root aborts the container on first start and then makes
+      #     every create_run 503.
+      #  2. It MUST be the same path the executor-runner mounts, because the
+      #     gateway announces `run_workspace` as a bare key under this root
+      #     and the runner resolves it under EXECUTOR_RUNNER_WORKSPACE.
+      # Deliberately NOT under /workspace: that volume is the copy SOURCE, and
+      # run workspaces nested in it would be copied into every later run.
+      # Not an operator knob: see deploy/.env.example.
+      SCOPEWATCH_RUN_WORKSPACES_DIR: /runs
     volumes:
       # SQLite evidence database. Named volume so `down` keeps demo state
       # and `down -v` fully resets it (runbook "Reset demo data").
@@ -52,6 +68,10 @@ services:
       # Synthetic agent workspace ONLY. Never mount the repo, the home
       # directory, or anything containing keys here.
       - scopewatch-workspace:/workspace
+      # Per-run workspace copies (#117). Separate from /workspace so the
+      # fixture stays pristine, and shared with executor-runner so the remote
+      # backend can resolve the announced run_workspace key.
+      - scopewatch-run-workspaces:/runs
     networks:
       - internal
     restart: unless-stopped
@@ -59,7 +79,7 @@ services:
     tmpfs:
       - /tmp
     # No added capabilities: the gateway listens on 8000 and writes only to
-    # /data and /workspace (owned by its uid from the image build).
+    # /data, /workspace and /runs (owned by its uid from the image build).
     cap_drop:
       - ALL
     security_opt:
@@ -170,6 +190,10 @@ volumes:
     name: scopewatch-demo-data
   scopewatch-workspace:
     name: scopewatch-demo-workspace
+  # Per-run workspace copies (#117). Named so `down -v` reclaims them with the
+  # rest of the demo state: nothing prunes per-run workspaces yet (#166).
+  scopewatch-run-workspaces:
+    name: scopewatch-demo-run-workspaces
   caddy-data:
     name: scopewatch-demo-caddy-data
   caddy-config:

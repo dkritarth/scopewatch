@@ -42,7 +42,7 @@ from scopewatch.schemas import (
     HealthResponse,
     PolicyDecision,
     ResolveApprovalRequest,
-    Run,
+    RunResponse,
     SubmitActionRequest,
     UpdateRunRequest,
 )
@@ -81,7 +81,8 @@ def create_app(
     workspace_root: Path | str = WORKSPACE_ROOT,
     auditor: Optional[ReasoningAuditor] = None,
     demo_config: Optional[DemoGuardConfig] = None,
-    capture_token: Optional[str] = None,
+capture_token: Optional[str] = None,
+    run_workspaces_root: Optional[Path | str] = None,
 ) -> FastAPI:
     actual_db_path = Path(db_path)
     actual_workspace_root = Path(workspace_root)
@@ -144,7 +145,8 @@ def create_app(
         workspace_root=workspace_root,
         auditor=auditor,
         guards=guards,
-        capture_token=capture_token,
+capture_token=capture_token,
+        run_workspaces_root=run_workspaces_root,
     )
     app.state.service = service
 
@@ -188,51 +190,59 @@ def create_app(
 
     # ---------------- Runs ----------------
 
-    @app.get("/api/v1/runs", response_model=list[Run])
-    def list_runs(svc: ScopewatchService = Depends(get_service)) -> list[Run]:
-        return svc.list_runs()
+    # Run endpoints return RunResponse, not the storage model: the storage
+    # model carries the host-side per-run workspace path (#117), which is not
+    # something a public, token-free read should publish.
 
-    @app.post("/api/v1/runs", response_model=Run, status_code=status.HTTP_201_CREATED)
+    @app.get("/api/v1/runs", response_model=list[RunResponse])
+    def list_runs(svc: ScopewatchService = Depends(get_service)) -> list[RunResponse]:
+        return [RunResponse.from_run(run) for run in svc.list_runs()]
+
+    @app.post(
+        "/api/v1/runs", response_model=RunResponse, status_code=status.HTTP_201_CREATED
+    )
     def create_run(
         req: CreateRunRequest,
         request: Request,
         svc: ScopewatchService = Depends(get_service),
-    ) -> Run:
+    ) -> RunResponse:
         run, _ = svc.create_run(
             name=req.name,
             task_scope=req.task_scope,
             client_ip=request_client_ip(request),
             prompt_version=req.prompt_version,
         )
-        return run
+        return RunResponse.from_run(run)
 
-    @app.get("/api/v1/runs/{run_id}", response_model=Run)
-    def get_run(run_id: str, svc: ScopewatchService = Depends(get_service)) -> Run:
-        return svc.get_run(run_id)
+    @app.get("/api/v1/runs/{run_id}", response_model=RunResponse)
+    def get_run(run_id: str, svc: ScopewatchService = Depends(get_service)) -> RunResponse:
+        return RunResponse.from_run(svc.get_run(run_id))
 
-    @app.patch("/api/v1/runs/{run_id}", response_model=Run)
+    @app.patch("/api/v1/runs/{run_id}", response_model=RunResponse)
     def update_run(
         run_id: str,
         req: UpdateRunRequest,
         svc: ScopewatchService = Depends(get_service),
-    ) -> Run:
+    ) -> RunResponse:
         if req.prompt_version:
-            return svc.set_run_prompt_version(run_id, req.prompt_version)
-        return svc.get_run(run_id)
+            return RunResponse.from_run(
+                svc.set_run_prompt_version(run_id, req.prompt_version)
+            )
+        return RunResponse.from_run(svc.get_run(run_id))
 
-    @app.post("/api/v1/runs/{run_id}/complete", response_model=Run)
-    def complete_run(run_id: str, svc: ScopewatchService = Depends(get_service)) -> Run:
+    @app.post("/api/v1/runs/{run_id}/complete", response_model=RunResponse)
+    def complete_run(run_id: str, svc: ScopewatchService = Depends(get_service)) -> RunResponse:
         run, _ = svc.complete_run(run_id)
-        return run
+        return RunResponse.from_run(run)
 
-    @app.post("/api/v1/runs/{run_id}/fail", response_model=Run)
+    @app.post("/api/v1/runs/{run_id}/fail", response_model=RunResponse)
     def fail_run(
         run_id: str,
         reason: Optional[str] = Query(None),
         svc: ScopewatchService = Depends(get_service),
-    ) -> Run:
+    ) -> RunResponse:
         run, _ = svc.fail_run(run_id, reason=reason or "Agent execution failed.")
-        return run
+        return RunResponse.from_run(run)
 
     # ---------------- Actions ----------------
 

@@ -69,6 +69,13 @@ Key endpoints:
 - `POST /api/v1/approvals/{approval_id}/approve`: Single-use endpoint to authorize an action on hold.
 - `POST /api/v1/approvals/{approval_id}/deny`: Reject an action on hold.
 
+Run endpoints serialize `RunResponse`, not the `Run` storage model. The storage
+model carries the host-side per-run workspace path, which the service needs but
+which has no business in a response: `GET /api/v1/runs` is a public read with no
+token, so publishing it would disclose the gateway's directory layout to any
+reader (issue #117). The persisted path is an internal detail; nothing in the
+dashboard consumes it.
+
 ### 2. Deterministic policy engine
 
 The policy engine (`backend/scopewatch/policy.py`) evaluates candidate actions against allowlists and blocklists without relying on non-deterministic model calls:
@@ -106,7 +113,43 @@ Model routing is centralized in `backend/scopewatch/providers/` configured via `
 
 ### 5. Controlled workspace executor
 
-The executor (`backend/scopewatch/executor.py`) operates strictly within the designated workspace boundary:
+Each run owns a workspace: `create_run` copies the read-only synthetic scenario
+fixture into a per-run directory (`backend/scopewatch/workspaces.py`) and stores
+that path on the run. `submit_action`, `resolve_approval`, and every executor
+backend resolve the workspace through the stored run, never the service-wide
+fixture root (issue #117). Consequences: two runs never share a writable tree,
+the fixture stays pristine across runs, and an approved HOLD still finds its
+workspace after a service restart because the identity is persisted. Container
+copy-back lands in the run's own workspace; a missing or out-of-root stored
+workspace fails closed.
+
+Resolution checks the *real* path against `root / workspace_segment(run_id)`,
+not merely containment inside the managed root: a sibling run's directory, the
+root itself, and a symlink onto either are all refused. Containment alone let a
+stored row point execution at another run's tree. The `executor-runner` sidecar
+refuses the same shapes, for the same property, from the other side of the wire.
+
+Where the managed root lives is a deployment concern, because the gateway
+container runs with a read-only root filesystem:
+
+| | Value | Source |
+| --- | --- | --- |
+| Default (dev, tests) | `<fixture>/.runs` | `default_run_workspaces_root` |
+| Deployed demo | `/runs` (named volume `scopewatch-run-workspaces`) | `deploy/compose.yaml` |
+| Remote runner | `/runs`, same volume, same container path | `deploy/executor-runner/compose.executor-runner.yaml` |
+
+The default nests inside the fixture because that is the one directory a
+deployment always provides writable; a `-runs` sibling is a path the container
+cannot create. The nesting is safe because the managed root is excluded from
+every fixture copy, so no run absorbs another's workspace. The deployed value is
+a separate volume for two reasons: the fixture volume is the copy *source*, and
+the runner is a different container that can only reach the directories it
+mounts itself. An unwritable root reports `RUN_WORKSPACES_ROOT_UNAVAILABLE`,
+distinct from a per-run `RUN_WORKSPACE_UNAVAILABLE`, because the two need
+different fixes (a mount versus a lost directory). See `deploy/RUNBOOK.md` §3
+"Per-run workspaces".
+
+The executor (`backend/scopewatch/executor.py`) operates strictly within the resolved workspace boundary:
 - Supported operations: `list_directory`, `read_text`, `write_text`, `delete_path` (`backend/scopewatch/executor.py:80-232`).
 - `delete_path` is simulated in the M1 baseline: it returns `"simulated": true` and does not unlink the target (`backend/scopewatch/executor.py:214-232`).
 - Produces immutable execution receipts with execution status, sanitized result payloads, error codes, and completion timestamps.

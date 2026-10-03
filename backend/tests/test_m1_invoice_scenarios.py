@@ -116,9 +116,13 @@ def test_m1_invoice_01_scripted_all_allow(invoice_env: dict[str, Any]):
         assert res.execution_receipt is not None
         assert res.execution_receipt.status == ExecutionStatus.EXECUTED
         assert res.approval_request is None
-    out = invoice_env["workspace"] / "outputs" / "audit-summary.txt"
+    # The report lands in the RUN's workspace copy (#117); the shared fixture
+    # stays read-only so later runs start from the same baseline.
+    run_workspace = service.get_run_workspace(run.id)
+    out = run_workspace / "outputs" / "audit-summary.txt"
     assert out.is_file()
     assert "AUDIT REPORT" in out.read_text(encoding="utf-8")
+    assert not (invoice_env["workspace"] / "outputs" / "audit-summary.txt").exists()
     _ = run
 
 
@@ -236,7 +240,7 @@ def test_m1_invoice_06_approval_executes_once(invoice_env: dict[str, Any]):
 
     service: ScopewatchService = invoice_env["service"]
     data = _load("06_invoice_injection.json")
-    _, responses = _run(_submit_scripted(service, data))
+    run, responses = _run(_submit_scripted(service, data))
     held = responses[2]
     approval_id = held.approval_request.id
 
@@ -251,8 +255,11 @@ def test_m1_invoice_06_approval_executes_once(invoice_env: dict[str, Any]):
     assert first.approval_request.status == ApprovalStatus.CONSUMED
     assert first.execution_receipt is not None
     assert first.execution_receipt.status == ExecutionStatus.EXECUTED
-    target = invoice_env["workspace"] / data["actions"][2]["resource"]
+    # The approved HOLD writes into the original run's workspace copy (#117),
+    # not the shared fixture.
+    target = service.get_run_workspace(run.id) / data["actions"][2]["resource"]
     assert target.is_file()
+    assert not (invoice_env["workspace"] / data["actions"][2]["resource"]).exists()
     assert "99887766" in target.read_text(encoding="utf-8")
 
     with pytest.raises(ScopewatchAPIError) as exc:

@@ -50,6 +50,63 @@ class Run(BaseModel):
         "synthetic fixtures are labeled explicitly."
     )
     prompt_version: Optional[str] = None
+    # Issue #117: the run's own workspace directory on the gateway host,
+    # persisted so submit/approve/execute resolve the identity from the stored
+    # run instead of process state (it must survive a restart). Optional only
+    # for rows written before per-run workspaces existed; the service resolves
+    # those lazily and stores the result.
+    #
+    # DELIBERATELY NOT PART OF THE API CONTRACT. This model is the storage
+    # model and the persistence layer reads it, but it is also the FastAPI
+    # `response_model` for every run endpoint, so the field used to ride along
+    # in every run response as a host path. Two reasons to keep it out of
+    # responses (not just out of *evidence*, which already excludes it):
+    #   * a host filesystem path is not information a reviewer needs, and
+    #     publishing it tells every reader where the gateway's writable
+    #     directory layout is;
+    #   * `/api/v1/runs` is a public read with no token, so this is a
+    #     disclosure surface rather than an internal one.
+    # `RunResponse` (below) is what the API returns. Keep both in sync when
+    # adding a field, and prefer adding to `RunResponse` alone unless the
+    # service genuinely needs to persist the value.
+    workspace_path: Optional[str] = None
+
+
+class RunResponse(BaseModel):
+    """The public shape of a run. Omits the host-side ``workspace_path`` (#117).
+
+    Kept separate from :class:`Run` on purpose rather than filtering fields per
+    endpoint, so "what a caller can see about a run" is one readable list and
+    adding a host path to the storage model cannot silently publish it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    task_scope: TaskScope
+    status: RunStatus = RunStatus.ACTIVE
+    created_at: str
+    updated_at: str
+    synthetic: bool = True
+    interception_coverage: str
+    reasoning_availability: str
+    prompt_version: Optional[str] = None
+
+    @classmethod
+    def from_run(cls, run: Run) -> "RunResponse":
+        return cls(
+            id=run.id,
+            name=run.name,
+            task_scope=run.task_scope,
+            status=run.status,
+            created_at=run.created_at,
+            updated_at=run.updated_at,
+            synthetic=run.synthetic,
+            interception_coverage=run.interception_coverage,
+            reasoning_availability=run.reasoning_availability,
+            prompt_version=run.prompt_version,
+        )
 
 
 class ActionRequest(BaseModel):

@@ -140,7 +140,11 @@ def test_full_agent_run_scenario(tmp_path: Path) -> None:
     )
     assert act6.status_code == 201
     assert act6.json()["execution_receipt"]["status"] == ExecutionStatus.EXECUTED.value
-    assert (workspace / "outputs" / "summary.txt").read_text(encoding="utf-8") == "Summary: vendor total $500."
+    # The write lands in the run's own workspace copy (#117), never in the
+    # shared scenario fixture.
+    run_workspace = client.app.state.service.get_run_workspace(run_id)
+    assert (run_workspace / "outputs" / "summary.txt").read_text(encoding="utf-8") == "Summary: vendor total $500."
+    assert not (workspace / "outputs" / "summary.txt").exists()
 
     # 8. Complete run
     comp = client.post(f"/api/v1/runs/{run_id}/complete")

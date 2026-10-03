@@ -16,6 +16,13 @@
 # network. The socket mount may alternatively point at a rootless daemon
 # socket (e.g. /run/user/1000/docker.sock) — the only change is the source
 # path below.
+#
+# Shared storage contract (issue #117): this sidecar needs the gateway's
+# per-run workspaces, NOT the fixture. Both services must mount the SAME named
+# volume at the SAME container path, because EXECUTOR_RUNNER_WORKSPACE and the
+# gateway's SCOPEWATCH_RUN_WORKSPACES_DIR are the two halves of one path
+# contract across a container boundary. Change one without the other and every
+# remote dispatch fails closed with 500 "run workspace unavailable".
 
 services:
   executor-runner:
@@ -35,13 +42,28 @@ services:
     environment:
       EXECUTOR_RUNNER_HOST: "0.0.0.0"
       EXECUTOR_RUNNER_PORT: "8091"
-      EXECUTOR_RUNNER_WORKSPACE: /workspace
+      # MUST equal the gateway's SCOPEWATCH_RUN_WORKSPACES_DIR (#117). The
+      # gateway announces `run_workspace` as a bare per-run directory name
+      # under its run-workspaces root; this runner resolves that key here.
+      # Pointing this at the fixture volume instead (the old value,
+      # /workspace) makes every remote dispatch fail closed with 500, because
+      # no run's workspace exists under the fixture.
+      # It is the ONLY workspace this service uses: it is not a path into the
+      # repo, the home directory, or the scenario fixture.
+      EXECUTOR_RUNNER_WORKSPACE: /runs
       EXECUTOR_RUNNER_TOKEN: ${EXECUTOR_RUNNER_TOKEN:?EXECUTOR_RUNNER_TOKEN is required}
       EXECUTOR_RUNNER_SIGNING_KEY: ${EXECUTOR_RUNNER_SIGNING_KEY:?EXECUTOR_RUNNER_SIGNING_KEY is required}
     volumes:
       # THE socket mount. No other service may add one.
       - /var/run/docker.sock:/var/run/docker.sock
-      - scopewatch-workspace:/workspace:rw
+      # The SAME named volume the gateway mounts at /runs (#117). This is what
+      # makes the remote backend reachable at all: the runner is a different
+      # container, so a path is only shared through a shared mount.
+      # The fixture volume is deliberately NOT mounted here. This container
+      # holds the Docker socket and runs as root; giving it write access to the
+      # pristine scenario baseline buys nothing and risks exactly what #117
+      # exists to prevent.
+      - scopewatch-run-workspaces:/runs
     deploy:
       resources:
         limits:
@@ -54,4 +76,9 @@ networks:
     internal: true
 
 volumes:
-  scopewatch-workspace:
+  # MUST be the same host volume as deploy/compose.yaml's, or the two services
+  # resolve `run_workspace` keys against different directories. Declared in
+  # both fragments so either can be merged on its own; identical `name:` values
+  # mean both resolve to one volume rather than two.
+  scopewatch-run-workspaces:
+    name: scopewatch-demo-run-workspaces

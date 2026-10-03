@@ -243,7 +243,10 @@ def test_invariant_2_held_action_does_not_execute_before_approval_and_executes_e
     client, dispatcher = make_test_gateway(db_file, workspace)
     run_id = create_gateway_run(client, requires_approval=["write_text"])
 
-    target_write_file = workspace / "outputs" / "approved_release.txt"
+    # Issue #117: the approved write lands in the run's own workspace copy,
+    # so the invariant is checked there, not in the shared fixture.
+    run_workspace = client.app.state.service.get_run_workspace(run_id)
+    target_write_file = run_workspace / "outputs" / "approved_release.txt"
     if target_write_file.exists():
         target_write_file.unlink()
 

@@ -256,7 +256,7 @@ def test_digest_matches_the_wire_payload_for_run_command(
     body = seen["body"]
     assert isinstance(body, dict)
     runner_verdict = runner_mod.canonical_action_digest(
-        body["action"], body["policy_decision"]
+        body["action"], body["policy_decision"], body.get("run_workspace") or ""
     )
     assert body["action_digest"] == runner_verdict, (
         "gateway digest does not describe the payload the runner receives"
@@ -275,7 +275,7 @@ def test_prepare_dispatch_digest_matches_its_own_payload() -> None:
     decision = _decision(action.id, PolicyOutcome.ALLOW)
     payload, digest = prepare_dispatch(action, decision)
     runner_verdict = runner_mod.canonical_action_digest(
-        payload["action"], payload["policy_decision"]
+        payload["action"], payload["policy_decision"], payload.get("run_workspace") or ""
     )
     assert digest == runner_verdict
 
@@ -309,9 +309,16 @@ def test_prepare_dispatch_leaves_non_command_arguments_untouched() -> None:
 
 
 def _runner_env(monkeypatch: pytest.MonkeyPatch, workspace: Path) -> None:
+    # Issue #117: the runner volume holds one directory per run. `EXECUTOR_RUNNER_WORKSPACE`
+    # is that parent, and the dispatch's `run_workspace` picks the directory.
+    (workspace / _DISPATCH_RUN_WORKSPACE).mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("EXECUTOR_RUNNER_WORKSPACE", str(workspace))
     monkeypatch.setenv("EXECUTOR_RUNNER_TOKEN", "synthetic-consistency-token")
     monkeypatch.setenv("EXECUTOR_RUNNER_SIGNING_KEY", "synthetic-independent-signing-key")
+
+
+# Per-run workspace key used by the runner dispatch bodies below (#117).
+_DISPATCH_RUN_WORKSPACE = "run-consistency"
 
 
 def _dispatch_body(
@@ -328,7 +335,10 @@ def _dispatch_body(
     body = {
         "issued_at": time.time(),
         "dispatch_token": "single-use-token",
-        "action_digest": runner_mod.canonical_action_digest(action, decision),
+        "run_workspace": _DISPATCH_RUN_WORKSPACE,
+        "action_digest": runner_mod.canonical_action_digest(
+            action, decision, _DISPATCH_RUN_WORKSPACE
+        ),
         "action": action,
         "policy_decision": decision,
         "approval": (
@@ -483,7 +493,7 @@ def test_runner_rejects_recomputed_digest_without_gateway_signature(
     body = _dispatch_body("DENY")
     body["policy_decision"]["outcome"] = "ALLOW"
     body["action_digest"] = runner_mod.canonical_action_digest(
-        body["action"], body["policy_decision"]
+        body["action"], body["policy_decision"], body.get("run_workspace") or ""
     )
 
     status, payload = runner_mod.handle_execute(
