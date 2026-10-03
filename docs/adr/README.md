@@ -9,3 +9,4 @@ Numbered, short records of decisions the team has accepted. An ADR is accepted w
 | ADR | Title | Status |
 | --- | --- | --- |
 | [0001](0001-pre-execution-gateway.md) | Pre-execution gateway with an open-weight reasoning agent | Accepted |
+| [0003](0003-policy-identity-in-evidence.md) | Persisted policy identity in action evidence | Proposed (issue #119) |
