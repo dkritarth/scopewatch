@@ -684,15 +684,15 @@ class ScopewatchService:
                 action.reasoning_summary or ""
             ).strip()
 
-# #116: reviewer-visible provenance diagnostics. The stored label
+            # #116: reviewer-visible provenance diagnostics. The stored label
             # already says caller-asserted when it is; these fields say so
             # explicitly and preserve the raw claim for integration triage.
             provenance_event_fields: dict[str, Any] = {
                 "reasoning_provenance_verified": capture_verified,
             }
-            if caller_claimed_provenance:
+            if action.caller_claimed_provenance:
                 provenance_event_fields["caller_claimed_provenance"] = (
-                    caller_claimed_provenance.value
+                    action.caller_claimed_provenance.value
                 )
 
             audit_record: Optional[ReasoningAuditRecord] = None

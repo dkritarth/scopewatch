@@ -15,7 +15,6 @@ Clean-room synthetic fixtures only: no network, no provider calls, no Docker.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +32,14 @@ from scopewatch.app import create_app
 from scopewatch.config import MAX_WRITE_BYTES
 from scopewatch.db import get_connection
 from scopewatch.demo_guards import DemoGuardConfig
-from scopewatch.models import ExecutionStatus, PolicyOutcome, ReasonCode, RunStatus
+from scopewatch.models import (
+    ExecutionStatus,
+    PolicyOutcome,
+    ReasonCode,
+    ReasoningProvenance,
+    RunStatus,
+)
+from scopewatch.provenance import capture_credential_verified
 from scopewatch.schemas import CreateRunRequest, TaskScope
 
 BASE_SCOPE = {
@@ -69,14 +75,18 @@ def _build_workspace(root: Path) -> Path:
 
 
 @pytest.fixture
-def client_and_workspace(tmp_path: Path) -> tuple[TestClient, Path]:
+def client_and_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[TestClient, Path]:
     """Isolated gateway with a synthetic workspace tree."""
     # These tests are about the adapter and the policy seam, not demo mode.
     # If the surrounding environment has DEMO_TOKEN set, every mutating call
     # would need a token header and these tests would fail for the wrong
     # reason, so demo mode is pinned off here. The one test that needs demo
     # guards on builds its own demo-mode app.
-    os.environ.pop("DEMO_TOKEN", None)
+    # monkeypatch.delenv, not os.environ.pop: the fixture must restore the
+    # caller's environment, and a bare pop would leak across the whole session.
+    monkeypatch.delenv("DEMO_TOKEN", raising=False)
     workspace = _build_workspace(tmp_path)
 
     app = create_app(db_path=str(tmp_path / "test.db"), workspace_root=str(workspace))
@@ -1213,3 +1223,129 @@ def test_list_directory_relay_truncates_oversized_names(
     entry = resp["result"]["entries"][0]
     assert len(entry["name"]) == MAX_RELAYED_NAME_CHARS
     assert entry["path"] == "outputs/x"
+
+
+def test_shared_builder_applies_the_credential_rule_on_both_paths(
+    client_and_workspace: tuple[TestClient, Path],
+) -> None:
+    """Provenance is resolved in one place, so both paths must agree (#122 + #116).
+
+    Added after an independent review found that rebasing onto #164 could
+    silently break either side: this branch's _build_action_request predates
+    the capture-credential rules, so a careless conflict resolution would let
+    a path resolve provenance the way #116 deliberately removed, with nothing
+    in the PR to notice.
+
+    The preview endpoint returns a PolicyDecision, which carries no provenance
+    field, so the divergence is not observable through HTTP. It is observable
+    in the shared builder, which is exactly the seam the review asked to be
+    threaded through -- so that is what this asserts: the same claimed
+    provenance resolves to a caller assertion whether the credential verifies
+    or not, and a verified credential is the only thing that changes it.
+    """
+    client, _ = client_and_workspace
+    from scopewatch.schemas import SubmitActionRequest
+
+    svc = client.app.state.service
+    request = SubmitActionRequest(
+        tool="workspace",
+        operation="read_text",
+        resource="outputs/old.txt",
+        arguments={},
+        requested_by="acp-agent",
+        exposed_reasoning_trace="caller invented this text",
+        reasoning_provenance=ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value,
+    )
+    kwargs = dict(action_id="a" * 8, turn_id="t-1", requested_at="2026-10-03T00:00:00+00:00")
+
+    unverified = svc._build_action_request("r" * 8, request, capture_verified=False, **kwargs)
+    verified = svc._build_action_request("r" * 8, request, capture_verified=True, **kwargs)
+
+    # Without the credential the claim is downgraded, and the raw claim is kept.
+    assert unverified.reasoning_provenance == (
+        ReasoningProvenance.CALLER_ASSERTED_PROVIDER_TRACE
+    )
+    assert unverified.caller_claimed_provenance == (
+        ReasoningProvenance.PROVIDER_EXPOSED_TRACE
+    )
+
+    # With it the claim stands. This is the only lever, so a resolution that
+    # hardcoded either label would fail one of the two assertions above.
+    assert verified.reasoning_provenance == ReasoningProvenance.PROVIDER_EXPOSED_TRACE
+    assert verified.caller_claimed_provenance is None
+
+
+def test_a_submission_cannot_buy_a_verified_label_by_claiming_one(
+    client_and_workspace: tuple[TestClient, Path],
+) -> None:
+    """End-to-end #116: a claimed label over HTTP is stored as an assertion."""
+    client, _ = client_and_workspace
+    run_id = _create_run(client)
+
+    resp = client.post(
+        f"/api/v1/runs/{run_id}/actions",
+        json={
+            "tool": "workspace",
+            "operation": "read_text",
+            "resource": "outputs/old.txt",
+            "arguments": {},
+            "requested_by": "acp-agent",
+            "exposed_reasoning_trace": "caller invented this text",
+            "reasoning_provenance": ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    stored = resp.json()["action_request"]
+    assert stored["reasoning_provenance"] == (
+        ReasoningProvenance.CALLER_ASSERTED_PROVIDER_TRACE.value
+    )
+    assert stored["caller_claimed_provenance"] == (
+        ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value
+    )
+    # The decision itself is untouched: provenance never relaxes policy.
+    assert resp.json()["policy_decision"]["outcome"] == PolicyOutcome.ALLOW.value
+
+
+def test_capture_credential_fails_closed_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No configured token means nothing can authenticate, from any path."""
+    monkeypatch.delenv("SCOPEWATCH_CAPTURE_TOKEN", raising=False)
+    for configured, offered in (
+        (None, None),
+        ("", "anything"),
+        ("secret", ""),
+        (None, "secret"),
+        ("", ""),
+    ):
+        assert capture_credential_verified(configured, offered) is False
+    # And a matching pair does verify, so the assertions above are not vacuous.
+    assert capture_credential_verified("secret", "secret") is True
+
+
+def test_builder_refuses_to_default_the_capture_credential(
+    client_and_workspace: tuple[TestClient, Path],
+) -> None:
+    """`capture_verified` must stay a required argument on the shared builder.
+
+    The preview path passes its own value, and a preview's ActionRequest is
+    discarded after the policy call, so flipping that particular value is not
+    observable through any interface today. The protection that actually
+    matters is structural: if `capture_verified` ever grew a default, a future
+    caller could omit it and silently resolve provenance with no credential
+    check -- precisely the #116 regression, reintroduced by an edit that looks
+    harmless.
+
+    Asserting the signature rather than a runtime value keeps this guard honest
+    about what it does and does not cover.
+    """
+    import inspect
+
+    client, _ = client_and_workspace
+    svc = client.app.state.service
+    params = inspect.signature(svc._build_action_request).parameters
+
+    assert "capture_verified" in params, "builder must take the credential verdict"
+    assert params["capture_verified"].default is inspect.Parameter.empty, (
+        "capture_verified must be required; a default would let a caller skip the #116 check"
+    )
