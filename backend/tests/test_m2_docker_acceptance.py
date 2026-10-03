@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from scopewatch.docker_job import prepare_docker_job
 from scopewatch.executor import ExecutionSecurityError, execute_action, get_executor_backend
 from scopewatch.executor_docker import (
     DOCKER_CPUS,
@@ -157,9 +158,11 @@ def test_m2_docker_full_hardening_flags(tmp_path: Path) -> None:
     cmd = build_docker_command(
         image=DOCKER_IMAGE,
         workspace_copy=copy,
-        operation="read_text",
-        resource="docs/file_a.txt",
-        arguments_json="{}",
+        job=prepare_docker_job(
+            operation="read_text",
+            resource="docs/file_a.txt",
+            arguments={},
+        ),
         container_name="scopewatch-accept",
         run_label="run-1",
     )
@@ -192,9 +195,7 @@ def test_m2_docker_mounts_only_workspace_copy(tmp_path: Path) -> None:
     cmd = build_docker_command(
         image=DOCKER_IMAGE,
         workspace_copy=copy,
-        operation="list_directory",
-        resource="docs",
-        arguments_json="{}",
+        job=prepare_docker_job(operation="list_directory", resource="docs", arguments={}),
         container_name="scopewatch-accept",
         run_label="run-1",
     )

@@ -49,6 +49,7 @@ import uuid
 import pytest
 
 from scopewatch.db import get_connection, init_db
+from scopewatch.docker_job import prepare_docker_job
 from scopewatch.errors import ScopewatchAPIError
 from scopewatch.executor import ExecutionSecurityError, execute_action
 from scopewatch.executor_docker import (
@@ -785,9 +786,12 @@ def test_m2_build_command_links_pids_constant(tmp_path: Path) -> None:
     cmd = build_docker_command(
         image="python:3.12-slim-bookworm@sha256:" + "0" * 64,
         workspace_copy=copy,
-        operation="run_command",
-        resource=".",
-        arguments_json="{}",
+        job=prepare_docker_job(
+            operation="run_command",
+            resource=".",
+            arguments={"argv": ["echo", "hi"], "timeout_s": 5.0},
+            timeout_s=5.0,
+        ),
         container_name="scopewatch-m2-probe",
         run_label="run-m2",
     )

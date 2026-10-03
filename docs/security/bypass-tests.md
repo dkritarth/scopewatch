@@ -255,3 +255,33 @@ These cases pin the agreement rather than each copy.
 The runner cases assert on whether the status falls in the 4xx range, which
 is where a gate refusal lands, rather than on an exact code, so they hold
 both with and without a Docker daemon present.
+
+## L. Shared Docker job construction (`test_docker_job_share.py`, issue #106)
+
+The flag list, helper source, staging, and copy-back walk were written out
+twice — in `executor_docker.py` and in `runner.py` — and had already drifted
+once (#104, the `run_command` digest mismatch). They now live in
+`backend/scopewatch/docker_job.py`, which both sides import, and the cases
+below assert the two callers actually agree rather than each copy.
+
+| Case | Expected | Parameterized over | Executed? |
+| --- | --- | --- | --- |
+| Gateway and runner build the same `docker run` argv | Byte-identical apart from executor label, container name, and staged copy | 24 operation/argument cases | Yes |
+| Job payload and its JSON serialization agree | `DockerJob` rejects a mismatch | same 24 cases | Yes |
+| Both callers use the shared objects | Identity, not equality | 8 shared functions | Yes |
+| Flag list and helper exist in exactly one file | Absent from both callers | 11 source markers | Yes |
+| Shared module imports stdlib only | No non-stdlib or `scopewatch` import | full AST | Yes |
+| Runner imports only `scopewatch.docker_job` | No other gateway module | full AST | Yes |
+| `run_command` timeout clamp agrees | Same bounds on both sides | 9 values | Yes |
+| Host timeout derives from the job's timeout | `timeout + buffer` | run_command vs other | Yes |
+| Copy-back over a pre-existing destination link | Syncs, link survives | gateway and runner | Yes |
+
+The argv comparison strips only the two legitimate differences (container
+label, and each side's own staging directory) plus the container name and run
+label; every hardening flag, the image, and the embedded helper source must
+match exactly. `run_command` is fed to the runner in the argv-list form a
+conforming gateway would send, since `prepare_dispatch` normalizes it first.
+
+Not exercised: the runner image build and any real daemon round trip. The
+Dockerfile's import check is the structural guard for the stdlib-only
+constraint; running it needs a Docker daemon.

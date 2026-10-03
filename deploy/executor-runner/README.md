@@ -13,6 +13,9 @@ the Docker socket (or talks to a rootless daemon). The gateway runs with
 | `Dockerfile` | Minimal image: pinned `python:3.12-slim-bookworm` + Docker CLI only |
 | `compose.executor-runner.yaml` | Fragment merged with the #42 deploy bundle |
 
+`runner.py` is not self-contained: it imports
+`backend/scopewatch/docker_job.py`. See **Shared job construction** below.
+
 ## Gateway configuration (environment only, never committed)
 
 ```bash
@@ -71,6 +74,74 @@ Validation order (all fail closed with static messages):
    symlink-tolerant (issue #80: existing links are replaced, never
    followed; only additions/overwrites propagate).
 
+Steps 1–6 are this module's own. Step 7's container construction is shared
+with the gateway (below).
+
+## Shared job construction (issue #106)
+
+The runner used to re-declare the helper-code string, the `docker run` flag
+list, the staged-workspace copy, and the symlink-tolerant copy-back walk from
+`backend/scopewatch/executor_docker.py`. Two copies of one contract drifted
+once already: #104 found the gateway digesting `run_command` arguments before
+normalizing them while dispatching the normalized form, so every remote
+`run_command` failed with HTTP 409. Those two differences have been the whole
+of the divergence surface, and the flag lists differed only in the container
+label and the mount target.
+
+Now there is one module, `backend/scopewatch/docker_job.py`, which both
+`executor_docker.py` and `runner.py` import:
+
+| In the shared module | Not in the shared module |
+| --- | --- |
+| Pinned image digest, hardening constants | Pre-dispatch gates (stored decision, `DENY`/`HOLD`, approval binding, scope revalidation, `network_request` refusal) — those are rules, and issue #105 owns their sharing |
+| `helper_code()` — the in-container helper source | Bearer token, HMAC signature, dispatch-token store, HTTP socket — genuinely the runner's own |
+| `DockerJob` / `prepare_docker_job()` / `build_docker_command()` | The `handle_execute` validation ladder |
+| `stage_workspace_copy()`, `sync_copy_back()`, `replace_link()`, `make_world_accessible()`, `best_effort_remove()` | |
+
+### The import constraint
+
+**The shared module must stay stdlib-only.** This runner is stdlib-only by
+design, so `docker_job.py` may not import anything outside the standard
+library, and may not import any other `scopewatch` module (a gateway module
+would drag in `pydantic`/`fastapi` and break the sidecar image). It is
+enforced in three places:
+
+- `deploy/executor-runner/Dockerfile` runs an import check during the image
+  build, so a third-party import fails the build rather than the runner host.
+- `backend/tests/test_docker_job_share.py::test_shared_module_imports_only_the_standard_library`
+  parses the module's AST and asserts every imported root is in
+  `sys.stdlib_module_names`.
+- `scripts/check_docker_acceptance.py` asserts neither `executor_docker.py` nor
+  `runner.py` re-declares the flag list.
+
+The Dockerfile therefore copies exactly three files — `scopewatch/__init__.py`,
+`scopewatch/docker_job.py`, and `runner.py` — which is why the compose build
+context is the repository root rather than this directory. Nothing else from the
+gateway ships in the sidecar image.
+
+### `DockerJob`: payload and serialization together
+
+`prepare_docker_job()` follows the `prepare_dispatch` model from #104. It
+returns a frozen `DockerJob` whose `arguments_json` is fixed at construction
+time next to the `arguments` it came from, and `__post_init__` rejects a job
+whose two disagree. So a caller cannot dispatch one form of the arguments and
+compute the serialization from another — the class of bug #104 was. The host's
+wait (`host_timeout_s()`) is likewise derived from the same `timeout_s` the
+container receives, so the buffer cannot drift from the command timeout.
+
+The two sides differ only in `executor_label` (`docker` vs `runner`) plus their
+own container name, run label, staged copy, and image override.
+`backend/tests/test_docker_job_share.py` asserts byte-identical argv across
+every operation and a spread of argument shapes.
+
+Two deliberate canonical choices were made while merging:
+
+- The helper keeps the gateway's drive-letter guard (`resource[1] == ':'`); the
+  runner's looser copy accepted `C:...`. Fail-closed, so the stricter form won.
+- The helper's simulated-`delete_path` note keeps the gateway wording, which
+  matches the local backend verbatim. The runner's shorter note diverged. This
+  changes only that note string on runner-executed simulated deletes.
+
 ## Run it (synthetic only)
 
 ```bash
@@ -125,3 +196,8 @@ gateway's `SCOPEWATCH_EXECUTOR=remote`,
   without changing this contract. Verified follow-up to file after merge.
 - Live end-to-end against a real daemon (no daemon in CI for this path;
   tests use mocked transports and a mocked Docker CLI).
+- The sidecar image build was not exercised in the change that introduced the
+  shared module (#106): it now builds from the repository root and COPYs
+  `backend/scopewatch/docker_job.py`. The import constraint is checked by
+  `scripts/check_docker_acceptance.py` and by the test suite, but the
+  `docker build` itself needs a daemon and was not run.

@@ -20,8 +20,11 @@
 services:
   executor-runner:
     build:
-      context: ./executor-runner
-      dockerfile: Dockerfile
+      # Repo root, not ./executor-runner: the sidecar imports the shared
+      # Docker job module from backend/scopewatch (issue #106) so the flag
+      # list, helper code, and copy-back walk cannot drift from the gateway's.
+      context: ..
+      dockerfile: deploy/executor-runner/Dockerfile
     image: scopewatch/executor-runner:latest
     restart: unless-stopped
     # Internal-only: reachable by the gateway, not by the public internet.
