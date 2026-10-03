@@ -1637,15 +1637,32 @@ if (typeof document !== "undefined") {
   render();
 }
 
+/**
+ * Decide whether the page should try the live gateway (#132).
+ * An explicit `?live=` value wins: `0`, `false`, `off`, and `no` mean static
+ * even on the default gateway port; any other value (including a bare
+ * `?live`) means live. With no `live` parameter, the default gateway port or
+ * the `__SCOPEWATCH_LIVE__` flag enables live mode.
+ */
+export function isLiveRequested(search = "", port = "", liveFlag = false) {
+  const params = new URLSearchParams(search);
+  if (params.has("live")) {
+    const value = String(params.get("live") ?? "").trim().toLowerCase();
+    return !["0", "false", "off", "no"].includes(value);
+  }
+  return port === "8000" || Boolean(liveFlag);
+}
+
 // Bootstrapping: check if live backend is requested and available
 async function bootstrap() {
   if (typeof window === "undefined") return;
-  const isLiveRequested =
-    window.location.search.includes("live") ||
-    window.location.port === "8000" ||
-    Boolean(window.__SCOPEWATCH_LIVE__);
+  const liveRequested = isLiveRequested(
+    window.location.search,
+    window.location.port,
+    window.__SCOPEWATCH_LIVE__,
+  );
 
-  if (!isLiveRequested) {
+  if (!liveRequested) {
     updateGatewayStatus("Static replay mode", "disconnected");
     return;
   }

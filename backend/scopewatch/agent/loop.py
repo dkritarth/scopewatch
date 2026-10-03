@@ -167,7 +167,12 @@ class AgentLoop:
 
             turn_id = f"turn-{uuid.uuid4()}"
             reasoning_trace = chat_result.reasoning_text
-            reasoning_provenance = chat_result.reasoning_provenance
+            # Pass the provider's label only when a provider trace exists. With
+            # no trace, leave it unset so the converter labels visible text as
+            # an agent-authored summary instead of "unavailable" (#129).
+            reasoning_provenance = (
+                chat_result.reasoning_provenance if reasoning_trace else None
+            )
 
             # Append assistant turn to conversation
             assistant_msg: dict[str, Any] = {"role": "assistant"}

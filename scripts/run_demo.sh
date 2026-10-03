@@ -9,6 +9,8 @@ PORT="${PORT:-8000}"
 HOST="${HOST:-127.0.0.1}"
 DB_PATH="${REPO_ROOT}/runtime-data/scopewatch.db"
 WORKSPACE_ROOT="${REPO_ROOT}/demo/workspace"
+DB_PATH_SET=0
+WORKSPACE_ROOT_SET=0
 MODE="scripted"
 PROFILE=""
 AUTO_APPROVE=0
@@ -33,6 +35,12 @@ Options:
   --coding                Run the coding sequence 10-13 (issue #38) with the
                           synthetic coding-workspace fixture instead of 01-06.
   --auto-approve          Auto-approve HOLD actions while seeding.
+  --db-path PATH          SQLite database to seed and serve (default:
+                          runtime-data/scopewatch.db inside the repository).
+  --workspace-root PATH   Synthetic workspace the executor may touch (default:
+                          demo/workspace inside the repository). Runs write to
+                          this directory, so point it at a scratch copy to keep
+                          the repository clean.
   --port PORT --host HOST Gateway bind address (defaults: 127.0.0.1:8000).
 
 Scenario files carry no per-scenario mode key; the global --mode above is
@@ -60,6 +68,16 @@ EOF
     --auto-approve)
       AUTO_APPROVE=1
       shift
+      ;;
+    --db-path)
+      DB_PATH="$2"
+      DB_PATH_SET=1
+      shift 2
+      ;;
+    --workspace-root)
+      WORKSPACE_ROOT="$2"
+      WORKSPACE_ROOT_SET=1
+      shift 2
       ;;
     --port)
       PORT="$2"
@@ -90,10 +108,12 @@ fi
 # seeded from the synthetic demo/coding-workspace fixture, never the fixture
 # directory itself, so the agent's fix cannot dirty the repository.
 if [[ "${CODING}" -eq 1 ]]; then
-  if [[ "${WORKSPACE_ROOT}" == "${REPO_ROOT}/demo/workspace" ]]; then
+  if [[ "${WORKSPACE_ROOT_SET}" -eq 0 && "${WORKSPACE_ROOT}" == "${REPO_ROOT}/demo/workspace" ]]; then
     WORKSPACE_ROOT="${REPO_ROOT}/runtime-data/coding-workspace"
   fi
-  DB_PATH="${REPO_ROOT}/runtime-data/scopewatch-coding.db"
+  if [[ "${DB_PATH_SET}" -eq 0 ]]; then
+    DB_PATH="${REPO_ROOT}/runtime-data/scopewatch-coding.db"
+  fi
 fi
 
 echo "=================================================================="
@@ -117,7 +137,7 @@ echo ""
 
 # 1. Seed workspace fixtures and scenarios
 echo "[1/2] Seeding synthetic workspace and demonstration scenarios..."
-mkdir -p "${REPO_ROOT}/runtime-data"
+mkdir -p "$(dirname "${DB_PATH}")"
 
 SEED_ARGS=(
   --db-path "${DB_PATH}"
@@ -139,7 +159,7 @@ fi
 # 2. Start server
 echo ""
 echo "[2/2] Starting Scopewatch gateway server on http://${HOST}:${PORT}..."
-echo "  Reviewer UI (Live):      http://${HOST}:${PORT}/"
+echo "  Reviewer UI (Live):      http://${HOST}:${PORT}/?live=1"
 echo "  Reviewer UI (Static):    http://${HOST}:${PORT}/?live=0"
 echo "  API Health:              http://${HOST}:${PORT}/api/v1/health"
 echo "  Active Runs:             http://${HOST}:${PORT}/api/v1/runs"

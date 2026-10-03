@@ -43,6 +43,9 @@ Run the all-in-one demo launcher:
 # Run in agent mode with live provider profiles (requires API key in environment)
 export OPENROUTER_API_KEY="sk-or-..."
 ./scripts/run_demo.sh --agent --profile openrouter-dev
+
+# Keep the repository clean: seed and serve a scratch database and workspace copy
+./scripts/run_demo.sh --db-path /tmp/sw/demo.db --workspace-root /tmp/sw/workspace
 ```
 
 This starts the FastAPI backend, seeds synthetic invoice scenarios into a local workspace, serves the reviewer UI, and prints:

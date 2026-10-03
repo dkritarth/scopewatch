@@ -74,5 +74,13 @@ returned valid JSON in 84 total tokens (56 prompt, 28 completion) and reported
 zero reasoning tokens. The committed `nebius-demo` profile therefore disables
 thinking for reliable bounded auditor output.
 
-OpenRouter inference remains unverified because the supplied key returned HTTP
-401. CI continues to use `mock` / `httpx.MockTransport` with no network.
+On 2026-10-03, OpenRouter served `nvidia/nemotron-3.5-lightning:free`: chat,
+tool calls, and a dedicated `reasoning` field on tool-call turns all worked.
+With reasoning on, the auditor request (`max_tokens` 256) hit
+`finish_reason=length` with no JSON, so every audit failed closed. The
+`openrouter-dev` profile therefore sets `auditor_body.reasoning.enabled=false`;
+agent calls keep `reasoning.effort`. The payload is covered by
+`backend/tests/test_openrouter_auditor_profile.py`; a live re-check of the
+committed profile through the gateway was blocked when the free tier's 50
+requests per day ran out. See `docs/spikes/2026-10-live-gateway-verification.md`
+once merged. CI continues to use `mock` / `httpx.MockTransport` with no network.

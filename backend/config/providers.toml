@@ -45,6 +45,14 @@ max_retries = 3
 [profiles.openrouter-dev.reasoning]
 effort = "high"
 
+# The auditor needs a short JSON verdict inside a 256-token cap. With reasoning
+# on, the model spends the cap thinking and returns no JSON, so every audit
+# fails closed to HOLD. Live check on 2026-10-03: reasoning on gave
+# finish_reason=length and no JSON; reasoning disabled gave valid JSON in about
+# 1 s. Agent calls keep the reasoning effort above (#128).
+[profiles.openrouter-dev.auditor_body.reasoning]
+enabled = false
+
 # Demo profile via Nebius Token Factory (OpenAI-compatible). Needs NEBIUS_API_KEY.
 # The endpoint is documented by Token Factory; live calls remain pending (#101).
 [profiles.nebius-demo]

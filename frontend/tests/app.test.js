@@ -9,6 +9,7 @@ import {
   getProvenanceLabel,
   getSseBannerCopy,
   groupEventsByTurn,
+  isLiveRequested,
   panelStatus,
   renderHighlightedText,
   renderPanelStatus,
@@ -431,4 +432,25 @@ test("groupEventsByTurn handles empty and snake_case turn ids", () => {
   assert.equal(groups[0].turnId, "t-1");
   assert.deepEqual(groups[0].events.map((e) => e.id), ["a", "b"]);
   assert.equal(groups[1].turnId, null);
+});
+
+test("isLiveRequested: explicit live=0 means static even on the gateway port (#132)", () => {
+  assert.equal(isLiveRequested("?live=0", "8000"), false);
+  assert.equal(isLiveRequested("?live=0", "8765"), false);
+  assert.equal(isLiveRequested("?live=false"), false);
+  assert.equal(isLiveRequested("?live=OFF"), false);
+  assert.equal(isLiveRequested("?live=no"), false);
+});
+
+test("isLiveRequested: live=1 or a bare live parameter means live on any port", () => {
+  assert.equal(isLiveRequested("?live=1", "9000"), true);
+  assert.equal(isLiveRequested("?live", "9000"), true);
+  assert.equal(isLiveRequested("?live=true", ""), true);
+});
+
+test("isLiveRequested: without a live parameter, the default port or flag decides", () => {
+  assert.equal(isLiveRequested("", "8000"), true);
+  assert.equal(isLiveRequested("", "8765"), false);
+  assert.equal(isLiveRequested("", "8765", true), true);
+  assert.equal(isLiveRequested("?other=live", "8765"), false);
 });

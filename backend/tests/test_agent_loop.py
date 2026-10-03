@@ -797,3 +797,86 @@ def test_cli_scenario_01_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         assert not demo_out.is_file(), "CLI test must not write into demo/workspace"
     else:
         assert demo_out.stat().st_mtime == demo_mtime_before, "CLI test must not modify demo/workspace"
+
+
+# ---------------- Provenance of the loop's own text (issue #129) ----------------
+
+
+def _single_list_directory_turn(
+    *,
+    content: str | None,
+    reasoning_text: str | None,
+    reasoning_provenance: str,
+) -> MockProviderClient:
+    provider = MockProviderClient()
+    provider.enqueue(
+        ChatResult(
+            content=content,
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "list_directory",
+                        "arguments": json.dumps({"path": "invoices/approved"}),
+                    },
+                }
+            ],
+            reasoning_text=reasoning_text,
+            reasoning_provenance=reasoning_provenance,
+            model="mock-model",
+            profile="mock",
+        )
+    )
+    provider.enqueue(ChatResult(content="Done.", tool_calls=[], model="mock-model", profile="mock"))
+    return provider
+
+
+def _run_one_turn(test_env: dict[str, Any], provider: MockProviderClient) -> AgentRunResult:
+    client: TestClient = test_env["client"]
+    run_id = create_test_run(client)
+    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    loop = AgentLoop(run_id=run_id, provider_client=provider, dispatcher=dispatcher, max_turns=5)
+    return loop.run()
+
+
+def test_visible_text_without_provider_trace_is_agent_authored_summary(test_env: dict[str, Any]) -> None:
+    """Text the model sends with a tool call is a summary, not 'no reasoning' (#129)."""
+    provider = _single_list_directory_turn(
+        content="I will list the approved invoices.",
+        reasoning_text=None,
+        reasoning_provenance=ReasoningProvenance.UNAVAILABLE.value,
+    )
+    result = _run_one_turn(test_env, provider)
+
+    action = result.actions[0].action_request
+    assert action.reasoning_summary == "I will list the approved invoices."
+    assert action.exposed_reasoning_trace is None
+    assert action.reasoning_provenance == ReasoningProvenance.AGENT_AUTHORED_SUMMARY
+
+
+def test_no_text_and_no_trace_stays_unavailable(test_env: dict[str, Any]) -> None:
+    provider = _single_list_directory_turn(
+        content=None,
+        reasoning_text=None,
+        reasoning_provenance=ReasoningProvenance.UNAVAILABLE.value,
+    )
+    result = _run_one_turn(test_env, provider)
+
+    action = result.actions[0].action_request
+    assert action.reasoning_summary is None
+    assert action.exposed_reasoning_trace is None
+    assert action.reasoning_provenance == ReasoningProvenance.UNAVAILABLE
+
+
+def test_provider_trace_keeps_provider_provenance_alongside_visible_text(test_env: dict[str, Any]) -> None:
+    provider = _single_list_directory_turn(
+        content="Listing the approved invoices.",
+        reasoning_text="The task asks for approved invoices, so I list that folder first.",
+        reasoning_provenance=ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value,
+    )
+    result = _run_one_turn(test_env, provider)
+
+    action = result.actions[0].action_request
+    assert action.exposed_reasoning_trace == "The task asks for approved invoices, so I list that folder first."
+    assert action.reasoning_provenance == ReasoningProvenance.PROVIDER_EXPOSED_TRACE
