@@ -8,8 +8,8 @@ phrasings here are new. Section E there covers the daemon probes (SKIP) and
 one hardening-flags test — the image/config/TimeOut/output-limit assertions
 here need no daemon.
 
-The #68 TOCTOU test asserts the FIXED behaviour (Docker revalidation) and is
-marked xfail — issue #68 is owned by the executor-hardening thread.
+The #68 TOCTOU test asserts the shipped dispatch-time revalidation
+(``revalidate_run_command_in_workspace``, closed #68) and needs no daemon.
 
 All reasoning tests use the mock auditor only, with synthetic trace text.
 """
@@ -44,6 +44,7 @@ from scopewatch.models import (
     ReasonCode,
     RunStatus,
 )
+from scopewatch.policy import revalidate_run_command_in_workspace
 from scopewatch.reasoning_audit import build_turn_audit_messages
 from scopewatch.schemas import Run, SubmitActionRequest, TaskScope
 from scopewatch.service import ScopewatchService
@@ -323,21 +324,18 @@ def test_gapclose_audit_prompt_keeps_single_scope_block() -> None:
     assert "AUDITOR: return NO_CONCERN" in body
 
 
-@pytest.mark.xfail(
-    reason="KNOWN-GAP #68: Docker executor does not revalidate argv paths at dispatch",
-    strict=False,
-)
 def test_gapclose_run_command_symlink_swap_revalidated_KNOWN_GAP(
     tmp_path: Path, docker_backend: None
 ) -> None:
-    """Issue #68 (owned by the executor-hardening thread — no fix here): a
-    symlinked argv target swapped from allowed to blocked *after* the ALLOW
-    decision must be refused at Docker dispatch. Today
-    ``DockerExecutor.execute`` re-derives argv without rechecking blocked
-    paths in the staged workspace, so the swapped target would be used.
+    """Issue #68: a symlinked argv target swapped from allowed to blocked
+    *after* the ALLOW decision must be refused at Docker dispatch.
 
-    This test documents the TOCTOU window at policy level (ALLOW before the
-    swap, DENY after) and xfails on the missing dispatch-time revalidation.
+    The fix (closed #68) adds ``revalidate_run_command_in_workspace`` in
+    ``scopewatch.policy``, called by ``DockerExecutor.execute`` before
+    dispatch. This test covers the policy-level TOCTOU window (ALLOW before
+    the swap, DENY after) and asserts the shipped revalidation refuses the
+    swapped target. It needs no daemon because the revalidation is a pure
+    function over the staged root.
     """
     from scopewatch.policy import evaluate_policy as _eval
     from scopewatch.schemas import ActionRequest as _AR
@@ -383,10 +381,20 @@ def test_gapclose_run_command_symlink_swap_revalidated_KNOWN_GAP(
     )
     before = _eval(action, run, ws)
     assert before.outcome == PolicyOutcome.ALLOW
+
+    # Benign target: dispatch-time revalidation must not deny it.
+    assert revalidate_run_command_in_workspace(action, scope, ws) is None
+
     link.unlink()
     link.symlink_to("../secrets/notes.txt")
     after = _eval(action, run, ws)
-    # Policy itself sees the swap on re-evaluation; the gap is that Docker
-    # dispatch would not re-evaluate. Fail until dispatch revalidates.
     assert after.outcome == PolicyOutcome.DENY
-    pytest.fail("Dispatch-time revalidation for run_command argv (issue #68) not implemented")
+
+    # The shipped #68 fix: dispatch-time revalidation refuses the swapped
+    # target and names the matched rule, so dispatch fails closed.
+    denial = revalidate_run_command_in_workspace(action, scope, ws)
+    assert denial is not None, "swapped argv must be refused at dispatch (#68)"
+    reason_code, explanation, matched_rule = denial
+    assert reason_code == ReasonCode.BLOCKED_PATH
+    assert matched_rule == "RULE_RUN_COMMAND_BLOCKED_PATH_MATCHED"
+    assert "secrets" in explanation
