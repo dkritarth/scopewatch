@@ -926,7 +926,74 @@ class ScopewatchService:
 
     # ---------------- Approvals ----------------
 
+    def reconcile_expired_approvals(self, run_id: Optional[str] = None) -> list[ApprovalRequest]:
+        """Reconcile expired pending approvals whose expires_at deadline has passed (#118)."""
+        conn = self._get_conn()
+        try:
+            now = datetime.now(timezone.utc)
+            now_iso = now.isoformat()
+            pending = ScopewatchRepository.list_approvals(
+                conn, status_filter=ApprovalStatus.PENDING, run_id=run_id
+            )
+            expired_approvals: list[ApprovalRequest] = []
+            events_to_broadcast: list[tuple[str, EvidenceEvent]] = []
+            runs_to_reconcile: set[str] = set()
+
+            with db_transaction(conn):
+                for app in pending:
+                    try:
+                        exp_dt = datetime.fromisoformat(app.expires_at)
+                        if now > exp_dt:
+                            ScopewatchRepository.resolve_approval(
+                                conn,
+                                approval_id=app.id,
+                                new_status=ApprovalStatus.EXPIRED,
+                                resolved_by="system",
+                                resolved_at=now_iso,
+                                reason="Approval request expired by TTL.",
+                            )
+                            ev_exp = ScopewatchRepository.append_event(
+                                conn,
+                                run_id=app.run_id,
+                                event_type=EventType.APPROVAL_EXPIRED,
+                                actor="system",
+                                summary=f"Approval request '{app.id}' expired by TTL.",
+                                timestamp=now_iso,
+                                action_request_id=app.action_request_id,
+                                approval_request_id=app.id,
+                                details={"expired_at": app.expires_at},
+                            )
+                            app.status = ApprovalStatus.EXPIRED
+                            app.resolved_by = "system"
+                            app.resolved_at = now_iso
+                            app.resolution_reason = "Approval request expired by TTL."
+                            expired_approvals.append(app)
+                            events_to_broadcast.append((app.run_id, ev_exp))
+                            runs_to_reconcile.add(app.run_id)
+                    except Exception as exc:
+                        logger.warning("Failed to evaluate expiry for approval %s: %s", app.id, exc)
+
+                for r_id in runs_to_reconcile:
+                    rem = ScopewatchRepository.list_approvals(
+                        conn, status_filter=ApprovalStatus.PENDING, run_id=r_id
+                    )
+                    if not rem:
+                        r = ScopewatchRepository.get_run(conn, r_id)
+                        if r and r.status == RunStatus.WAITING_FOR_APPROVAL:
+                            ScopewatchRepository.update_run_status(
+                                conn, r_id, RunStatus.ACTIVE, now_iso
+                            )
+
+            for r_id, ev in events_to_broadcast:
+                broadcaster.publish_sync(r_id, ev)
+
+            return expired_approvals
+        finally:
+            conn.close()
+
     def list_approvals(self, status_filter: Optional[ApprovalStatus] = None, run_id: Optional[str] = None) -> list[ApprovalRequest]:
+        if status_filter in (None, ApprovalStatus.PENDING):
+            self.reconcile_expired_approvals(run_id=run_id)
         conn = self._get_conn()
         try:
             return ScopewatchRepository.list_approvals(conn, status_filter=status_filter, run_id=run_id)
@@ -1012,6 +1079,11 @@ class ScopewatchService:
                         approval_request_id=approval_id,
                         details={"expired_at": approval.expires_at},
                     )
+                    remaining_pending = ScopewatchRepository.list_approvals(
+                        conn, status_filter=ApprovalStatus.PENDING, run_id=approval.run_id
+                    )
+                    if not remaining_pending and run.status == RunStatus.WAITING_FOR_APPROVAL:
+                        ScopewatchRepository.update_run_status(conn, approval.run_id, RunStatus.ACTIVE, now_iso)
                 await broadcaster.publish(approval.run_id, ev_exp)
                 raise ScopewatchAPIError(
                     code="APPROVAL_EXPIRED",

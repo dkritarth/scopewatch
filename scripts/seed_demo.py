@@ -416,8 +416,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--approval-timeout",
         type=float,
-        default=1.0,
-        help="Timeout in seconds for approval polling in agent mode (default: 1.0)",
+        default=float(os.getenv("SCOPEWATCH_APPROVAL_TIMEOUT_S", "1.0")),
+        help="Timeout in seconds for approval polling in agent mode (default: $SCOPEWATCH_APPROVAL_TIMEOUT_S or 1.0)",
     )
     parser.add_argument(
         "--auto-approve",
