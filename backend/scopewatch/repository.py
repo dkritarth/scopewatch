@@ -135,8 +135,8 @@ class ScopewatchRepository:
                 id, run_id, tool, operation, resource, arguments_json,
                 requested_by, requested_at, reasoning_summary,
                 exposed_reasoning_trace, reasoning_provenance,
-                turn_id, reasoning_audit_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                caller_claimed_provenance, turn_id, reasoning_audit_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 action.id,
@@ -150,6 +150,9 @@ class ScopewatchRepository:
                 action.reasoning_summary,
                 action.exposed_reasoning_trace,
                 action.reasoning_provenance.value,
+                action.caller_claimed_provenance.value
+                if action.caller_claimed_provenance
+                else None,
                 action.turn_id,
                 action.reasoning_audit_id,
             ),
@@ -174,6 +177,9 @@ class ScopewatchRepository:
             reasoning_summary=row["reasoning_summary"],
             exposed_reasoning_trace=row["exposed_reasoning_trace"],
             reasoning_provenance=ReasoningProvenance(row["reasoning_provenance"]),
+            caller_claimed_provenance=ReasoningProvenance(row["caller_claimed_provenance"])
+            if row["caller_claimed_provenance"]
+            else None,
             turn_id=row["turn_id"] if "turn_id" in row.keys() else None,
             reasoning_audit_id=row["reasoning_audit_id"] if "reasoning_audit_id" in row.keys() else None,
         )
@@ -199,6 +205,9 @@ class ScopewatchRepository:
                     reasoning_summary=row["reasoning_summary"],
                     exposed_reasoning_trace=row["exposed_reasoning_trace"],
                     reasoning_provenance=ReasoningProvenance(row["reasoning_provenance"]),
+                    caller_claimed_provenance=ReasoningProvenance(row["caller_claimed_provenance"])
+                    if row["caller_claimed_provenance"]
+                    else None,
                     turn_id=row["turn_id"] if "turn_id" in row.keys() else None,
                     reasoning_audit_id=row["reasoning_audit_id"] if "reasoning_audit_id" in row.keys() else None,
                 )

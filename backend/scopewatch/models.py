@@ -74,6 +74,10 @@ class ReasoningProvenance(str, Enum):
     AGENT_AUTHORED_SUMMARY = "AGENT_AUTHORED_SUMMARY"
     PROVIDER_EXPOSED_TRACE = "PROVIDER_EXPOSED_TRACE"
     SYNTHETIC_FIXTURE = "SYNTHETIC_FIXTURE"
+    # #116: an API caller asserted this origin; the gateway did not verify it.
+    # The raw claim is kept in ActionRequest.caller_claimed_provenance.
+    CALLER_ASSERTED_PROVIDER_TRACE = "CALLER_ASSERTED_PROVIDER_TRACE"
+    CALLER_ASSERTED_SUMMARY = "CALLER_ASSERTED_SUMMARY"
 
 
 SUPPORTED_TOOLS = {"workspace"}
