@@ -693,3 +693,75 @@ def test_chat_result_provenance_validation() -> None:
             model="m",
             profile="p",
         )
+
+
+# ---------------------------------------------------------------------------
+# 9. Request Timeout & Deadline Propagation (#125)
+# ---------------------------------------------------------------------------
+
+def test_complete_request_timeout_clamped_and_passed_to_transport() -> None:
+    captured_timeout: list[float] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        captured_timeout.append(request.extensions.get("timeout", {}).get("connect", None))
+        return httpx.Response(
+            200,
+            json={
+                "id": "cmpl-timeout-pass",
+                "object": "chat.completion",                "model": "test-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "OK"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    profile = ProviderProfile(
+        name="test-timeout",
+        base_url="https://api.example.com",
+        model="test-model",
+        timeout_s=30.0,
+    )
+    transport = httpx.MockTransport(mock_handler)
+    client = ProviderClient(
+        profile=profile,
+        api_key="test-key",
+        transport=transport,
+    )
+
+    # Calling complete with request_timeout clamps effective timeout
+    res = client.complete([{"role": "user", "content": "hi"}], request_timeout=2.5)
+    assert res.content == "OK"
+
+
+def test_complete_request_timeout_exceeded_before_retry_raises() -> None:
+    sleeps: list[float] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": "rate_limited"})
+
+    profile = ProviderProfile(
+        name="test-timeout-retry",
+        base_url="https://api.example.com",
+        model="test-model",
+        timeout_s=30.0,
+        max_retries=3,
+    )
+    transport = httpx.MockTransport(mock_handler)
+    client = ProviderClient(
+        profile=profile,
+        api_key="test-key",
+        transport=transport,
+        initial_backoff_s=5.0,  # 5s backoff
+        sleep_fn=sleeps.append,
+    )
+
+    # Setting request_timeout to 0.1s: retry delay of 5.0s would exceed deadline!
+    with pytest.raises(ProviderError) as exc_info:
+        client.complete([{"role": "user", "content": "hi"}], request_timeout=0.1)
+
+    assert exc_info.value.code == ProviderErrorCode.PROVIDER_TIMEOUT
+    assert "call deadline" in str(exc_info.value).lower()
