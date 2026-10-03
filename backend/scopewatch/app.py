@@ -4,7 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
@@ -73,15 +73,6 @@ def request_client_ip(request: Request) -> str:
     return client_ip_from(lowered, peer)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup: ensure database and demo workspace root exist
-    init_db(DB_PATH)
-    WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
-    yield
-    # Shutdown
-
-
 def create_app(
     db_path: Path | str = DB_PATH,
     workspace_root: Path | str = WORKSPACE_ROOT,
@@ -92,6 +83,15 @@ def create_app(
     actual_workspace_root = Path(workspace_root)
     init_db(actual_db_path)
     actual_workspace_root.mkdir(parents=True, exist_ok=True)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # Startup: ensure the database and workspace root this app was built
+        # with exist. Use the paths given to create_app, never the module
+        # defaults, so a scratch app does not touch repo state (#133).
+        init_db(actual_db_path)
+        actual_workspace_root.mkdir(parents=True, exist_ok=True)
+        yield
 
     app = FastAPI(
         title="Scopewatch Synthetic Gateway",
@@ -359,4 +359,19 @@ def create_app(
     return app
 
 
-app = create_app()
+_default_app: Optional[FastAPI] = None
+
+
+def __getattr__(name: str) -> Any:
+    """Build the default ``app`` on first access, not on import (#133).
+
+    ``uvicorn scopewatch.app:app`` and ``from scopewatch.app import app`` still
+    work, but importing the module (tests, scripts that only need
+    ``create_app``) no longer creates a database at the default path.
+    """
+    global _default_app
+    if name == "app":
+        if _default_app is None:
+            _default_app = create_app()
+        return _default_app
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
