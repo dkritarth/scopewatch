@@ -6,11 +6,59 @@
 
 const API_BASE = "";
 
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * Mutating gateway API calls are the ones the demo guards require a token for.
+ * Mirrors backend/scopewatch/demo_guards.py `is_mutating_api_call`: only
+ * /api/* paths, only mutating methods. Reads (dashboard loads, health, event
+ * streams) and non-API paths stay public and must never carry a credential.
+ */
+export function isMutatingRequest(method, url) {
+  if (typeof url !== "string" || !url.startsWith("/api/")) return false;
+  return MUTATING_METHODS.has(String(method || "GET").toUpperCase());
+}
+
+/**
+ * Reviewer credential for the hosted demo (#115).
+ *
+ * Deliberately memory-only. It is never written to localStorage or
+ * sessionStorage (a shared judging machine keeps nothing after a reload), never
+ * placed in a URL or query string, never included in an error message, and
+ * never logged. The only place it leaves this module is the X-Demo-Token header
+ * of a mutating /api/ request.
+ */
+let reviewerToken = "";
+
+/** Current reviewer token, or "" when none is held for this page load. */
+export function getReviewerToken() {
+  return reviewerToken;
+}
+
+/** Hold a reviewer token for this page load. Returns the stored value. */
+export function setReviewerToken(token) {
+  reviewerToken = typeof token === "string" ? token.trim() : "";
+  return reviewerToken;
+}
+
+export function clearReviewerToken() {
+  reviewerToken = "";
+}
+
 export async function fetchJson(url, options = {}) {
+  const method = options.method || "GET";
   const headers = {
     Accept: "application/json",
     ...options.headers,
   };
+  // Attach the credential ONLY to mutating API calls, and never override a
+  // header the caller set explicitly.
+  const callerSetToken = Object.keys(headers).some(
+    (name) => name.toLowerCase() === "x-demo-token",
+  );
+  if (!callerSetToken && isMutatingRequest(method, url) && reviewerToken) {
+    headers["X-Demo-Token"] = reviewerToken;
+  }
   if (options.body && typeof options.body === "object" && !(options.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(options.body);
@@ -28,17 +76,48 @@ export async function fetchJson(url, options = {}) {
     } catch {
       // Non-JSON error
     }
-    const message =
-      errorData?.error?.message ||
-      `HTTP error ${response.status} (${response.statusText})`;
+    const { code, message, details } = parseApiErrorBody(
+      errorData,
+      response.status,
+      response.statusText,
+    );
     const error = new Error(message);
     error.status = response.status;
-    error.code = errorData?.error?.code || "HTTP_ERROR";
-    error.details = errorData?.error?.details || null;
+    error.code = code;
+    error.details = details;
     throw error;
   }
 
   return response.json();
+}
+
+/**
+ * Normalise the two error envelopes this deployment can produce into one
+ * (code, message, details) triple.
+ *
+ * The gateway's own API errors are nested
+ * `{"error": {"code", "message", "details"}}`, while the demo-guard and gate
+ * refusals are flat `{"error": "<code>", "message": "..."}` (see
+ * backend/scopewatch/app.py demo_token_middleware and deploy/gate/gate.py
+ * denial_body). #107 aligned the gate with the gateway; the client still reads
+ * both so an older deployed gate does not degrade the message to "HTTP 401".
+ * Pure and exported so unit tests pin the shapes instead of a live stack.
+ */
+export function parseApiErrorBody(errorData, status, statusText) {
+  const nested = errorData?.error;
+  const isNested = nested !== null && typeof nested === "object";
+  const code = isNested
+    ? nested.code
+    : typeof nested === "string"
+      ? nested
+      : errorData?.error_code || errorData?.code || "HTTP_ERROR";
+  const message =
+    (isNested ? nested.message : null) ||
+    (typeof errorData?.message === "string" ? errorData.message : null) ||
+    (typeof errorData?.detail === "string" ? errorData.detail : null) ||
+    `HTTP error ${status} (${statusText})`;
+  const details = (isNested ? nested.details : null) || errorData?.details || null;
+  return { code: code || "HTTP_ERROR", message, details };
 }
 
 export async function checkHealth() {

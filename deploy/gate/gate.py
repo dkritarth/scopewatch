@@ -24,6 +24,13 @@ State is in-memory (single replica) and resets on restart; the runbook
 documents this. Fail-closed: a missing ``DEMO_TOKEN`` denies ALL mutating
 traffic, and enforcement-query failures return 503 instead of letting
 traffic through.
+
+Refusals use the flat ``{"error": "<code>", "message": "..."}`` envelope that
+the gateway's own demo guards use, so a client in front of both layers parses
+one shape (#107). The gate remains a second, coarser copy of the gateway's
+guards (fail-open numerics, count-based budgets, its own code name for the
+misconfiguration case); see the filed follow-up before treating the two layers
+as one policy.
 """
 
 from __future__ import annotations
@@ -396,8 +403,14 @@ class DemoGatePolicy:
 # --------------------------------------------------------------------------
 
 def denial_body(decision: Decision) -> bytes:
+    # Flat {"error", "message"} envelope, identical to the gateway's own
+    # demo-guard refusals (backend/scopewatch/app.py demo_token_middleware,
+    # backend/scopewatch/demo_guards.py). Clients sitting in front of both
+    # layers then parse one shape regardless of which layer answered (#107).
+    # The gateway's non-guard errors are nested {"error": {"code", "message"}};
+    # frontend/scripts/api.js parseApiErrorBody handles both.
     return json.dumps(
-        {"detail": decision.message, "error_code": decision.error_code}
+        {"error": decision.error_code, "message": decision.message}
     ).encode("utf-8")
 
 
@@ -486,9 +499,10 @@ class GateHandler(BaseHTTPRequestHandler):
             self._copy_error(exc)
             return
         except Exception:
+            # Same flat envelope as every other gate refusal (#107).
             body = json.dumps(
-                {"detail": "Gateway is temporarily unreachable. Please retry shortly.",
-                 "error_code": "gateway_unreachable"}
+                {"error": "gateway_unreachable",
+                 "message": "Gateway is temporarily unreachable. Please retry shortly."}
             ).encode()
             self.send_response(502)
             self.send_header("Content-Type", "application/json")
@@ -528,7 +542,7 @@ class GateHandler(BaseHTTPRequestHandler):
         try:
             payload = exc.read()
         except Exception:
-            payload = b'{"detail":"Upstream request failed."}'
+            payload = b'{"error":"upstream_error","message":"Upstream request failed."}'
         self.send_response(exc.code)
         for key, value in exc.headers.items():
             if key.lower() not in HOP_BY_HOP_RESPONSE and key.lower() != "content-length":

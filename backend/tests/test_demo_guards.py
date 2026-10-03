@@ -131,6 +131,17 @@ def test_health_public_without_token(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert resp.json()["status"] == "ok"
 
 
+def test_health_advertises_demo_mode_without_leaking_the_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#115: the dashboard needs to know a token is required, and nothing more."""
+    client = _make_client(monkeypatch, tmp_path)
+    resp = client.get("/api/v1/health")
+    assert resp.status_code == 200
+    assert resp.json()["demo_mode"] is True
+    assert TOKEN not in resp.text
+
+
 def test_reads_public_without_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     client = _make_client(monkeypatch, tmp_path)
     created = client.post("/api/v1/runs", json=_run_payload(), headers=_auth_headers())
@@ -163,6 +174,9 @@ def test_no_token_required_when_demo_disabled(
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/api/v1/runs", json=_run_payload())
     assert resp.status_code == 201
+    # #115: local/dev gateways advertise no demo mode, so the dashboard does
+    # not ask for a token that would be meaningless here.
+    assert client.get("/api/v1/health").json()["demo_mode"] is False
 
 
 # ---------------------------------------------------------------------------

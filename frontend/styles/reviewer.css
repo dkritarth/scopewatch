@@ -1884,6 +1884,95 @@ mark.highlight-excerpt,
   display: none;
 }
 
+/* ==========================================================================
+   Reviewer credential panel (#115): shown only on hosted demo deployments
+   ========================================================================== */
+
+.reviewer-access {
+  margin: 8px 0 0;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--border-strong);
+  display: grid;
+  gap: 8px;
+}
+.reviewer-access[hidden] {
+  display: none;
+}
+
+.reviewer-access-heading {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.reviewer-access-note {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.reviewer-access-note code {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-primary);
+}
+
+.reviewer-access input {
+  width: 100%;
+  max-width: 32rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  box-shadow: var(--shadow-xs);
+}
+
+.reviewer-access-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.reviewer-access-actions button {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-weight: 650;
+  font-size: 0.78rem;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+/* Compact sizing: .primary-btn is tuned for the full-width simulator form. */
+.reviewer-access-actions .primary-btn {
+  margin-top: 0;
+  min-height: 0;
+  font-size: 0.78rem;
+  padding: 5px 10px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+.reviewer-access-actions .primary-btn:hover,
+.reviewer-access-actions .primary-btn:active {
+  transform: none;
+}
+
+/* State is carried by the sentence, not by colour alone. */
+.reviewer-access-state {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
 .approval-error-note {
   margin: 0;
   padding: 6px 10px;

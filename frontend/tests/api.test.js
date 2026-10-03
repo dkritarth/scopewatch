@@ -6,10 +6,16 @@ import { fileURLToPath } from "node:url";
 import {
   LIVE_EVENT_TYPES,
   STALE_AFTER_MS,
+  clearReviewerToken,
   computeBackoffDelay,
   computeReconnectDelay,
   connectLiveEvents,
+  fetchJson,
+  getReviewerToken,
+  isMutatingRequest,
+  parseApiErrorBody,
   parseLiveFrame,
+  setReviewerToken,
   withRetry,
 } from "../scripts/api.js";
 
@@ -210,4 +216,128 @@ test("shipped frontend scripts never use innerHTML (XSS rule)", () => {
     assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML/.test(code), `${name} must render untrusted text via textContent only`);
   }
   assert.ok(STALE_AFTER_MS > 0, "stale-banner timeout must be a positive default");
+});
+
+test("isMutatingRequest mirrors the gateway demo-guard boundary (#115)", () => {
+  // Same rule as backend/scopewatch/demo_guards.py is_mutating_api_call:
+  // mutating method AND /api/ path. Everything else is a public read.
+  assert.equal(isMutatingRequest("POST", "/api/v1/runs"), true);
+  assert.equal(isMutatingRequest("POST", "/api/v1/runs/abc/actions"), true);
+  assert.equal(isMutatingRequest("POST", "/api/v1/approvals/x/approve"), true);
+  assert.equal(isMutatingRequest("DELETE", "/api/v1/runs/abc"), true);
+  assert.equal(isMutatingRequest("PUT", "/api/v1/runs/abc"), true);
+  assert.equal(isMutatingRequest("PATCH", "/api/v1/runs/abc"), true);
+  assert.equal(isMutatingRequest("GET", "/api/v1/runs"), false);
+  assert.equal(isMutatingRequest("GET", "/api/v1/health"), false);
+  assert.equal(isMutatingRequest("HEAD", "/api/v1/runs"), false);
+  assert.equal(isMutatingRequest("POST", "/"), false);
+  assert.equal(isMutatingRequest("POST", "/index.html"), false);
+  assert.equal(isMutatingRequest("POST", undefined), false);
+  // Query strings do not change the verdict.
+  assert.equal(isMutatingRequest("POST", "/api/v1/runs?x=1"), true);
+});
+
+test("reviewer token is memory-only: stored, trimmed, and cleared (#115)", () => {
+  clearReviewerToken();
+  assert.equal(getReviewerToken(), "");
+  setReviewerToken("  judge-token-abc  ");
+  assert.equal(getReviewerToken(), "judge-token-abc");
+  clearReviewerToken();
+  assert.equal(getReviewerToken(), "");
+  // A non-string never becomes a token that could be sent as a header.
+  setReviewerToken(undefined);
+  assert.equal(getReviewerToken(), "");
+  // Nothing is persisted: no storage API is touched by api.js at all
+  // (comments stripped so the prose naming these APIs is not a false hit).
+  const apiCode = readFileSync(join(here, "..", "scripts", "api.js"), "utf-8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*$/gm, "");
+  assert.ok(!/localStorage|sessionStorage|document\.cookie/.test(apiCode),
+    "the reviewer token must never be written to browser storage");
+});
+
+test("fetchJson sends X-Demo-Token only on mutating API requests (#115)", async () => {
+  const origFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url, options = {}) => {
+    seen.push({ url: String(url), headers: { ...(options.headers || {}) } });
+    return { ok: true, status: 200, statusText: "OK", json: async () => ({}) };
+  };
+  try {
+    clearReviewerToken();
+    await fetchJson("/api/v1/runs", { method: "POST", body: {} });
+    assert.equal(seen.at(-1).headers["X-Demo-Token"], undefined, "no token held: none sent");
+
+    setReviewerToken("judge-token-abc");
+    await fetchJson("/api/v1/runs", { method: "POST", body: {} });
+    assert.equal(seen.at(-1).headers["X-Demo-Token"], "judge-token-abc");
+
+    // Reads stay credential-free even with a token held.
+    await fetchJson("/api/v1/runs");
+    assert.equal(seen.at(-1).headers["X-Demo-Token"], undefined, "reads must stay public");
+    await fetchJson("/api/v1/runs/abc/events");
+    assert.equal(seen.at(-1).headers["X-Demo-Token"], undefined, "event reads must stay public");
+
+    // Static asset paths are not gateway API calls.
+    await fetchJson("/", { method: "POST", body: {} });
+    assert.equal(seen.at(-1).headers["X-Demo-Token"], undefined, "non-API paths carry no credential");
+
+    // An explicit caller header wins; the client never overwrites it.
+    await fetchJson("/api/v1/runs", {
+      method: "POST",
+      body: {},
+      headers: { "X-Demo-Token": "explicit-token" },
+    });
+    assert.equal(seen.at(-1).headers["X-Demo-Token"], "explicit-token");
+  } finally {
+    clearReviewerToken();
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("fetchJson error exposes code/status from both refusal envelopes (#107)", async () => {
+  const origFetch = globalThis.fetch;
+  const respond = (status, body) => {
+    globalThis.fetch = async () => ({
+      ok: false,
+      status,
+      statusText: "Error",
+      json: async () => body,
+    });
+  };
+  try {
+    // Flat demo-guard / gate refusal: {"error": "<code>", "message": "..."}
+    respond(401, { error: "demo_token_required", message: "Demo access token required." });
+    const guardErr = await fetchJson("/api/v1/runs", { method: "POST", body: {} }).catch((e) => e);
+    assert.equal(guardErr.status, 401);
+    assert.equal(guardErr.code, "demo_token_required");
+    assert.match(guardErr.message, /Demo access token required/);
+
+    // Nested gateway envelope: {"error": {"code", "message", "details"}}
+    respond(422, { error: { code: "SCHEMA_VALIDATION_ERROR", message: "name: bad", details: { field: "name" } } });
+    const nestedErr = await fetchJson("/api/v1/runs", { method: "POST", body: {} }).catch((e) => e);
+    assert.equal(nestedErr.code, "SCHEMA_VALIDATION_ERROR");
+    assert.deepEqual(nestedErr.details, { field: "name" });
+
+    // Legacy gate envelope still parses (a deployed older gate).
+    respond(401, { error_code: "demo_token_required", detail: "Demo access token required." });
+    const legacyErr = await fetchJson("/api/v1/runs", { method: "POST", body: {} }).catch((e) => e);
+    assert.equal(legacyErr.code, "demo_token_required");
+    assert.match(legacyErr.message, /Demo access token required/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("parseApiErrorBody falls back to the status line for unknown bodies", () => {
+  assert.deepEqual(parseApiErrorBody(null, 503, "Service Unavailable"), {
+    code: "HTTP_ERROR",
+    message: "HTTP error 503 (Service Unavailable)",
+    details: null,
+  });
+  assert.deepEqual(parseApiErrorBody({ error: {} }, 500, "Server Error"), {
+    code: "HTTP_ERROR",
+    message: "HTTP error 500 (Server Error)",
+    details: null,
+  });
 });

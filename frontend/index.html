@@ -44,6 +44,34 @@
             <span id="sse-banner-text"></span>
             <button type="button" id="sse-retry">Retry live stream</button>
           </div>
+          <form class="reviewer-access" id="reviewer-access-panel" hidden>
+            <h2 class="reviewer-access-heading">Reviewer access</h2>
+            <p class="reviewer-access-note">
+              This demo gateway requires a reviewer token for mutating actions (submitting a simulated
+              action, resolving an approval). Reading runs, events, and evidence needs no token. Paste the
+              token from the submission's testing instructions. It is held in memory for this page only,
+              never written to storage, never shown again, and sent only as the
+              <code>X-Demo-Token</code> header on mutating requests.
+            </p>
+            <div class="form-row">
+              <label for="reviewer-token-input">Reviewer token</label>
+              <input
+                id="reviewer-token-input"
+                name="reviewer-token"
+                type="password"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                placeholder="Paste reviewer token"
+              />
+            </div>
+            <div class="reviewer-access-actions">
+              <button type="submit" id="reviewer-token-save" class="primary-btn">Use this token</button>
+              <button type="button" id="reviewer-token-clear">Forget token</button>
+              <span class="reviewer-access-state" id="reviewer-access-state" role="status">No token set: mutating actions are refused by the demo gate. Reading runs, events, and evidence still works.</span>
+            </div>
+          </form>
       </header>
 
       <noscript>This synthetic replay viewer needs JavaScript. No live actions are connected.</noscript>
