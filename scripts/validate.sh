@@ -42,6 +42,12 @@ echo "[1/6] Compiling backend and PoC Python sources..."
   "${REPO_ROOT}/poc/cot-auditing/src" "${REPO_ROOT}/poc/cot-auditing/scripts"
 echo "  ✓ Python compilation clean"
 
+# 1b. Build-context guard: .dockerignore must exclude secrets without
+# excluding any COPY source used by the four Dockerfiles.
+echo "     Checking Docker build context exclusions..."
+"${PYTHON}" "${REPO_ROOT}/scripts/check_dockerignore.py"
+echo "  ✓ Docker build context excludes secrets and keeps every COPY source"
+
 # 2. Run backend pytest suite
 echo ""
 echo "[2/6] Running backend pytest suite..."
