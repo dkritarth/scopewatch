@@ -58,7 +58,7 @@ Key endpoints:
 - `GET /api/v1/runs`: List active and historical runs.
 - `POST /api/v1/runs/{run_id}/actions`: Submit a candidate action for policy evaluation, reasoning audit, and controlled execution.
 - `GET /api/v1/runs/{run_id}/events`: Return the stored event list as JSON (`backend/scopewatch/app.py:221`).
-- `GET /api/v1/runs/{run_id}/events/stream`: Subscribe to live SSE events for a run (`backend/scopewatch/app.py:231`).
+- `GET /api/v1/runs/{run_id}/events/stream`: Subscribe to live SSE events for a run (`backend/scopewatch/app.py:231`). Accepts `Last-Event-ID` or `?after_sequence=` query parameter; subscribes to future broadcast queues before querying stored events to ensure gap-free continuous delivery (issues #112, #113).
 - `GET /api/v1/approvals`: List pending, approved, or denied human review requests.
 - `POST /api/v1/approvals/{approval_id}/approve`: Single-use endpoint to authorize an action on hold.
 - `POST /api/v1/approvals/{approval_id}/deny`: Reject an action on hold.

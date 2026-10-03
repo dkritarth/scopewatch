@@ -410,6 +410,7 @@ class ScopewatchService:
                     timestamp=now,
                     details={},
                 )
+            broadcaster.publish_sync(run_id, event)
             run.status = RunStatus.COMPLETED
             run.updated_at = now
             return run, event
@@ -438,6 +439,7 @@ class ScopewatchService:
                     timestamp=now,
                     details={"reason": reason},
                 )
+            broadcaster.publish_sync(run_id, event)
             run.status = RunStatus.FAILED
             run.updated_at = now
             return run, event
