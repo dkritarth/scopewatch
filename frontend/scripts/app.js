@@ -26,6 +26,8 @@ export const PROVENANCE_LABELS = {
   AGENT_AUTHORED_SUMMARY: "Agent-authored summary",
   UNAVAILABLE: "Unavailable",
   SYNTHETIC_FIXTURE: "Synthetic fixture",
+  CALLER_ASSERTED_PROVIDER_TRACE: "Caller-asserted trace (unverified)",
+  CALLER_ASSERTED_SUMMARY: "Caller-asserted summary (unverified)",
 };
 
 export function getProvenanceLabel(provenance) {
@@ -1206,9 +1208,11 @@ export function transformApiEvent(ev, context = null) {
     if (ev.isFixture || ev.id?.startsWith?.("inv-") || ev.id?.startsWith?.("res-") || ev.id?.startsWith?.("srv-")) {
       reasoningProvenance = "SYNTHETIC_FIXTURE";
     } else if (exposedReasoningTrace) {
-      reasoningProvenance = "PROVIDER_EXPOSED_TRACE";
+      // No stored label means no verified capture to point at. Never present
+      // text as a provider-exposed trace just because some text is present.
+      reasoningProvenance = "CALLER_ASSERTED_PROVIDER_TRACE";
     } else if (reasoningSummary) {
-      reasoningProvenance = "AGENT_AUTHORED_SUMMARY";
+      reasoningProvenance = "CALLER_ASSERTED_SUMMARY";
     } else {
       reasoningProvenance = "UNAVAILABLE";
     }
@@ -1656,7 +1660,9 @@ if (typeof document !== "undefined") {
               policyDecision: "Policy decision: REASONING_SCOPE_CONCERN",
               exposedReasoningTrace: payload.exposed_reasoning_trace,
               reasoningTrace: payload.exposed_reasoning_trace || "Unavailable. No provider-exposed reasoning trace was supplied.",
-              reasoningProvenance: "PROVIDER_EXPOSED_TRACE",
+              // Static preview: this trace, and the audit card below it, were
+              // written in the browser. No gateway and no auditor were involved.
+              reasoningProvenance: "SYNTHETIC_FIXTURE",
               turnId: "turn-sim-1",
               reasoningAudit: {
                 verdict: "CONCERN",
@@ -1711,7 +1717,7 @@ if (typeof document !== "undefined") {
               policyDecision: "Policy decision: APPROVAL_REQUIRED",
               exposedReasoningTrace: payload.exposed_reasoning_trace,
               reasoningTrace: payload.exposed_reasoning_trace || "Unavailable. No provider-exposed reasoning trace was supplied.",
-              reasoningProvenance: payload.exposed_reasoning_trace ? "PROVIDER_EXPOSED_TRACE" : (payload.reasoning_summary ? "AGENT_AUTHORED_SUMMARY" : "UNAVAILABLE"),
+              reasoningProvenance: "SYNTHETIC_FIXTURE",
               turnId: "turn-sim-1",
               reasoningAudit: null,
             };
@@ -1759,7 +1765,7 @@ if (typeof document !== "undefined") {
               policyDecision: "Policy decision: DEFAULT_ALLOW",
               exposedReasoningTrace: payload.exposed_reasoning_trace,
               reasoningTrace: payload.exposed_reasoning_trace || "Unavailable. No provider-exposed reasoning trace was supplied.",
-              reasoningProvenance: payload.exposed_reasoning_trace ? "PROVIDER_EXPOSED_TRACE" : (payload.reasoning_summary ? "AGENT_AUTHORED_SUMMARY" : "UNAVAILABLE"),
+              reasoningProvenance: "SYNTHETIC_FIXTURE",
               turnId: "turn-sim-1",
               reasoningAudit: null,
             };

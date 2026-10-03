@@ -1555,6 +1555,17 @@ select:focus,
   color: var(--status-attempted-text);
 }
 
+/* Caller-asserted (#116): the gateway could not verify the claimed origin, so
+   these borrow the neutral surface instead of the verified/summary colours.
+   The badge text always carries the same distinction. */
+.provenance-badge.provenance-caller-asserted-provider-trace,
+.provenance-badge.provenance-caller-asserted-summary {
+  background: var(--bg-surface-subtle);
+  border-color: var(--border-strong);
+  border-style: dashed;
+  color: var(--text-muted);
+}
+
 /* Reasoning Audit Card */
 .reasoning-audit-card {
   padding: 12px;

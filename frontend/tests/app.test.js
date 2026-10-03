@@ -65,11 +65,20 @@ function createContainer() {
   };
 }
 
-test("provenance label mapping maps all 4 required provenance types accurately", () => {
+test("provenance label mapping maps all provenance types accurately", () => {
   assert.equal(getProvenanceLabel("PROVIDER_EXPOSED_TRACE"), "Provider-exposed trace");
   assert.equal(getProvenanceLabel("AGENT_AUTHORED_SUMMARY"), "Agent-authored summary");
   assert.equal(getProvenanceLabel("UNAVAILABLE"), "Unavailable");
   assert.equal(getProvenanceLabel("SYNTHETIC_FIXTURE"), "Synthetic fixture");
+  // Unverified caller assertions never read as a verified provider trace (#116).
+  assert.equal(
+    getProvenanceLabel("CALLER_ASSERTED_PROVIDER_TRACE"),
+    "Caller-asserted trace (unverified)",
+  );
+  assert.equal(
+    getProvenanceLabel("CALLER_ASSERTED_SUMMARY"),
+    "Caller-asserted summary (unverified)",
+  );
 
   // Fallbacks & edge cases
   assert.equal(getProvenanceLabel(null), "Unavailable");
@@ -132,6 +141,42 @@ test("transformApiEvent maps every provenance value correctly", () => {
     details: { tool: "workspace" },
   });
   assert.equal(resFixture.reasoningProvenance, "SYNTHETIC_FIXTURE");
+
+  // 5. CALLER_ASSERTED_PROVIDER_TRACE passes through with its own label (#116)
+  const resCallerTrace = transformApiEvent({
+    ...baseEvent,
+    details: {
+      tool: "workspace",
+      exposed_reasoning_trace: "text a caller asserted",
+      reasoning_provenance: "CALLER_ASSERTED_PROVIDER_TRACE",
+      caller_claimed_provenance: "PROVIDER_EXPOSED_TRACE",
+    },
+  });
+  assert.equal(resCallerTrace.reasoningProvenance, "CALLER_ASSERTED_PROVIDER_TRACE");
+  assert.equal(
+    getProvenanceLabel(resCallerTrace.reasoningProvenance),
+    "Caller-asserted trace (unverified)",
+  );
+});
+
+test("transformApiEvent never infers a verified trace label from trace text alone (#116)", () => {
+  // An event with reasoning text but no stored provenance means the gateway
+  // never recorded a verified capture, so the UI must not imply one.
+  const inferred = transformApiEvent({
+    id: "ev-2",
+    sequence: 2,
+    event_type: "ACTION_REQUESTED",
+    details: { tool: "workspace", exposed_reasoning_trace: "some text" },
+  });
+  assert.equal(inferred.reasoningProvenance, "CALLER_ASSERTED_PROVIDER_TRACE");
+
+  const inferredSummary = transformApiEvent({
+    id: "ev-3",
+    sequence: 3,
+    event_type: "ACTION_REQUESTED",
+    details: { tool: "workspace", reasoning_summary: "some summary" },
+  });
+  assert.equal(inferredSummary.reasoningProvenance, "CALLER_ASSERTED_SUMMARY");
 });
 
 test("transformApiEvent maps every audit verdict correctly", () => {
