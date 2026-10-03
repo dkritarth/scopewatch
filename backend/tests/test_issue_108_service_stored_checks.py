@@ -68,7 +68,7 @@ def test_submit_action_passes_store_handle_to_executor(service_fixture, monkeypa
     captured_db_path = []
     original_execute = service_mod.execute_action
 
-    def spy_execute(action, workspace_root, policy_decision=None, approval_request=None, db_path=None, task_scope=None):
+    def spy_execute(action, workspace_root, policy_decision=None, approval_request=None, db_path=None, task_scope=None, run_workspace=None):
         captured_db_path.append(db_path)
         return original_execute(
             action,
@@ -77,6 +77,7 @@ def test_submit_action_passes_store_handle_to_executor(service_fixture, monkeypa
             approval_request=approval_request,
             db_path=db_path,
             task_scope=task_scope,
+            run_workspace=run_workspace,
         )
 
     monkeypatch.setattr(service_mod, "execute_action", spy_execute)
@@ -108,7 +109,7 @@ def test_resolve_approval_passes_store_handle_to_executor(service_fixture, monke
     captured_db_path = []
     original_execute = service_mod.execute_action
 
-    def spy_execute(action, workspace_root, policy_decision=None, approval_request=None, db_path=None, task_scope=None):
+    def spy_execute(action, workspace_root, policy_decision=None, approval_request=None, db_path=None, task_scope=None, run_workspace=None):
         captured_db_path.append(db_path)
         return original_execute(
             action,
@@ -117,6 +118,7 @@ def test_resolve_approval_passes_store_handle_to_executor(service_fixture, monke
             approval_request=approval_request,
             db_path=db_path,
             task_scope=task_scope,
+            run_workspace=run_workspace,
         )
 
     # 1. Submit HOLD action

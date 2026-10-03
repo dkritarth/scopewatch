@@ -30,8 +30,9 @@ import uuid
 import pytest
 
 from scopewatch.db import init_db
+from scopewatch.errors import ScopewatchAPIError
 from scopewatch.executor import ExecutionSecurityError, execute_action
-from scopewatch.models import ExecutionStatus, PolicyOutcome
+from scopewatch.models import ApprovalStatus, ExecutionStatus, PolicyOutcome
 from scopewatch.schemas import (
     PolicyDecision,
     SubmitActionRequest,
@@ -88,6 +89,34 @@ def _service(tmp_path: Path, fixture: Path | None = None) -> ScopewatchService:
         workspace_root=ws,
         run_workspaces_root=tmp_path / "run-workspaces",
     )
+
+
+def _use_mock_remote_runner(monkeypatch: pytest.MonkeyPatch, handler) -> None:
+    """Point the remote backend at a mock transport, through the real config path.
+
+    ``execute_action`` constructs ``RemoteExecutor()`` with no arguments, so the
+    transport cannot be injected at the constructor. ``httpx.Client`` is patched
+    instead, defaulting the mock in when the caller passes none. Patching the
+    whole Client (rather than ``HTTPTransport``) also keeps this honest: the
+    production path under test is exactly the argument-less one.
+    """
+    import httpx
+
+    real_client = httpx.Client
+    mock = httpx.MockTransport(handler)
+
+    def client_with_mock(*args: object, **kwargs: object) -> httpx.Client:
+        # The caller passes ``transport=None`` explicitly, so ``setdefault``
+        # would keep the None and build a real connection.
+        if kwargs.get("transport") is None:
+            kwargs["transport"] = mock
+        return real_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setenv("SCOPEWATCH_EXECUTOR", "remote")
+    monkeypatch.setenv("EXECUTOR_RUNNER_URL", "http://runner.invalid:8091")
+    monkeypatch.setenv("EXECUTOR_RUNNER_TOKEN", "synthetic-runner-token")
+    monkeypatch.setenv("EXECUTOR_RUNNER_SIGNING_KEY", "synthetic-signing-key")
+    monkeypatch.setattr(httpx, "Client", client_with_mock)
 
 
 def _submit(
@@ -208,6 +237,125 @@ def test_run_workspace_key_rejects_traversal(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
+# The stored row must name THIS run's workspace, not merely a directory inside
+# the managed root. Containment alone was the reviewer's blocking finding B3:
+# the module docstring promised "data does not get to choose an arbitrary
+# directory name" while accepting a sibling run's workspace, the root itself,
+# and a symlink onto either.
+# --------------------------------------------------------------------------
+
+
+def _two_runs(tmp_path: Path) -> tuple[RunWorkspaceManager, str, str, Path]:
+    fixture = _seed_fixture(tmp_path / "workspace")
+    root = tmp_path / "runs"
+    manager = RunWorkspaceManager(fixture, root)
+    manager.initialize("run-a")
+    manager.initialize("run-b")
+    return manager, "run-a", "run-b", root
+
+
+def test_resolve_refuses_a_sibling_runs_workspace(tmp_path: Path) -> None:
+    """B3: inside the root is not the same as this run's directory."""
+    manager, run_a, _run_b, root = _two_runs(tmp_path)
+    with pytest.raises(RunWorkspaceError):
+        manager.resolve(run_a, stored_path=str(root / "run-b"))
+    # Also via a traversal that lands there: the resolved path is what matters.
+    with pytest.raises(RunWorkspaceError):
+        manager.resolve(run_a, stored_path=str(root / "run-a" / ".." / "run-b"))
+
+
+def test_resolve_refuses_the_managed_root_itself(tmp_path: Path) -> None:
+    """B3: the root is inside the root's containment check and is not a run."""
+    manager, run_a, _run_b, root = _two_runs(tmp_path)
+    for candidate in (root, root / ".", root / "run-a" / ".."):
+        with pytest.raises(RunWorkspaceError):
+            manager.resolve(run_a, stored_path=str(candidate))
+
+
+def test_resolve_refuses_a_symlink_to_a_sibling_run(tmp_path: Path) -> None:
+    """B3: a link inside the root can point at a sibling run's directory.
+
+    ``root/run-a`` is a symlink to ``root/run-b``, so both the candidate and the
+    expected path resolve to the same real directory. Only refusing the link
+    itself catches this, which is why the check is not just resolved equality.
+    """
+    manager, run_a, _run_b, root = _two_runs(tmp_path)
+    shutil.rmtree(root / "run-a")
+    (root / "run-a").symlink_to(root / "run-b", target_is_directory=True)
+
+    with pytest.raises(RunWorkspaceError):
+        manager.resolve(run_a, stored_path=str(root / "run-a"))
+
+
+def test_resolve_accepts_this_runs_own_workspace(tmp_path: Path) -> None:
+    """The containment check must not refuse the legitimate case."""
+    manager, run_a, run_b, root = _two_runs(tmp_path)
+    assert manager.resolve(run_a, stored_path=str(root / "run-a")) == (root / "run-a").resolve()
+    assert manager.resolve(run_b, stored_path=str(root / "run-b")) == (root / "run-b").resolve()
+
+
+def test_resolve_accepts_a_relative_equivalent_path(tmp_path: Path) -> None:
+    """A stored row may spell the same directory differently, and that is fine.
+
+    The property is about WHICH directory, not about how it was written.
+    """
+    manager, run_a, _run_b, root = _two_runs(tmp_path)
+    equivalent = root / "run-a" / "."
+    assert manager.resolve(run_a, stored_path=str(equivalent)) == (root / "run-a").resolve()
+
+
+def test_resolve_agrees_with_the_runner_sidecar(tmp_path: Path) -> None:
+    """B3: the two halves of the same property must not disagree.
+
+    The sidecar refuses these shapes for exactly this reason. If the gateway
+    accepts what the runner refuses, the docstring is the only thing claiming
+    safety.
+    """
+    import importlib.util
+
+    runner_path = Path(__file__).resolve().parents[2] / "deploy" / "executor-runner" / "runner.py"
+    spec = importlib.util.spec_from_file_location("scopewatch_runner_117_c", runner_path)
+    assert spec and spec.loader
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    manager, run_a, _run_b, root = _two_runs(tmp_path)
+    sibling = str(root / "run-b")
+    managed_root = str(root)
+    symlinked = root / "run-linked"
+    symlinked.symlink_to(root / "run-b", target_is_directory=True)
+    symlink_path = str(symlinked)
+
+    for candidate in (sibling, managed_root, symlink_path):
+        runner_side, _ = runner.resolve_run_workspace(root, candidate)
+        assert runner_side is None, f"the runner unexpectedly accepted {candidate!r}"
+        with pytest.raises(RunWorkspaceError):
+            # The runner treats the absolute stored path as its key; the gateway
+            # must refuse the same directory.
+            manager.resolve(run_a, stored_path=candidate)
+
+
+def test_workspace_segment_rejects_a_trailing_newline(tmp_path: Path) -> None:
+    """D4: ``re.match(r"...$")`` also matches just before a trailing newline.
+
+    Cosmetic rather than traversal (``/`` and leading dots stay excluded), but it
+    is a directory name nobody intended to allow.
+    """
+    manager = RunWorkspaceManager(tmp_path / "workspace", tmp_path / "runs")
+    with pytest.raises(RunWorkspaceError):
+        manager.path_for("run\n")
+    with pytest.raises(RunWorkspaceError):
+        manager.path_for("run\nmore")
+
+
+def test_workspace_segment_accepts_ordinary_run_ids(tmp_path: Path) -> None:
+    """The tightened pattern must not reject legitimate ids."""
+    manager = RunWorkspaceManager(tmp_path / "workspace", tmp_path / "runs")
+    for good in ("run-a", "9544ecaf-1111-4222-8333-444444444444", "A.b_c-1", "0", "x" * 128):
+        assert manager.workspace_key(good) == good
+
+
+# --------------------------------------------------------------------------
 # Cross-run reads fail; the fixture stays pristine
 # --------------------------------------------------------------------------
 
@@ -312,6 +460,101 @@ def test_approved_hold_uses_original_run_workspace_after_restart(tmp_path: Path)
     ).read_text(encoding="utf-8") == "OTHER RUN CONTENT"
     # Neither workspace nor the fixture absorbed the other's file.
     assert not (fixture / "outputs" / "after-approval.txt").exists()
+
+
+def _held_approval(service: ScopewatchService) -> tuple[object, object, str]:
+    """A run with one PENDING approval, plus the run object."""
+    scope = _scope(
+        requires_approval=["write_text"],
+        allowed_operations=["read_text", "write_text", "list_directory"],
+    )
+    run, _ = service.create_run(name="held", task_scope=scope)
+    held = _submit(
+        service, run.id, "write_text", "outputs/held.txt", content="held"
+    )
+    assert held.policy_decision.outcome == PolicyOutcome.HOLD
+    return run, held.approval_request, held.approval_request.id
+
+
+def test_deny_still_works_when_the_run_workspace_is_gone(tmp_path: Path) -> None:
+    """D1: the reviewer must never be locked out of a stuck approval.
+
+    Resolving the workspace up front turned every call for a run whose workspace
+    had vanished into a 503 — including ``approve=false``, which cannot cause any
+    effect. The approval then stayed PENDING forever with no way to clear it.
+    """
+    service = _service(tmp_path)
+    run, _approval, approval_id = _held_approval(service)
+    shutil.rmtree(Path(run.workspace_path))
+
+    resolved = asyncio.run(
+        service.resolve_approval(approval_id=approval_id, approve=False)
+    )
+
+    assert resolved.approval_request.status == ApprovalStatus.DENIED
+    assert resolved.approval_request.resolved_at is not None
+    # The reviewer can actually see it happened, rather than being handed a
+    # 503 and a row that quietly stayed PENDING.
+    denied = [e for e in resolved.events if e.event_type.value == "APPROVAL_DENIED"]
+    assert denied, f"no APPROVAL_DENIED evidence was recorded: {resolved.events}"
+
+
+def test_expired_approval_still_gets_its_documented_status(tmp_path: Path) -> None:
+    """D1: expiry reconciliation must not 503 on an unresolvable workspace."""
+    service = _service(tmp_path)
+    run, _approval, approval_id = _held_approval(service)
+    shutil.rmtree(Path(run.workspace_path))
+
+    # Backdate the expiry so the branch runs.
+    conn = service._get_conn()
+    try:
+        past = datetime.now(timezone.utc).timestamp() - 3600
+        conn.execute(
+            "UPDATE approval_requests SET expires_at = ? WHERE id = ?",
+            (datetime.fromtimestamp(past, timezone.utc).isoformat(), approval_id),
+        )
+    finally:
+        conn.close()
+
+    with pytest.raises(ScopewatchAPIError) as caught:
+        asyncio.run(service.resolve_approval(approval_id=approval_id, approve=False))
+
+    assert caught.value.code == "APPROVAL_EXPIRED"
+    assert caught.value.status_code == 409
+
+
+def test_terminal_run_still_gets_run_not_active(tmp_path: Path) -> None:
+    """D1: the run-status check must not be shadowed by a workspace failure."""
+    service = _service(tmp_path)
+    run, _approval, approval_id = _held_approval(service)
+    service.complete_run(run.id)
+    shutil.rmtree(Path(run.workspace_path))
+
+    with pytest.raises(ScopewatchAPIError) as caught:
+        asyncio.run(service.resolve_approval(approval_id=approval_id, approve=True))
+
+    assert caught.value.code == "RUN_NOT_ACTIVE"
+
+
+def test_approve_on_a_vanished_workspace_still_fails_closed(tmp_path: Path) -> None:
+    """D1 must not have weakened this: approving needs the real directory."""
+    service = _service(tmp_path)
+    run, _approval, approval_id = _held_approval(service)
+    shutil.rmtree(Path(run.workspace_path))
+
+    with pytest.raises(ScopewatchAPIError) as caught:
+        asyncio.run(service.resolve_approval(approval_id=approval_id, approve=True))
+
+    assert caught.value.status_code == 503
+    # Nothing was approved and no execution evidence was written.
+    conn = service._get_conn()
+    try:
+        row = conn.execute(
+            "SELECT status FROM approval_requests WHERE id = ?", (approval_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == ApprovalStatus.PENDING.value
 
 
 def test_run_with_unresolvable_workspace_fails_closed(tmp_path: Path) -> None:
@@ -472,8 +715,134 @@ def test_docker_staging_mounts_a_copy_not_the_run_workspace(
 
 
 # --------------------------------------------------------------------------
-# Remote contract carries the run's workspace identity
+# The production remote path, not just the backend in isolation
 # --------------------------------------------------------------------------
+
+
+def test_submit_action_announces_the_run_workspace_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D2: ``execute_action`` must actually pass the key through.
+
+    The reviewer found the ``run_workspace`` parameter unreachable: nothing in
+    production supplied it, so the announced key matched the workspace directory
+    name only by coincidence (``path_for`` happens to be ``root / run_id``). If
+    those ever drift, every test stays green while production 500s — no test in
+    the suite exercised ``SCOPEWATCH_EXECUTOR=remote`` through the service.
+    """
+    import httpx
+
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.read().decode())
+        return httpx.Response(
+            200, json={"status": "EXECUTED", "result": {}, "error_code": None}
+        )
+
+    _use_mock_remote_runner(monkeypatch, handler)
+
+    service = _service(tmp_path)
+    run, _ = service.create_run(name="remote-e2e", task_scope=_scope())
+    result = _submit(service, run.id, "write_text", "outputs/remote.txt", content="x")
+
+    assert result.execution_receipt.status == ExecutionStatus.EXECUTED
+    body = seen.get("body")
+    assert isinstance(body, dict), "no dispatch reached the remote backend"
+    # The key is this run's workspace DIRECTORY NAME, not the run id by luck.
+    assert body["run_workspace"] == Path(run.workspace_path).name
+    assert body["run_workspace"] == run.id  # true today; asserted, not assumed
+    # And it is the same directory the service actually resolved for the run.
+    assert service.get_run_workspace(run.id).name == body["run_workspace"]
+
+
+@pytest.mark.parametrize("branch", ["allow", "approved_hold"])
+def test_service_states_the_workspace_key_explicitly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, branch: str
+) -> None:
+    """D2: the key must be PASSED, not left to a fallback that happens to match.
+
+    The wire key equals the run id today only because ``path_for`` is
+    ``root / run_id``, so an assertion on the announced value alone cannot tell
+    "passed explicitly" from "fell back and coincided" — mutating the plumbing
+    away leaves every other test green. This one observes the call boundary
+    itself, which is the property the reviewer actually found missing.
+
+    Both dispatch branches are covered: they are separate call sites and only
+    one of them had the key.
+    """
+    import scopewatch.service as service_mod
+
+    captured: list[object] = []
+    original = service_mod.execute_action
+
+    def spy(*args: object, **kwargs: object):
+        captured.append(kwargs.get("run_workspace"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service_mod, "execute_action", spy)
+
+    service = _service(tmp_path)
+    if branch == "allow":
+        run, _ = service.create_run(name="allow", task_scope=_scope())
+        _submit(service, run.id, "write_text", "outputs/x.txt", content="x")
+    else:
+        scope = _scope(
+            requires_approval=["write_text"],
+            allowed_operations=["read_text", "write_text", "list_directory"],
+        )
+        run, _ = service.create_run(name="hold", task_scope=scope)
+        held = _submit(
+            service, run.id, "write_text", "outputs/x.txt", content="x"
+        )
+        asyncio.run(
+            service.resolve_approval(
+                approval_id=held.approval_request.id, approve=True
+            )
+        )
+
+    assert captured == [Path(run.workspace_path).name], (
+        f"the {branch} dispatch passed run_workspace={captured!r}; it must state "
+        "the key explicitly rather than rely on the run-id fallback"
+    )
+
+
+def test_approved_hold_announces_the_run_workspace_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D2 on the other dispatch branch: the approval path announces the key too."""
+    import httpx
+
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.read().decode())
+        return httpx.Response(
+            200, json={"status": "EXECUTED", "result": {}, "error_code": None}
+        )
+
+    _use_mock_remote_runner(monkeypatch, handler)
+
+    scope = _scope(
+        requires_approval=["write_text"],
+        allowed_operations=["read_text", "write_text", "list_directory"],
+    )
+    service = _service(tmp_path)
+    run, _ = service.create_run(name="remote-hold", task_scope=scope)
+    held = _submit(
+        service, run.id, "write_text", "outputs/held-remote.txt", content="x"
+    )
+    assert held.policy_decision.outcome == PolicyOutcome.HOLD
+
+    resolved = asyncio.run(
+        service.resolve_approval(
+            approval_id=held.approval_request.id, approve=True
+        )
+    )
+    assert resolved.execution_receipt.status == ExecutionStatus.EXECUTED
+    body = seen.get("body")
+    assert isinstance(body, dict), "the approved dispatch never reached the runner"
+    assert body["run_workspace"] == Path(run.workspace_path).name
 
 
 def test_remote_dispatch_carries_the_run_workspace_key(tmp_path: Path) -> None:
@@ -525,7 +894,10 @@ def test_remote_dispatch_carries_the_run_workspace_key(tmp_path: Path) -> None:
         transport=httpx.MockTransport(handler),
     )
     executor._signing_key = "synthetic-independent-signing-key"
-    receipt = executor.execute(action_req, ws, policy_decision=decision)
+    # The key is stated explicitly, as production now does.
+    receipt = executor.execute(
+        action_req, ws, policy_decision=decision, run_workspace=run.id
+    )
 
     assert receipt.status == ExecutionStatus.EXECUTED, receipt.sanitized_result
     body = seen["body"]
@@ -731,6 +1103,69 @@ def test_local_executor_still_refuses_execution_without_a_decision(
     )
     with pytest.raises(ExecutionSecurityError):
         execute_action(action_req, ws)
+
+
+def test_run_api_responses_do_not_publish_the_host_workspace_path(
+    tmp_path: Path,
+) -> None:
+    """D6: a host path has no business in a public, token-free read.
+
+    ``Run`` is both the storage model and the FastAPI ``response_model`` for
+    every run endpoint, so the persisted ``workspace_path`` rode along in each
+    response. ``/api/v1/runs`` needs no token, which makes that a disclosure
+    surface: it tells any reader where the gateway's writable directory layout
+    is. The field must stay in storage and stay out of responses.
+    """
+    from fastapi.testclient import TestClient
+
+    from scopewatch.app import create_app
+
+    service = _service(tmp_path)
+    run, _ = service.create_run(name="published", task_scope=_scope())
+    assert run.workspace_path, "the storage model must still carry the path"
+
+    app = create_app(
+        db_path=service.db_path,
+        workspace_root=service.workspace_root,
+        run_workspaces_root=service.run_workspaces.root,
+    )
+    with TestClient(app) as client:
+        listing = client.get("/api/v1/runs")
+        assert listing.status_code == 200
+        assert "workspace_path" not in listing.text, (
+            "GET /api/v1/runs leaked a host workspace path"
+        )
+        single = client.get(f"/api/v1/runs/{run.id}")
+        assert single.status_code == 200
+        assert "workspace_path" not in single.text
+        # The useful fields are still there.
+        assert single.json()["id"] == run.id
+        assert single.json()["task_scope"]["task_description"]
+
+        created = client.post(
+            "/api/v1/runs",
+            json={
+                "name": "api-created",
+                "task_scope": _scope().model_dump(mode="json"),
+            },
+        )
+        assert created.status_code == 201, created.text
+        assert "workspace_path" not in created.text
+
+
+def test_run_response_model_cannot_grow_a_host_path_silently() -> None:
+    """Adding a field to storage must not automatically publish it.
+
+    The separation is only worth anything if the two models are kept from
+    drifting, and the cheapest drift guard is asserting the response model has
+    no host-path field at all.
+    """
+    from scopewatch.schemas import Run, RunResponse
+
+    assert "workspace_path" in Run.model_fields, (
+        "storage must still persist the identity; resolution depends on it"
+    )
+    assert "workspace_path" not in RunResponse.model_fields
 
 
 def test_init_db_migrates_a_legacy_runs_table(tmp_path: Path) -> None:
