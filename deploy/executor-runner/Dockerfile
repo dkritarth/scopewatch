@@ -4,12 +4,14 @@ FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145
 
 WORKDIR /app
 
-# Build context is the repo root (see compose.executor-runner.yaml) so the
-# shared Docker job module can be copied in as the single source both the
-# gateway and this sidecar import (issue #106). Only these three files ship;
-# the sidecar deliberately holds no other gateway code.
+# Build context is the repo root (see compose.executor-runner.yaml) so the two
+# shared modules can be copied in from their single authored locations rather
+# than vendored here: the Docker job module (issue #106) and the pre-dispatch
+# gate (issue #105). Only these files ship; the sidecar deliberately holds no
+# other gateway code.
 COPY backend/scopewatch/__init__.py /app/scopewatch/__init__.py
 COPY backend/scopewatch/docker_job.py /app/scopewatch/docker_job.py
+COPY backend/scopewatch/dispatch_gate.py /app/scopewatch/dispatch_gate.py
 COPY deploy/executor-runner/runner.py /app/runner.py
 
 # The runner needs the Docker CLI to talk to the mounted socket (or a

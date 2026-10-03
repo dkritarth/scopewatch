@@ -10,11 +10,12 @@ the Docker socket (or talks to a rootless daemon). The gateway runs with
 | File | Purpose |
 | --- | --- |
 | `runner.py` | Stdlib-only HTTP service (`POST /execute`, `GET /healthz`) |
-| `Dockerfile` | Minimal image: pinned `python:3.12-slim-bookworm` + Docker CLI only |
+| `Dockerfile` | Minimal image: pinned `python:3.12-slim-bookworm` + Docker CLI only. Build context is the repo root so it can copy the two shared modules |
 | `compose.executor-runner.yaml` | Fragment merged with the #42 deploy bundle |
 
-`runner.py` is not self-contained: it imports
-`backend/scopewatch/docker_job.py`. See **Shared job construction** below.
+`runner.py` is not self-contained: it imports two modules from
+`backend/scopewatch`. See **Shared job construction** and **Shared
+pre-dispatch gate** below.
 
 ## Gateway configuration (environment only, never committed)
 
@@ -25,11 +26,10 @@ EXECUTOR_RUNNER_TOKEN=<pre-shared bearer secret>  # same value as the runner's
 EXECUTOR_RUNNER_SIGNING_KEY=<independent random secret>  # same value as the runner's
 ```
 
-The gateway client is `backend/scopewatch/executor_remote.py`. It enforces
-the same pre-network policy gates as the local/Docker backends (stored
-decision required, `DENY` never dispatches, `HOLD` needs an `APPROVED`
-approval bound to the exact action, `network_request` refused), then sends
-one JSON dispatch per approved action with a fresh single-use
+The gateway client is `backend/scopewatch/executor_remote.py`. It calls the
+same shared pre-dispatch gate as the local and Docker backends
+(`scopewatch.dispatch_gate`, see **Shared pre-dispatch gate** below) before any
+network call, then sends one JSON dispatch per approved action with a fresh single-use
 `dispatch_token` bound to the SHA-256 `action_digest` of that action. A separate
 HMAC key signs the complete dispatch, including the decision, approval,
 timestamp, digest, and token. The
@@ -63,8 +63,12 @@ Validation order (all fail closed with static messages):
    decision or approval.
 3. Dispatch token unseen (one-shot) → `409` on replay.
 4. Digest recomputed with the gateway's canonicalization → `409` on mismatch.
-5. Policy outcome must be `ALLOW` or `HOLD`; a `HOLD` also requires an
-   `APPROVED` request bound to this action, run, and decision → `403` otherwise.
+5. Shared pre-dispatch gate (`authorize_dispatch`): policy outcome must be
+   `ALLOW` or `HOLD`, a `HOLD` needs an `APPROVED` request bound to this
+   action, and `network_request` is refused → `403` (`400` for an
+   unsupported operation). This runner adds the bindings the gate cannot see:
+   the decision must name this action, and a `HOLD` approval must also match
+   this run and decision; an `ALLOW` carrying an approval is refused.
 6. Operation allowlisted, resource relative and inside `/workspace`
    (symlink escapes refused) → `400`/`403`.
 7. Hardened `docker run` (no network, read-only rootfs, `nobody`,
@@ -76,6 +80,26 @@ Validation order (all fail closed with static messages):
 
 Steps 1–6 are this module's own. Step 7's container construction is shared
 with the gateway (below).
+
+## Shared pre-dispatch gate (issue #105)
+
+The approval-status and outcome rules used to be written out four times — once
+per executor backend plus once here — and three of those copies had drifted
+(#104). They now live once, in `backend/scopewatch/dispatch_gate.py`
+(`authorize_dispatch`), which `executor.py`, `executor_docker.py`,
+`executor_remote.py`, and this runner all call. It returns a *verdict*, not a
+receipt, so each caller renders it in its own terms: the gateway backends raise
+`ExecutionSecurityError` or return a `NOT_EXECUTED` receipt, and this sidecar
+maps each refusal code through `GATE_REFUSALS` to its own HTTP status and
+message. The module is stdlib-only (like `docker_job.py`) so this sidecar stays
+dependency-free, and accepts plain dicts as well as pydantic models. The image
+`COPY`s it from its authored location; there is no second copy in this
+directory to drift.
+
+What the gate does *not* cover, and why it stays here: the signature, the
+one-shot dispatch token, the action digest, the decision-to-action binding, the
+approval's run/decision binding, and the "`ALLOW` carries no approval" rule.
+Those validate a signed wire payload the gateways construct rather than receive.
 
 ## Shared job construction (issue #106)
 

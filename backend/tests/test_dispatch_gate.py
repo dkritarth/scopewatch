@@ -373,7 +373,7 @@ def test_runner_loads_the_authored_gate_file() -> None:
     """The sidecar resolves the gate to its single authored location.
 
     A vendored second copy is the drift this issue removes, so pin the
-    resolution rather than trusting the loader's search order.
+    resolution rather than trusting the import to land on the right file.
     """
     runner_mod = _load_runner()
     loaded = Path(runner_mod.dispatch_gate.__file__).resolve()
@@ -397,15 +397,19 @@ def test_runner_refusals_cover_every_gate_refusal_code() -> None:
 def test_runner_image_copies_the_authored_gate() -> None:
     """The image must ship the gate from its single authored location.
 
-    The runner loads ``dispatch_gate.py`` from its own directory inside the
-    container, so the Dockerfile has to copy the backend file there. The build
-    context therefore must be the repository root.
+    The runner imports ``scopewatch.dispatch_gate`` inside the container, so
+    the Dockerfile has to copy the backend file into the package directory
+    next to ``docker_job.py``. The build context must therefore be the repo
+    root, not this directory.
     """
     dockerfile = RUNNER_DOCKERFILE.read_text(encoding="utf-8")
-    assert "COPY backend/scopewatch/dispatch_gate.py /app/dispatch_gate.py" in dockerfile
+    assert (
+        "COPY backend/scopewatch/dispatch_gate.py "
+        "/app/scopewatch/dispatch_gate.py" in dockerfile
+    )
     assert "COPY deploy/executor-runner/runner.py /app/runner.py" in dockerfile
     compose = RUNNER_COMPOSE.read_text(encoding="utf-8")
-    assert "context: ../.." in compose
+    assert "context: .." in compose
     assert "dockerfile: deploy/executor-runner/Dockerfile" in compose
 
 
@@ -418,3 +422,25 @@ def test_no_vendored_gate_copy_in_the_runner_directory() -> None:
         if path.name not in ("runner.py", "test_gate.py")
     ]
     assert vendored == [], vendored
+
+
+def test_runner_does_not_restate_the_gate_rules() -> None:
+    """No gate rule may be re-implemented inside the sidecar.
+
+    Checks the concrete rule literals and the outcome/approval comparisons that
+    encode them, so a future change cannot quietly add a second copy.
+    """
+    source = RUNNER_PATH.read_text(encoding="utf-8")
+    body = "\n".join(
+        line for line in source.splitlines() if not line.strip().startswith("#")
+    )
+    for literal in (
+        "Direct execution without policy evidence",
+        "Held action requires valid approved status to execute",
+        "Network requests are forbidden",
+        '"APPROVED"',
+        '"DENY"',
+        '"ALLOW", "HOLD"',
+        '== "network_request"',
+    ):
+        assert literal not in body, literal

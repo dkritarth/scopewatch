@@ -22,6 +22,9 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Optional
 
+from scopewatch.config import MAX_READ_BYTES, MAX_WRITE_BYTES
+from scopewatch.dispatch_gate import authorize_dispatch
+
 # Shared Docker job construction lives in scopewatch.docker_job (issue #106):
 # image pin, hardening constants, helper code, `docker run` flag list, and the
 # staged-workspace copy / copy-back walk. Imported here (not redefined) so the
@@ -54,7 +57,7 @@ from scopewatch.docker_job import (
     stage_workspace_copy as _stage_workspace_copy,
     sync_copy_back as _sync_copy_back,
 )
-from scopewatch.models import ApprovalStatus, ExecutionStatus, PolicyOutcome
+from scopewatch.models import ExecutionStatus, PolicyOutcome
 from scopewatch.schemas import (
     ActionRequest,
     ApprovalRequest,
@@ -182,16 +185,15 @@ class DockerExecutor:
                 operation=action.operation,
             )
 
-        # Defence in depth: stored-decision checks run on the host before
-        # Docker is touched. Mirrors the local backend invariants.
-        if policy_decision is None:
-            from scopewatch.executor import ExecutionSecurityError
-
-            raise ExecutionSecurityError(
-                "Direct execution without policy evidence is prohibited."
-            )
-        if policy_decision.outcome == PolicyOutcome.DENY:
+        # Pre-dispatch gate (issue #105): the one shared authorization
+        # decision runs on the host before Docker is touched. Stored
+        # approval/run verification, scoped-target revalidation, and
+        # run_command revalidation below stay backend-specific and run
+        # only on PROCEED.
+        verdict = authorize_dispatch(action, policy_decision, approval_request)
+        if verdict.kind == "deny":
             completed_at = datetime.now(timezone.utc).isoformat()
+            assert policy_decision is not None  # DENY implies a decision
             return ExecutionReceipt(
                 id=receipt_id,
                 action_request_id=action.id,
@@ -204,20 +206,11 @@ class DockerExecutor:
                 resource=action.resource,
                 operation=action.operation,
             )
-        if policy_decision.outcome == PolicyOutcome.HOLD:
-            # Single-use (issue #66): only a live APPROVED approval bound to
-            # this exact action executes. CONSUMED approvals never execute;
-            # the service presents APPROVED and consumes afterwards.
-            if (
-                approval_request is None
-                or approval_request.status != ApprovalStatus.APPROVED
-                or approval_request.action_request_id != action.id
-            ):
-                from scopewatch.executor import ExecutionSecurityError
+        if not verdict.proceed:
+            from scopewatch.executor import ExecutionSecurityError
 
-                raise ExecutionSecurityError(
-                    "Held action requires valid approved status to execute."
-                )
+            raise ExecutionSecurityError(verdict.reason)
+        if policy_decision is not None and policy_decision.outcome == PolicyOutcome.HOLD:
             # Verifiable single-use: with a store handle, consult the stored
             # approval, the execution receipt, and the run status.
             if db_path is not None:
@@ -230,10 +223,6 @@ class DockerExecutor:
             from scopewatch.executor import _verify_stored_run_not_terminal
 
             _verify_stored_run_not_terminal(action, db_path)
-        if action.operation == "network_request":
-            from scopewatch.executor import ExecutionSecurityError
-
-            raise ExecutionSecurityError("Network requests are forbidden in synthetic executor.")
 
         from scopewatch.executor import ExecutionSecurityError, _verify_scoped_target
 
