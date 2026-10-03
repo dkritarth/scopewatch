@@ -26,6 +26,11 @@ jobs:
           uv pip compile backend/requirements.txt --generate-hashes --python-version 3.12 -o /tmp/backend-requirements.lock --custom-compile-command "uv pip compile backend/requirements.txt --generate-hashes --python-version 3.12 -o backend/requirements.lock"
           cmp -s backend/requirements.lock /tmp/backend-requirements.lock || (echo "backend/requirements.lock is inconsistent with backend/requirements.txt. Regenerate it (see BUILDING.md) and commit the result."; exit 1)
       - run: python -m pip install --require-hashes -r backend/requirements.lock
+      # Guards the build context before the docker build below: a .dockerignore
+      # that excludes .env keeps secrets off the daemon, but one that also
+      # excludes a COPY source breaks every image build.
+      - name: Check .dockerignore excludes secrets and keeps every COPY source
+        run: python scripts/check_dockerignore.py
       - name: Build executor image with test runner
         run: docker build -f backend/executor/Dockerfile -t scopewatch-executor:ci .
       - run: python -m pytest backend/tests -v
