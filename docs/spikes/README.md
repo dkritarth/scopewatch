@@ -14,5 +14,6 @@ Negative results count. Never include keys, account identifiers, or raw response
 
 | Spike | Topic | Status |
 | --- | --- | --- |
-| [2026-09-nemotron-provider-spike.md](2026-09-nemotron-provider-spike.md) | Nemotron reasoning, tool calling, and structured output on Nebius Token Factory and OpenRouter | Complete |
+| [2026-09-nemotron-provider-spike.md](2026-09-nemotron-provider-spike.md) | Nemotron reasoning, tool calling, and structured output on Nebius Token Factory and OpenRouter | Superseded in part by the 2026-10 verification |
 | [2026-10-live-gateway-verification.md](2026-10-live-gateway-verification.md) | Live Nemotron runs through the full gateway path: invariants, adversarial lures, dashboard | Complete |
+| [2026-10-nemotron-provider-verification.md](2026-10-nemotron-provider-verification.md) | Live latency/token measurements, the exact reasoning field, and the #136 live-agent reproduction | Complete; Nebius half blocked on a working key |

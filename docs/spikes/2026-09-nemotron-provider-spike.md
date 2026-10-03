@@ -4,6 +4,13 @@
 **Author:** Subagent 1 (Issue #25 Spike)
 **Status:** Partially verified on 2026-10-01. Nebius catalog and six bounded synthetic calls completed. OpenRouter inference returned HTTP 401. Issue #101 tracks the remaining work.
 
+> **Superseded in part on 2026-10-03.** See
+> [2026-10-nemotron-provider-verification.md](2026-10-nemotron-provider-verification.md)
+> for measured OpenRouter latency, token, pricing, and reasoning-field evidence,
+> and for the finding that the supplied Nebius key no longer authenticates.
+> Question 6 below is corrected there; the rest of this document stands as
+> written on its own dates.
+
 > **Honesty note (updated 2026-10-01):** Only the dated result below is observed. Earlier model, latency, and cost claims remain provisional. The cited `poc/cot-auditing/logs/union_alpha_live_probe.json` artifact is gitignored and absent.
 
 ## 2026-10-01 live result
@@ -105,14 +112,27 @@ If Nebius Token Factory does not return raw reasoning traces in a dedicated prov
   - `flagged_excerpts`: list of exact substring quotes from the untrusted trace
 - JSON mode successfully prevents markdown formatting errors and ensures direct parseability.
 
-### Question 6: Latency, token usage, and cost (unverified placeholders — no live run)
-- **Observed / Measured baseline (provisional, not yet reproduced in this repo):**
-  - 70B reasoning requests have an observed latency of ~6–8 seconds (p50) and ~12–15 seconds (p95), depending on output length.
-  - Audit PoC baseline measured ~7.6 seconds per audit call.
-  - Turn-level audit granularity (ADR-0001, Decision 8) amortizes this latency to once per agent turn rather than once per tool call.
-- **Cost:**
-  - Nebius Token Factory: Estimated ~$0.80–$1.20 per 1M completion tokens for 70B models.
-  - OpenRouter: Nemotron 70B is priced at ~$0.35/1M prompt tokens and ~$0.40/1M completion tokens.
+### Question 6: Latency, token usage, and cost
+
+**Superseded on 2026-10-03.** The estimates below were unverified placeholders and
+are replaced by measured values in
+[2026-10-nemotron-provider-verification.md](2026-10-nemotron-provider-verification.md):
+
+- OpenRouter `nvidia/nemotron-3.5-lightning`, 20 calls, prompt hashes recorded in
+  that spike: plain chat p50 2.2 s / p95 2.9 s; **tool-calling turn p50 11.5 s /
+  p95 14.4 s**; the turn after a tool result p50 12.3 s / p95 14.4 s; the auditor
+  verdict with reasoning disabled p50 0.46 s / p95 0.57 s.
+- OpenRouter list price for that model: **$0.0595 per 1M input and $0.17 per 1M
+  output tokens** (read from the public model catalogue on 2026-10-03).
+- Nebius latency and price remain **unverified**: the supplied key returns HTTP 401
+  for every authentication shape tried on 2026-10-03, so no live Nebius call was
+  made in that pass. The Nebius figures previously quoted here are unverified
+  documentation estimates and must not be presented as measured.
+
+- Turn-level audit granularity (ADR-0001, Decision 8) still amortises the audit
+  call to once per agent turn rather than once per tool call. With a live
+  reasoning-exposing agent, the tool-calling turn is the dominant cost, not the
+  audit.
 
 ### Question 7: OpenRouter free and stealth models
 - OpenRouter stealth models (such as `stealth/union-alpha`) and free endpoints provide cheap or zero-cost reasoning traces during local development.
