@@ -30,7 +30,9 @@ answer to Q2 that shows the DENY counts are a *prompt* problem rather than a
 - Keys came from the local uncommitted `.env` via `set -o allexport; source .env`.
   No key, account identifier, billing export, or raw provider response body was
   written to any file, log, issue, or PR. Provider errors were reduced to HTTP
-  status and the shape of the error envelope before being printed.
+  status and the shape of the error envelope before being printed. Verified after
+  the fact: a literal search for both key values across every scratch database,
+  log, JSON artifact, and the whole repository working tree returned no match.
 - Only synthetic prompts were sent: invented invoice totals, an invented
   `invoices/vendor_a.txt` tool schema, a reserved `.invalid` URL, and the
   repository's own synthetic eval fixtures.
