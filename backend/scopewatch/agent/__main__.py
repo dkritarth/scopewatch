@@ -14,7 +14,7 @@ import sys
 from typing import Any, Optional
 import httpx
 
-from scopewatch.agent.loop import AgentLoop, AgentRunResult
+from scopewatch.agent.loop import AgentLoop, AgentRunResult, sanitize_failure_reason
 from scopewatch.agent.prompt import PROMPT_VERSION
 from scopewatch.agent.tools import GatewayDispatcher
 from scopewatch.models import ReasoningProvenance
@@ -199,37 +199,46 @@ def main(argv: Optional[list[str]] = None) -> int:
     run_data = resp.json()
     run_id = run_data["id"]
 
-    # 4. Resolve provider
-    if args.profile:
-        profile = get_profile(args.profile)
-    else:
-        profile = get_agent_profile()
-
-    if args.api_key_env:
-        profile.api_key_env = args.api_key_env
-
-    is_mock = profile.name == "mock" or profile.base_url.startswith("mock://")
-    if is_mock and scenario.get("actions"):
-        provider_client: Any = build_scenario_mock_provider(scenario, model=profile.model)
-    else:
-        provider_client = ProviderClient(profile)
-
-    # 5. Execute agent loop
     dispatcher = GatewayDispatcher(base_url=base_url, http_client=client)
-    loop = AgentLoop(
-        run_id=run_id,
-        task_description=task_scope.get("task_description", "Execute task."),
-        provider_client=provider_client,
-        dispatcher=dispatcher,
-        max_turns=args.max_turns,
-    )
+    try:
+        # 4. Resolve provider
+        if args.profile:
+            profile = get_profile(args.profile)
+        else:
+            profile = get_agent_profile()
 
-    print(f"Starting Scopewatch Agent for Run: {run_id}")
-    print(f"Task: {task_scope.get('task_description')}")
-    print(f"Profile: {profile.name} (model: {profile.model})")
-    print("-" * 60)
+        if args.api_key_env:
+            profile.api_key_env = args.api_key_env
 
-    result: AgentRunResult = loop.run()
+        is_mock = profile.name == "mock" or profile.base_url.startswith("mock://")
+        if is_mock and scenario.get("actions"):
+            provider_client: Any = build_scenario_mock_provider(scenario, model=profile.model)
+        else:
+            provider_client = ProviderClient(profile)
+
+        # 5. Execute agent loop
+        loop = AgentLoop(
+            run_id=run_id,
+            task_description=task_scope.get("task_description", "Execute task."),
+            provider_client=provider_client,
+            dispatcher=dispatcher,
+            max_turns=args.max_turns,
+        )
+
+        print(f"Starting Scopewatch Agent for Run: {run_id}")
+        print(f"Task: {task_scope.get('task_description')}")
+        print(f"Profile: {profile.name} (model: {profile.model})")
+        print("-" * 60)
+
+        result: AgentRunResult = loop.run()
+    except Exception as exc:
+        err = sanitize_failure_reason(f"Agent setup failed: {type(exc).__name__}: {str(exc)}")
+        try:
+            dispatcher.fail_run(run_id, reason=err)
+        except Exception as fail_err:
+            print(f"Failed to record failure on gateway: {fail_err}", file=sys.stderr)
+        print(f"Error: {err}", file=sys.stderr)
+        return 1
 
     print("-" * 60)
     print("=== Agent Run Summary ===")

@@ -7,11 +7,32 @@ All operations are mediated strictly through the Scopewatch gateway API.
 
 from datetime import datetime, timezone
 import json
+import logging
+import re
 import time
 from typing import Any, Optional
 import uuid
 import httpx
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger("scopewatch.agent.loop")
+
+
+def sanitize_failure_reason(error: Any) -> str:
+    """Sanitize failure error string to prevent credential or secret leaks."""
+    text = str(error) if error is not None else ""
+    text = re.sub(
+        r"(bearer\s+)[a-zA-Z0-9_\-\.]{8,}", r"\1[REDACTED]", text, flags=re.IGNORECASE
+    )
+    text = re.sub(
+        r"((?:api[_-]?key|token|secret|password)[=:\s]+)[a-zA-Z0-9_\-.]{8,}",
+        r"\1[REDACTED]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if len(text) > 300:
+        text = text[:297] + "..."
+    return text
 
 from scopewatch.agent.prompt import PROMPT_VERSION, build_system_prompt
 from scopewatch.agent.tools import (
@@ -136,85 +157,11 @@ class AgentLoop:
             except Exception:
                 pass
 
-        while True:
-            # Check turn limit
-            if turns >= self.max_turns:
-                err = f"Maximum turns limit reached ({self.max_turns})."
-                self.dispatcher.fail_run(self.run_id, reason=err)
-                return AgentRunResult(
-                    run_id=self.run_id,
-                    status="FAILED",
-                    turns=turns,
-                    total_tool_calls=total_tool_calls,
-                    actions=recorded_actions,
-                    decisions=recorded_decisions,
-                    error=err,
-                    messages=messages,
-                    prompt_version=self.prompt_version,
-                )
-
-            # Check wall clock timeout
-            if (time.time() - start_time) > self.wall_clock_timeout_s:
-                err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s)."
-                self.dispatcher.fail_run(self.run_id, reason=err)
-                return AgentRunResult(
-                    run_id=self.run_id,
-                    status="FAILED",
-                    turns=turns,
-                    total_tool_calls=total_tool_calls,
-                    actions=recorded_actions,
-                    decisions=recorded_decisions,
-                    error=err,
-                    messages=messages,
-                    prompt_version=self.prompt_version,
-                )
-
-            # Query model provider
-            chat_result: ChatResult = self.provider_client.complete(
-                messages=messages,
-                tools=tools,
-            )
-            turns += 1
-
-            turn_id = f"turn-{uuid.uuid4()}"
-            reasoning_trace = chat_result.reasoning_text
-            # Pass the provider's label only when a provider trace exists. With
-            # no trace, leave it unset so the converter labels visible text as
-            # an agent-authored summary instead of "unavailable" (#129).
-            reasoning_provenance = (
-                chat_result.reasoning_provenance if reasoning_trace else None
-            )
-
-            # Append assistant turn to conversation
-            assistant_msg: dict[str, Any] = {"role": "assistant"}
-            if chat_result.content:
-                assistant_msg["content"] = chat_result.content
-            if chat_result.tool_calls:
-                assistant_msg["tool_calls"] = chat_result.tool_calls
-            if reasoning_trace:
-                assistant_msg["reasoning_content"] = reasoning_trace
-            messages.append(assistant_msg)
-
-            # If no tool calls produced, task is finished
-            if not chat_result.tool_calls:
-                self.dispatcher.complete_run(self.run_id)
-                return AgentRunResult(
-                    run_id=self.run_id,
-                    status="COMPLETED",
-                    turns=turns,
-                    total_tool_calls=total_tool_calls,
-                    actions=recorded_actions,
-                    decisions=recorded_decisions,
-                    final_response=chat_result.content,
-                    messages=messages,
-                    prompt_version=self.prompt_version,
-                )
-
-            # Process all tool calls from this turn
-            for tool_call in chat_result.tool_calls:
-                # Check tool call limit
-                if total_tool_calls >= self.max_tool_calls:
-                    err = f"Maximum tool calls limit reached ({self.max_tool_calls})."
+        try:
+            while True:
+                # Check turn limit
+                if turns >= self.max_turns:
+                    err = f"Maximum turns limit reached ({self.max_turns})."
                     self.dispatcher.fail_run(self.run_id, reason=err)
                     return AgentRunResult(
                         run_id=self.run_id,
@@ -225,6 +172,7 @@ class AgentLoop:
                         decisions=recorded_decisions,
                         error=err,
                         messages=messages,
+                        prompt_version=self.prompt_version,
                     )
 
                 # Check wall clock timeout
@@ -240,140 +188,236 @@ class AgentLoop:
                         decisions=recorded_decisions,
                         error=err,
                         messages=messages,
+                        prompt_version=self.prompt_version,
                     )
 
-                total_tool_calls += 1
-                func = tool_call.get("function", {})
-                tool_name = func.get("name", "")
-                tool_args = func.get("arguments", {})
+                # Query model provider
+                chat_result: ChatResult = self.provider_client.complete(
+                    messages=messages,
+                    tools=tools,
+                )
+                turns += 1
 
-                submit_req = convert_tool_call_to_submit_request(
-                    tool_name=tool_name,
-                    tool_arguments=tool_args,
-                    turn_id=turn_id,
-                    exposed_reasoning_trace=reasoning_trace,
-                    reasoning_provenance=reasoning_provenance,
-                    reasoning_summary=chat_result.content,
-                    requested_by=self.requested_by,
+                turn_id = f"turn-{uuid.uuid4()}"
+                reasoning_trace = chat_result.reasoning_text
+                # Pass the provider's label only when a provider trace exists. With
+                # no trace, leave it unset so the converter labels visible text as
+                # an agent-authored summary instead of "unavailable" (#129).
+                reasoning_provenance = (
+                    chat_result.reasoning_provenance if reasoning_trace else None
                 )
 
-                action_resp = self.dispatcher.submit_action(self.run_id, submit_req)
-                recorded_actions.append(action_resp)
-                outcome = action_resp.policy_decision.outcome
-                decision_str = outcome.value if hasattr(outcome, "value") else str(outcome)
-                recorded_decisions.append(decision_str)
+                # Append assistant turn to conversation
+                assistant_msg: dict[str, Any] = {"role": "assistant"}
+                if chat_result.content:
+                    assistant_msg["content"] = chat_result.content
+                if chat_result.tool_calls:
+                    assistant_msg["tool_calls"] = chat_result.tool_calls
+                if reasoning_trace:
+                    assistant_msg["reasoning_content"] = reasoning_trace
+                messages.append(assistant_msg)
 
-                tool_call_id = tool_call.get("id", f"call_{total_tool_calls}")
-
-                if decision_str == PolicyOutcome.ALLOW.value:
-                    receipt = action_resp.execution_receipt
-                    result_data = (
-                        receipt.sanitized_result
-                        if receipt and receipt.sanitized_result is not None
-                        else {"status": "EXECUTED"}
+                # If no tool calls produced, task is finished
+                if not chat_result.tool_calls:
+                    self.dispatcher.complete_run(self.run_id)
+                    return AgentRunResult(
+                        run_id=self.run_id,
+                        status="COMPLETED",
+                        turns=turns,
+                        total_tool_calls=total_tool_calls,
+                        actions=recorded_actions,
+                        decisions=recorded_decisions,
+                        final_response=chat_result.content,
+                        messages=messages,
+                        prompt_version=self.prompt_version,
                     )
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": json.dumps(result_data),
-                    })
 
-                elif decision_str == PolicyOutcome.DENY.value:
-                    reason_code = action_resp.policy_decision.reason_code
-                    code_val = (
-                        reason_code.value
-                        if hasattr(reason_code, "value")
-                        else str(reason_code)
+                # Process all tool calls from this turn
+                for tool_call in chat_result.tool_calls:
+                    # Check tool call limit
+                    if total_tool_calls >= self.max_tool_calls:
+                        err = f"Maximum tool calls limit reached ({self.max_tool_calls})."
+                        self.dispatcher.fail_run(self.run_id, reason=err)
+                        return AgentRunResult(
+                            run_id=self.run_id,
+                            status="FAILED",
+                            turns=turns,
+                            total_tool_calls=total_tool_calls,
+                            actions=recorded_actions,
+                            decisions=recorded_decisions,
+                            error=err,
+                            messages=messages,
+                        )
+
+                    # Check wall clock timeout
+                    if (time.time() - start_time) > self.wall_clock_timeout_s:
+                        err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s)."
+                        self.dispatcher.fail_run(self.run_id, reason=err)
+                        return AgentRunResult(
+                            run_id=self.run_id,
+                            status="FAILED",
+                            turns=turns,
+                            total_tool_calls=total_tool_calls,
+                            actions=recorded_actions,
+                            decisions=recorded_decisions,
+                            error=err,
+                            messages=messages,
+                        )
+
+                    total_tool_calls += 1
+                    func = tool_call.get("function", {})
+                    tool_name = func.get("name", "")
+                    tool_args = func.get("arguments", {})
+
+                    submit_req = convert_tool_call_to_submit_request(
+                        tool_name=tool_name,
+                        tool_arguments=tool_args,
+                        turn_id=turn_id,
+                        exposed_reasoning_trace=reasoning_trace,
+                        reasoning_provenance=reasoning_provenance,
+                        reasoning_summary=chat_result.content,
+                        requested_by=self.requested_by,
                     )
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": json.dumps({
-                            "status": "DENIED",
-                            "reason_code": code_val,
-                            "explanation": action_resp.policy_decision.explanation,
-                        }),
-                    })
 
-                elif decision_str == PolicyOutcome.HOLD.value:
-                    approval_req = action_resp.approval_request
-                    approval_id = approval_req.id if approval_req else None
-                    poll_start = time.time()
-                    resolved = False
-                    tool_content = ""
+                    action_resp = self.dispatcher.submit_action(self.run_id, submit_req)
+                    recorded_actions.append(action_resp)
+                    outcome = action_resp.policy_decision.outcome
+                    decision_str = outcome.value if hasattr(outcome, "value") else str(outcome)
+                    recorded_decisions.append(decision_str)
 
-                    while (time.time() - poll_start) < self.approval_timeout_s:
-                        if (time.time() - start_time) > self.wall_clock_timeout_s:
-                            err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s) while awaiting approval."
-                            self.dispatcher.fail_run(self.run_id, reason=err)
-                            return AgentRunResult(
-                                run_id=self.run_id,
-                                status="FAILED",
-                                turns=turns,
-                                total_tool_calls=total_tool_calls,
-                                actions=recorded_actions,
-                                decisions=recorded_decisions,
-                                error=err,
-                                messages=messages,
-                            )
+                    tool_call_id = tool_call.get("id", f"call_{total_tool_calls}")
 
-                        approvals = self.dispatcher.list_approvals(self.run_id)
-                        matching = None
-                        for app in approvals:
-                            if approval_id and app.id == approval_id:
-                                matching = app
-                                break
-                            elif app.action_request_id == action_resp.action_request.id:
-                                matching = app
-                                break
-
-                        if matching:
-                            if matching.status in (
-                                ApprovalStatus.APPROVED,
-                                ApprovalStatus.CONSUMED,
-                                "APPROVED",
-                                "CONSUMED",
-                            ):
-                                act_data = self.dispatcher.get_action(
-                                    self.run_id, action_resp.action_request.id
-                                )
-                                receipt = act_data.execution_receipt
-                                result_data = (
-                                    receipt.sanitized_result
-                                    if receipt and receipt.sanitized_result is not None
-                                    else {"status": "EXECUTED"}
-                                )
-                                tool_content = json.dumps(result_data)
-                                resolved = True
-                                break
-                            elif matching.status in (ApprovalStatus.DENIED, "DENIED"):
-                                tool_content = json.dumps({
-                                    "status": "DENIED",
-                                    "explanation": (
-                                        matching.resolution_reason
-                                        or "Action was denied by human reviewer."
-                                    ),
-                                })
-                                resolved = True
-                                break
-                            elif matching.status in (ApprovalStatus.EXPIRED, "EXPIRED"):
-                                tool_content = json.dumps({
-                                    "status": "DENIED",
-                                    "explanation": "Approval request expired before review.",
-                                })
-                                resolved = True
-                                break
-
-                        time.sleep(self.poll_interval_s)
-
-                    if not resolved:
-                        tool_content = json.dumps({
-                            "status": "TIMEOUT",
-                            "explanation": f"Approval timed out after {self.approval_timeout_s}s waiting for review.",
+                    if decision_str == PolicyOutcome.ALLOW.value:
+                        receipt = action_resp.execution_receipt
+                        result_data = (
+                            receipt.sanitized_result
+                            if receipt and receipt.sanitized_result is not None
+                            else {"status": "EXECUTED"}
+                        )
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": json.dumps(result_data),
                         })
 
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": tool_content,
-                    })
+                    elif decision_str == PolicyOutcome.DENY.value:
+                        reason_code = action_resp.policy_decision.reason_code
+                        code_val = (
+                            reason_code.value
+                            if hasattr(reason_code, "value")
+                            else str(reason_code)
+                        )
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": json.dumps({
+                                "status": "DENIED",
+                                "reason_code": code_val,
+                                "explanation": action_resp.policy_decision.explanation,
+                            }),
+                        })
+
+                    elif decision_str == PolicyOutcome.HOLD.value:
+                        approval_req = action_resp.approval_request
+                        approval_id = approval_req.id if approval_req else None
+                        poll_start = time.time()
+                        resolved = False
+                        tool_content = ""
+
+                        while (time.time() - poll_start) < self.approval_timeout_s:
+                            if (time.time() - start_time) > self.wall_clock_timeout_s:
+                                err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s) while awaiting approval."
+                                self.dispatcher.fail_run(self.run_id, reason=err)
+                                return AgentRunResult(
+                                    run_id=self.run_id,
+                                    status="FAILED",
+                                    turns=turns,
+                                    total_tool_calls=total_tool_calls,
+                                    actions=recorded_actions,
+                                    decisions=recorded_decisions,
+                                    error=err,
+                                    messages=messages,
+                                )
+
+                            approvals = self.dispatcher.list_approvals(self.run_id)
+                            matching = None
+                            for app in approvals:
+                                if approval_id and app.id == approval_id:
+                                    matching = app
+                                    break
+                                elif app.action_request_id == action_resp.action_request.id:
+                                    matching = app
+                                    break
+
+                            if matching:
+                                if matching.status in (
+                                    ApprovalStatus.APPROVED,
+                                    ApprovalStatus.CONSUMED,
+                                    "APPROVED",
+                                    "CONSUMED",
+                                ):
+                                    act_data = self.dispatcher.get_action(
+                                        self.run_id, action_resp.action_request.id
+                                    )
+                                    receipt = act_data.execution_receipt
+                                    result_data = (
+                                        receipt.sanitized_result
+                                        if receipt and receipt.sanitized_result is not None
+                                        else {"status": "EXECUTED"}
+                                    )
+                                    tool_content = json.dumps(result_data)
+                                    resolved = True
+                                    break
+                                elif matching.status in (ApprovalStatus.DENIED, "DENIED"):
+                                    tool_content = json.dumps({
+                                        "status": "DENIED",
+                                        "explanation": (
+                                            matching.resolution_reason
+                                            or "Action was denied by human reviewer."
+                                        ),
+                                    })
+                                    resolved = True
+                                    break
+                                elif matching.status in (ApprovalStatus.EXPIRED, "EXPIRED"):
+                                    tool_content = json.dumps({
+                                        "status": "DENIED",
+                                        "explanation": "Approval request expired before review.",
+                                    })
+                                    resolved = True
+                                    break
+
+                            time.sleep(self.poll_interval_s)
+
+                        if not resolved:
+                            tool_content = json.dumps({
+                                "status": "TIMEOUT",
+                                "explanation": f"Approval timed out after {self.approval_timeout_s}s waiting for review.",
+                            })
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": tool_content,
+                        })
+        except Exception as exc:
+            err = f"Agent loop aborted: {type(exc).__name__}: {sanitize_failure_reason(exc)}"
+            if self.dispatcher:
+                try:
+                    self.dispatcher.fail_run(self.run_id, reason=err)
+                except Exception as fail_err:
+                    logger.warning(
+                        "Failed to mark run %s as FAILED via gateway: %s",
+                        self.run_id,
+                        fail_err,
+                    )
+            return AgentRunResult(
+                run_id=self.run_id,
+                status="FAILED",
+                turns=turns,
+                total_tool_calls=total_tool_calls,
+                actions=recorded_actions,
+                decisions=recorded_decisions,
+                error=err,
+                messages=messages,
+                prompt_version=self.prompt_version,
+            )
