@@ -22,7 +22,9 @@ internet --443/80--> caddy (automatic TLS, Caddyfile)
                     gateway :8000 (FastAPI + static reviewer dashboard)
                         |  SCOPEWATCH_EXECUTOR=local (no Docker socket anywhere)
                         v
-              volumes: scopewatch-data (/data/sqlite), scopewatch-workspace
+              volumes: scopewatch-data (/data/sqlite),
+                       scopewatch-workspace (the pristine scenario fixture),
+                       scopewatch-run-workspaces (/runs, one dir per run)
               egress: HTTPS to the model provider (Nebius/OpenRouter) only
 ```
 
@@ -47,6 +49,11 @@ Key properties:
   HTTP alone. Native per-profile token metering is a filed follow-up (see
   "Known limits and follow-ups"). With `mock` profiles no model calls happen
   at all, so scripted scenarios always work.
+- **Every run owns a workspace copy** (`scopewatch-run-workspaces` at `/runs`,
+  one directory per run id). `scopewatch-workspace` is the copy *source* and is
+  never written, so two runs cannot read or overwrite each other's output and
+  the scenario baseline stays pristine. See "Per-run workspaces" below — the
+  gateway's `read_only: true` root means this volume is not optional.
 
 ### Gate vs gateway: what is still duplicated
 
@@ -170,7 +177,9 @@ docker compose exec gateway python -c "import sys,urllib.request,json;d=json.loa
 
 First start seeds the synthetic workspace + scripted scenarios once per data
 volume (marker `/data/.seeded-scripted-v1`); seeding makes **no model
-calls**. Open `https://<DOMAIN>/` — the reviewer dashboard loads with no login
+calls**, but it does create one run, so it needs the per-run workspace volume
+to be writable — see below. Open `https://<DOMAIN>/` — the reviewer dashboard
+loads with no login
 and no token; runs, events, and evidence are public reads. Open
 `https://<DOMAIN>/api/v1/health` — `{"status":"ok",...}`.
 
@@ -187,6 +196,67 @@ so the stack survives VM reboots (with Docker set to start on boot, which the
 `docker-ce` package does by default) and crashed containers are restarted
 automatically. `caddy` depends on a healthy `gate`, which depends on a healthy
 `gateway` — unhealthy dependencies are not routed to.
+
+### Per-run workspaces (issue #117)
+
+Each run gets its own copy of the scenario workspace in the
+`scopewatch-run-workspaces` volume, mounted at `/runs`. The
+`scopewatch-workspace` volume is the copy **source** and is never written. That
+is what stops run A from reading run B's output and stops container copy-back
+from polluting the baseline.
+
+This is a hard deployment requirement, not a nicety. The gateway service runs
+`read_only: true` with volumes for `/data`, `/workspace` and `/runs` only, so
+`SCOPEWATCH_RUN_WORKSPACES_DIR` **must** point inside one of those. If it points
+anywhere else the path can neither exist nor be created, and because
+`docker-entrypoint.sh` is `set -euo pipefail` and seeds on first start, the
+container aborts rather than starting degraded.
+
+```bash
+# Where run workspaces actually live, and that the fixture volume stayed pristine:
+docker compose exec gateway ls -1 /runs | head
+docker compose exec gateway python -c "import os;print(os.environ['SCOPEWATCH_RUN_WORKSPACES_DIR'])"
+docker compose exec gateway ls -A /workspace      # no per-run directories here
+```
+
+Two symptoms worth recognising:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Gateway exits on first start, log ends `Could not initialize an isolated workspace for this run` | `SCOPEWATCH_RUN_WORKSPACES_DIR` is not a writable mounted path | point it at a mounted volume (see below) |
+| Every `POST /api/v1/runs` returns **503** `RUN_WORKSPACES_ROOT_UNAVAILABLE` | same, after seeding was skipped by an existing data volume | fix the path, then `docker compose down -v && docker compose up -d` |
+| Every remote dispatch returns **500** `run workspace unavailable` | gateway and `executor-runner` disagree on the shared path | see "Shared path contract" below |
+
+The values are a two-sided contract across a container boundary, so they are
+**not** operator knobs — they are not in `deploy/.env.example` as settings, only
+documented there. To relocate them, change all three together:
+
+| Where | Key | Shipped value |
+| --- | --- | --- |
+| `deploy/compose.yaml` (gateway) | `SCOPEWATCH_RUN_WORKSPACES_DIR` | `/runs` |
+| `deploy/executor-runner/compose.executor-runner.yaml` | `EXECUTOR_RUNNER_WORKSPACE` | `/runs` |
+| both compose files | volume | `scopewatch-run-workspaces:/runs` |
+
+#### Shared path contract with executor-runner
+
+The sidecar is a separate container, so a shared path is only shared through a
+shared **mount**. The gateway announces `run_workspace` as a bare per-run
+directory name; the runner resolves it under `EXECUTOR_RUNNER_WORKSPACE` and
+refuses to fall back to any other root. If the two services resolve that name
+to different directories, every remote dispatch fails closed with 500 — correct
+fail-closed behaviour pointed at the wrong path.
+
+The sidecar deliberately does **not** mount `scopewatch-workspace`. It holds the
+Docker socket and runs as root; giving it write access to the pristine fixture
+buys nothing and reopens what the per-run copies exist to prevent.
+
+Note that `deploy/compose.yaml` still pins `SCOPEWATCH_EXECUTOR=local`, so the
+sidecar is not part of the demo stack today (section 6). The contract above
+matters for the day that fragment is merged.
+
+`backend/tests/test_run_workspaces_deployment.py` asserts this layout from the
+compose files and exercises it against a simulated read-only container root. It
+is a static check; `docker compose config` on a real daemon was not run for it.
 
 ## 4. Verify the demo (acceptance checks)
 

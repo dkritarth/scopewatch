@@ -25,9 +25,15 @@ runtime-data/
 *.sqlite3
 *.db
 
-# Per-run workspace copies (#117): default is a '-runs' sibling of the
-# scenario fixture, so demo/workspace-runs/ is runtime state, not source.
-*-runs/
+# Per-run workspace copies (#117). The default root is `.runs/` INSIDE each
+# scenario fixture (workspaces.py: default_run_workspaces_root), and
+# scripts/run_demo.sh writes to runtime-data/. Both are runtime state.
+# Anchored to those two paths on purpose: a bare `*-runs/` would silently
+# ignore any directory ending in "-runs" at any depth, so
+# backend/tests/fixtures/foo-runs/ became untrackable and a real fixture
+# directory could be dropped without a diff.
+demo/workspace/.runs/
+runtime-data/
 
 # Local editor and OS state
 .idea/

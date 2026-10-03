@@ -69,16 +69,19 @@ Validation order (all fail closed with static messages):
    unsupported operation). This runner adds the bindings the gate cannot see:
    the decision must name this action, and a `HOLD` approval must also match
    this run and decision; an `ALLOW` carrying an approval is refused.
-6. Operation allowlisted, resource relative and inside `/workspace`
-   (symlink escapes refused) → `400`/`403`.
-7. Hardened `docker run` (no network, read-only rootfs, `nobody`,
+6. `run_workspace` names an existing, non-symlink directory strictly inside
+   `EXECUTOR_RUNNER_WORKSPACE` (issue #117); a missing or unsafe key is
+   refused `500` with no fallback to the mounted root.
+7. Operation allowlisted, resource relative and inside the resolved run
+   workspace (symlink escapes refused) → `400`/`403`.
+8. Hardened `docker run` (no network, read-only rootfs, `nobody`,
    cap-drop, pids/mem caps, workspace-only mount). Container output caps
    (64 KiB/stream) and per-command timeouts (1–300s, default 60s) match the
    gateway Docker backend. Copy-back after `write_text`/`run_command` is
    symlink-tolerant (issue #80: existing links are replaced, never
    followed; only additions/overwrites propagate).
 
-Steps 1–6 are this module's own. Step 7's container construction is shared
+Steps 1–7 are this module's own. Step 8's container construction is shared
 with the gateway (below).
 
 ## Shared pre-dispatch gate (issue #105)
@@ -178,10 +181,31 @@ curl -s http://127.0.0.1:8091/healthz     # {"status": "ok"}
 ```
 
 With the #42 bundle: merge `compose.executor-runner.yaml` into
-`deploy/compose.yaml` (same `internal` network + shared workspace volume),
-set both runner secrets in the deploy `.env` (gitignored), and set the
-gateway's `SCOPEWATCH_EXECUTOR=remote`,
+`deploy/compose.yaml` (same `internal` network), set both runner secrets in
+the deploy `.env` (gitignored), and set the gateway's
+`SCOPEWATCH_EXECUTOR=remote`,
 `EXECUTOR_RUNNER_URL=http://executor-runner:8091`.
+
+**The shared path is mandatory** (issue #117). The gateway materialises one
+workspace directory per run under its `SCOPEWATCH_RUN_WORKSPACES_DIR` and
+announces only the bare directory name as `run_workspace`; this runner resolves
+that name under `EXECUTOR_RUNNER_WORKSPACE` and refuses to fall back to any
+other root. Across a container boundary a path is shared only through a shared
+**mount**, so both services must mount the same named volume at the same
+container path:
+
+| Service | Key | Value |
+| --- | --- | --- |
+| gateway (`deploy/compose.yaml`) | `SCOPEWATCH_RUN_WORKSPACES_DIR` | `/runs` |
+| executor-runner (this fragment) | `EXECUTOR_RUNNER_WORKSPACE` | `/runs` |
+| both | volume | `scopewatch-run-workspaces:/runs` |
+
+If the two disagree, every remote dispatch fails closed with
+`500 run workspace unavailable`. The scenario fixture volume
+(`scopewatch-workspace`) is deliberately **not** mounted here: this container
+holds the Docker socket and runs as root, and write access to the pristine
+fixture buys nothing while reopening the isolation the per-run copies exist to
+provide.
 
 ## Risk section
 
