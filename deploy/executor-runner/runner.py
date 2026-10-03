@@ -41,6 +41,12 @@ Validation order (fail closed, static messages, no secret in output):
 
 Digest canonicalization MUST match
 ``backend/scopewatch/executor_remote.py::compute_action_digest`` exactly.
+
+Docker job construction is NOT here (issue #106): the flag list, the in-container
+helper source, the image pin, the staged-workspace copy, and the symlink-tolerant
+copy-back walk come from ``backend/scopewatch/docker_job.py``, which the gateway
+imports too. This module keeps only transport, auth, the dispatch-token store,
+and the checks that decide whether to dispatch at all.
 """
 
 from __future__ import annotations
@@ -50,9 +56,8 @@ import hmac
 import json
 import os
 import shutil
-import stat
 import subprocess
-import tempfile
+import sys
 import threading
 import time
 import uuid
@@ -60,24 +65,34 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Optional
 
-# Mirror of the gateway Docker backend pin (backend/scopewatch/executor_docker.py).
-RUNNER_DOCKER_IMAGE = (
-    "python:3.12-slim-bookworm@"
-    "sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254"
+# Shared Docker job construction (issue #106). The runner is stdlib-only, so
+# this module must stay stdlib-only too: it may not import anything from
+# ``scopewatch`` except itself, no third-party package, and nothing that
+# opens a socket. The flag list, the helper code, the image pin, and the
+# copy-back walk are defined there once and imported here, so the gateway and
+# the sidecar cannot drift (that drift already cost us one incident: #104).
+#
+# Deployed as ``/app/scopewatch/docker_job.py`` in the runner image, so the
+# plain import below resolves. When run straight from a checkout without
+# ``PYTHONPATH=backend``, add the backend package first.
+if not (Path(__file__).resolve().parent / "scopewatch" / "docker_job.py").is_file():
+    _REPO_BACKEND = Path(__file__).resolve().parents[2] / "backend"
+    if (_REPO_BACKEND / "scopewatch" / "docker_job.py").is_file():
+        sys.path.insert(0, str(_REPO_BACKEND))
+
+from scopewatch.docker_job import (  # noqa: E402
+    DOCKER_IMAGE as RUNNER_DOCKER_IMAGE,
+    DOCKER_TIMEOUT_S,
+    RUN_COMMAND_DEFAULT_TIMEOUT_S,
+    best_effort_remove,
+    build_docker_command,
+    clamp_run_command_timeout,
+    make_world_accessible,
+    prepare_docker_job,
+    replace_link,
+    stage_workspace_copy,
+    sync_copy_back,
 )
-CONTAINER_WORKSPACE = "/workspace"
-DOCKER_USER = "65534:65534"
-DOCKER_MEMORY = "256m"
-DOCKER_CPUS = "1.0"
-DOCKER_PIDS_LIMIT = "64"
-DOCKER_TIMEOUT_S = 60.0
-DOCKER_RUN_TIMEOUT_BUFFER_S = 30.0
-RUN_COMMAND_TIMEOUT_MIN_S = 1.0
-RUN_COMMAND_TIMEOUT_MAX_S = 300.0
-RUN_COMMAND_DEFAULT_TIMEOUT_S = 60.0
-RUN_COMMAND_OUTPUT_LIMIT = 64 * 1024
-MAX_READ_BYTES = 256 * 1024
-MAX_WRITE_BYTES = 64 * 1024
 
 # Single-use dispatch tokens expire after 60s (issue #78).
 DISPATCH_TOKEN_TTL_S = 60.0
@@ -202,277 +217,10 @@ def normalize_run_command(
         return None, RUN_COMMAND_DEFAULT_TIMEOUT_S, "malformed argv for run_command"
     if any("\x00" in item for item in argv):
         return None, RUN_COMMAND_DEFAULT_TIMEOUT_S, "null byte in argv"
-    try:
-        timeout = float(arguments.get("timeout_s", RUN_COMMAND_DEFAULT_TIMEOUT_S))
-    except (TypeError, ValueError):
-        timeout = RUN_COMMAND_DEFAULT_TIMEOUT_S
-    if timeout != timeout or timeout in (float("inf"), float("-inf")):  # NaN/inf
-        timeout = RUN_COMMAND_DEFAULT_TIMEOUT_S
-    timeout = min(max(timeout, RUN_COMMAND_TIMEOUT_MIN_S), RUN_COMMAND_TIMEOUT_MAX_S)
-    return list(argv), timeout, None
-
-
-def _helper_code() -> str:
-    """In-container helper (same semantics/limits as the gateway backend)."""
-    return (
-        "import json, os, subprocess, sys\n"
-        "from pathlib import Path\n"
-        f"MAX_READ = {int(MAX_READ_BYTES)}\n"
-        f"MAX_WRITE = {int(MAX_WRITE_BYTES)}\n"
-        f"RUN_CMD_LIMIT = {int(RUN_COMMAND_OUTPUT_LIMIT)}\n"
-        f"RUN_CMD_TIMEOUT_DEFAULT = {float(RUN_COMMAND_DEFAULT_TIMEOUT_S)}\n"
-        f"RUN_CMD_TIMEOUT_MIN = {float(RUN_COMMAND_TIMEOUT_MIN_S)}\n"
-        f"RUN_CMD_TIMEOUT_MAX = {float(RUN_COMMAND_TIMEOUT_MAX_S)}\n"
-        "WS = Path(os.environ.get('SCOPEWATCH_WORKSPACE', '/workspace'))\n"
-        "def fail(msg, code):\n"
-        "    print(json.dumps({'status': 'FAILED', 'result': {'error': msg}, 'error_code': code}))\n"
-        "    return\n"
-        "def main():\n"
-        "    if len(sys.argv) < 4:\n"
-        "        fail('malformed helper invocation', 'EXECUTION_FAILED')\n"
-        "        return\n"
-        "    op = sys.argv[1]\n"
-        "    resource = sys.argv[2]\n"
-        "    try:\n"
-        "        args = json.loads(sys.argv[3]) if sys.argv[3] else {}\n"
-        "    except Exception:\n"
-        "        fail('malformed arguments', 'EXECUTION_FAILED')\n"
-        "        return\n"
-        "    if '\\x00' in resource:\n"
-        "        fail('null byte in path', 'EXECUTION_FAILED')\n"
-        "        return\n"
-        "    if resource.startswith('/') or resource.startswith('\\\\'):\n"
-        "        fail('absolute paths are prohibited', 'EXECUTION_FAILED')\n"
-        "        return\n"
-        "    target = (WS / resource)\n"
-        "    try:\n"
-        "        resolved = target.resolve()\n"
-        "        resolved.relative_to(WS.resolve())\n"
-        "    except ValueError:\n"
-        "        fail('path escapes workspace boundary', 'EXECUTION_FAILED')\n"
-        "        return\n"
-        "    except Exception:\n"
-        "        fail('path resolution failed', 'EXECUTION_FAILED')\n"
-        "        return\n"
-        "    if op == 'network_request':\n"
-        "        fail('network requests are forbidden', 'EXECUTION_FAILED')\n"
-        "        return\n"
-        "    try:\n"
-        "        if op == 'list_directory':\n"
-        "            if not resolved.exists():\n"
-        "                fail(f'Directory not found: {resource}', 'EXECUTION_FAILED')\n"
-        "                return\n"
-        "            if not resolved.is_dir():\n"
-        "                fail(f'Resource is not a directory: {resource}', 'EXECUTION_FAILED')\n"
-        "                return\n"
-        "            items = []\n"
-        "            for entry in sorted(os.listdir(resolved)):\n"
-        "                items.append({'name': entry, 'type': 'directory' if (resolved / entry).is_dir() else 'file'})\n"
-        "            print(json.dumps({'status': 'EXECUTED', 'result': {'operation': 'list_directory', 'resource': resource, 'item_count': len(items), 'items': items}, 'error_code': None}))\n"
-        "            return\n"
-        "        elif op == 'read_text':\n"
-        "            if not resolved.exists():\n"
-        "                fail(f'File not found: {resource}', 'EXECUTION_FAILED')\n"
-        "                return\n"
-        "            if resolved.is_dir():\n"
-        "                fail(f'Resource is a directory, not a text file: {resource}', 'EXECUTION_FAILED')\n"
-        "                return\n"
-        "            size = resolved.stat().st_size\n"
-        "            if size > MAX_READ:\n"
-        "                print(json.dumps({'status': 'FAILED', 'result': {'error': f'File size {size} exceeds {MAX_READ} limit.'}, 'error_code': 'OVERSIZED_FILE'}))\n"
-        "                return\n"
-        "            content = resolved.read_text(encoding='utf-8', errors='replace')\n"
-        "            preview = content[:500] if len(content) > 500 else content\n"
-        "            print(json.dumps({'status': 'EXECUTED', 'result': {'operation': 'read_text', 'resource': resource, 'byte_count': size, 'preview': preview, 'truncated': len(content) > 500}, 'error_code': None}))\n"
-        "            return\n"
-        "        elif op == 'write_text':\n"
-        "            content = args.get('content', '')\n"
-        "            if not isinstance(content, str):\n"
-        "                content = str(content)\n"
-        "            payload = content.encode('utf-8')\n"
-        "            if len(payload) > MAX_WRITE:\n"
-        "                print(json.dumps({'status': 'FAILED', 'result': {'error': f'Payload {len(payload)} bytes exceeds {MAX_WRITE} limit.'}, 'error_code': 'OVERSIZED_PAYLOAD'}))\n"
-        "                return\n"
-        "            parent = resolved.parent\n"
-        "            try:\n"
-        "                parent.resolve().relative_to(WS.resolve())\n"
-        "            except ValueError:\n"
-        "                fail('path escapes workspace boundary', 'EXECUTION_FAILED')\n"
-        "                return\n"
-        "            parent.mkdir(parents=True, exist_ok=True)\n"
-        "            resolved.write_text(content, encoding='utf-8')\n"
-        "            print(json.dumps({'status': 'EXECUTED', 'result': {'operation': 'write_text', 'resource': resource, 'bytes_written': len(payload)}, 'error_code': None}))\n"
-        "            return\n"
-        "        elif op == 'delete_path':\n"
-        "            print(json.dumps({'status': 'EXECUTED', 'result': {'operation': 'delete_path', 'resource': resource, 'simulated': True, 'note': 'Deletion simulated safely; target not unlinked.'}, 'error_code': None}))\n"
-        "            return\n"
-        "        elif op == 'run_command':\n"
-        "            run_argv = args.get('argv')\n"
-        "            if not isinstance(run_argv, list) or not run_argv or not all(isinstance(a, str) for a in run_argv):\n"
-        "                fail('malformed argv for run_command', 'EXECUTION_FAILED')\n"
-        "                return\n"
-        "            if any('\\x00' in a for a in run_argv):\n"
-        "                fail('null byte in argv', 'EXECUTION_FAILED')\n"
-        "                return\n"
-        "            try:\n"
-        "                run_timeout = float(args.get('timeout_s', RUN_CMD_TIMEOUT_DEFAULT))\n"
-        "            except (TypeError, ValueError):\n"
-        "                run_timeout = RUN_CMD_TIMEOUT_DEFAULT\n"
-        "            run_timeout = min(max(run_timeout, RUN_CMD_TIMEOUT_MIN), RUN_CMD_TIMEOUT_MAX)\n"
-        "            if '..' in Path(resource).parts:\n"
-        "                fail('cwd uses directory traversal', 'EXECUTION_FAILED')\n"
-        "                return\n"
-        "            try:\n"
-        "                run_cwd = (WS if resource in ('', '.') else (WS / resource)).resolve()\n"
-        "                run_cwd.relative_to(WS.resolve())\n"
-        "            except ValueError:\n"
-        "                fail('cwd escapes workspace boundary', 'EXECUTION_FAILED')\n"
-        "                return\n"
-        "            except Exception:\n"
-        "                fail('cwd resolution failed', 'EXECUTION_FAILED')\n"
-        "                return\n"
-        "            if not run_cwd.is_dir():\n"
-        "                fail(f'cwd not found: {resource}', 'EXECUTION_FAILED')\n"
-        "                return\n"
-        "            try:\n"
-        "                run_proc = subprocess.run(run_argv, shell=False, capture_output=True, timeout=run_timeout, cwd=str(run_cwd))\n"
-        "            except subprocess.TimeoutExpired:\n"
-        "                print(json.dumps({'status': 'FAILED', 'result': {'operation': 'run_command', 'argv': run_argv, 'exit_code': None, 'stdout': '', 'stderr': '', 'truncated_stdout': False, 'truncated_stderr': False, 'timed_out': True}, 'error_code': 'COMMAND_TIMEOUT'}))\n"
-        "                return\n"
-        "            except FileNotFoundError:\n"
-        "                fail('command not found', 'EXECUTION_FAILED')\n"
-        "                return\n"
-        "            except Exception as exc:\n"
-        "                fail(type(exc).__name__, 'EXECUTION_FAILED')\n"
-        "                return\n"
-        "            run_out = run_proc.stdout or b''\n"
-        "            run_err = run_proc.stderr or b''\n"
-        "            run_out_trunc = len(run_out) > RUN_CMD_LIMIT\n"
-        "            run_err_trunc = len(run_err) > RUN_CMD_LIMIT\n"
-        "            run_out_text = run_out[:RUN_CMD_LIMIT].decode('utf-8', errors='replace')\n"
-        "            run_err_text = run_err[:RUN_CMD_LIMIT].decode('utf-8', errors='replace')\n"
-        "            if run_out_trunc:\n"
-        "                run_out_text += f\"\\n...[truncated {len(run_out) - RUN_CMD_LIMIT} bytes]\\n\"\n"
-        "            if run_err_trunc:\n"
-        "                run_err_text += f\"\\n...[truncated {len(run_err) - RUN_CMD_LIMIT} bytes]\\n\"\n"
-        "            run_status = 'EXECUTED' if run_proc.returncode == 0 else 'FAILED'\n"
-        "            run_error = None if run_proc.returncode == 0 else 'NONZERO_EXIT'\n"
-        "            print(json.dumps({'status': run_status, 'result': {'operation': 'run_command', 'argv': run_argv, 'exit_code': run_proc.returncode, 'stdout': run_out_text, 'stderr': run_err_text, 'truncated_stdout': run_out_trunc, 'truncated_stderr': run_err_trunc, 'timed_out': False}, 'error_code': run_error}))\n"
-        "            return\n"
-        "        else:\n"
-        "            fail(f'Unsupported operation: {op}', 'EXECUTION_FAILED')\n"
-        "            return\n"
-        "    except Exception as exc:\n"
-        "        fail(type(exc).__name__, 'EXECUTION_FAILED')\n"
-        "        return\n"
-        "main()\n"
+    timeout = clamp_run_command_timeout(
+        arguments.get("timeout_s", RUN_COMMAND_DEFAULT_TIMEOUT_S)
     )
-
-
-def build_runner_docker_command(
-    *,
-    workspace_copy: Path,
-    operation: str,
-    resource: str,
-    arguments_json: str,
-    container_name: str,
-    run_label: str,
-    image: Optional[str] = None,
-) -> list[str]:
-    """Hardened ``docker run`` (same flags as the gateway Docker backend)."""
-    return [
-        "docker",
-        "run",
-        "--rm",
-        "--name",
-        container_name,
-        "--label",
-        "scopewatch.executor=runner",
-        "--label",
-        f"scopewatch.run={run_label}",
-        "--network",
-        "none",
-        "--read-only",
-        "--tmpfs",
-        "/tmp",
-        "--user",
-        DOCKER_USER,
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--pids-limit",
-        DOCKER_PIDS_LIMIT,
-        "--memory",
-        DOCKER_MEMORY,
-        "--memory-swap",
-        DOCKER_MEMORY,
-        "--cpus",
-        DOCKER_CPUS,
-        "-v",
-        f"{workspace_copy}:{CONTAINER_WORKSPACE}:rw",
-        "--workdir",
-        CONTAINER_WORKSPACE,
-        image or RUNNER_DOCKER_IMAGE,
-        "python3",
-        "-c",
-        _helper_code(),
-        operation,
-        resource,
-        arguments_json,
-    ]
-
-
-def sync_copy_back(workspace_copy: Path, workspace_root: Path) -> None:
-    """Symlink-tolerant copy-back (mirrors the gateway Docker backend)."""
-    staged = Path(workspace_copy)
-    dest_root = Path(workspace_root)
-    for dirpath, dirnames, filenames in os.walk(staged, followlinks=False):
-        staged_dir = Path(dirpath)
-        rel = staged_dir.relative_to(staged)
-        dest_dir = dest_root / rel if str(rel) != "." else dest_root
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        for name in list(dirnames):
-            src_entry = staged_dir / name
-            if src_entry.is_symlink():
-                _replace_link(src_entry, dest_dir / name)
-            else:
-                (dest_dir / name).mkdir(parents=True, exist_ok=True)
-        for name in filenames:
-            src_entry = staged_dir / name
-            dest_entry = dest_dir / name
-            if src_entry.is_symlink():
-                _replace_link(src_entry, dest_entry)
-            elif src_entry.is_file():
-                if dest_entry.is_symlink():
-                    dest_entry.unlink()
-                elif dest_entry.is_dir() and not dest_entry.is_symlink():
-                    shutil.rmtree(dest_entry)
-                shutil.copy2(src_entry, dest_entry)
-
-
-def _replace_link(src_link: Path, dest: Path) -> None:
-    if os.path.lexists(dest):
-        if dest.is_dir() and not dest.is_symlink():
-            shutil.rmtree(dest)
-        else:
-            dest.unlink()
-    dest.symlink_to(os.readlink(src_link))
-
-
-def _make_world_accessible(root: Path) -> None:
-    os.chmod(root, os.stat(root).st_mode | stat.S_IRWXO)
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        for name in dirnames:
-            entry = Path(dirpath) / name
-            if entry.is_symlink():
-                continue
-            os.chmod(entry, os.stat(entry).st_mode | stat.S_IRWXO)
-        for name in filenames:
-            entry = Path(dirpath) / name
-            if entry.is_symlink():
-                continue
-            os.chmod(entry, os.stat(entry).st_mode | stat.S_IROTH | stat.S_IWOTH)
+    return list(argv), timeout, None
 
 
 class RunnerConfig:
@@ -580,47 +328,52 @@ def handle_execute(
     arguments = action.get("arguments") or {}
     if not isinstance(arguments, dict):
         return 400, {"error": "malformed arguments"}
-    run_timeout = DOCKER_TIMEOUT_S
+    run_timeout_s: Optional[float] = None
     if operation == "run_command":
         argv, timeout, error = normalize_run_command(arguments)
         if error is not None or argv is None:
             return 400, {"error": error or "malformed argv for run_command"}
         arguments = {"argv": argv, "timeout_s": timeout}
-        run_timeout = timeout + DOCKER_RUN_TIMEOUT_BUFFER_S
+        run_timeout_s = timeout
 
     staging_root: Optional[Path] = None
     container_name = f"scopewatch-runner-{uuid.uuid4().hex[:12]}"
     try:
-        staging_root = Path(tempfile.mkdtemp(prefix="scopewatch-runner-"))
-        workspace_copy = staging_root / "workspace"
         try:
-            shutil.copytree(workspace, workspace_copy, symlinks=True)
-            _make_world_accessible(workspace_copy)
+            staging_root, workspace_copy = stage_workspace_copy(workspace)
         except OSError:
             return 500, {"error": "workspace staging failed"}
-        cmd = build_runner_docker_command(
-            workspace_copy=workspace_copy,
+        # Same job builder as the gateway (issue #106): the JSON the container
+        # parses and the argv it receives cannot disagree, and the host wait is
+        # derived from the same timeout the container gets.
+        job = prepare_docker_job(
             operation=str(operation),
             resource=resource,
-            arguments_json=json.dumps(arguments),
+            arguments=arguments,
+            timeout_s=run_timeout_s,
+        )
+        cmd = build_docker_command(
+            image=config.image,
+            workspace_copy=workspace_copy,
+            job=job,
             container_name=container_name,
             run_label=str(run_id),
-            image=config.image,
+            executor_label="runner",
         )
         try:
             proc = subprocess.run(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=run_timeout,
+                timeout=job.host_timeout_s(DOCKER_TIMEOUT_S),
             )
         except subprocess.TimeoutExpired:
-            _best_effort_remove(container_name)
+            best_effort_remove(container_name)
             return 200, {"status": "FAILED", "result": {"error": "Docker execution timed out."}, "error_code": "EXECUTION_FAILED"}
         except FileNotFoundError:
             return 502, {"error": "Docker daemon unavailable"}
         except Exception:
-            _best_effort_remove(container_name)
+            best_effort_remove(container_name)
             return 502, {"error": "Docker execution failed"}
         if proc.returncode != 0:
             return 200, {"status": "FAILED", "result": {"error": "Docker execution failed."}, "error_code": "EXECUTION_FAILED"}
@@ -642,19 +395,7 @@ def handle_execute(
     finally:
         if staging_root is not None:
             shutil.rmtree(staging_root, ignore_errors=True)
-        _best_effort_remove(container_name)
-
-
-def _best_effort_remove(container_name: str) -> None:
-    try:
-        subprocess.run(
-            ["docker", "rm", "-f", container_name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-        )
-    except Exception:
-        pass
+        best_effort_remove(container_name)
 
 
 class _Handler(BaseHTTPRequestHandler):
