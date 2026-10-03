@@ -66,7 +66,12 @@ from scopewatch.repository import (
     RepositoryNotFoundError,
     ScopewatchRepository,
 )
-from scopewatch.workspaces import RunWorkspaceError, RunWorkspaceManager
+from scopewatch.workspaces import (
+    RUN_WORKSPACES_ENV_VAR,
+    RunWorkspaceError,
+    RunWorkspaceManager,
+    RunWorkspaceRootError,
+)
 from scopewatch.schemas import (
     ActionRequest,
     ActionResponse,
@@ -382,9 +387,21 @@ capture_token: Optional[str] = None,
             try:
                 workspace = self.run_workspaces.initialize(run_id)
             except RunWorkspaceError as exc:
+                # A missing or read-only managed root is a deployment problem,
+                # not a per-run one, and carries its own code saying so: an
+                # unmounted run-workspaces path otherwise looks identical to a
+                # single run losing its workspace, and the operator gets a
+                # stream of per-run failures instead of one configuration hint.
+                if isinstance(exc, RunWorkspaceRootError):
+                    message = (
+                        "The per-run workspace root is unavailable. Set "
+                        f"{RUN_WORKSPACES_ENV_VAR} to a writable mounted path."
+                    )
+                else:
+                    message = "Could not initialize an isolated workspace for this run."
                 raise ScopewatchAPIError(
-                    code="RUN_WORKSPACE_UNAVAILABLE",
-                    message="Could not initialize an isolated workspace for this run.",
+                    code=exc.code,
+                    message=message,
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 ) from exc
             run = Run(
@@ -462,9 +479,18 @@ capture_token: Optional[str] = None,
                 run.id, stored_path=run.workspace_path
             )
         except RunWorkspaceError as exc:
+            if isinstance(exc, RunWorkspaceRootError):
+                message = (
+                    "The per-run workspace root is unavailable. Set "
+                    f"{RUN_WORKSPACES_ENV_VAR} to a writable mounted path."
+                )
+            else:
+                message = (
+                    "This run's isolated workspace is unavailable; refusing to execute."
+                )
             raise ScopewatchAPIError(
-                code="RUN_WORKSPACE_UNAVAILABLE",
-                message="This run's isolated workspace is unavailable; refusing to execute.",
+                code=exc.code,
+                message=message,
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             ) from exc
         if not run.workspace_path:
@@ -1167,6 +1193,11 @@ capture_token: Optional[str] = None,
                         policy_decision=decision,
                         db_path=conn,
                         task_scope=fresh_run.task_scope,
+                        # Issue #117: the wire key for the run's workspace
+                        # directory, stated by the caller that owns the
+                        # workspace identity rather than re-derived from a host
+                        # path inside the remote backend.
+                        run_workspace=self.run_workspaces.workspace_key(fresh_run.id),
                     )
                 except Exception as exc:
                     failed_at = datetime.now(timezone.utc).isoformat()
@@ -1404,11 +1435,15 @@ capture_token: Optional[str] = None,
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
-            # Issue #117: an approved HOLD executes against the ORIGINAL
-            # run's workspace. Resolved from the stored run, so it survives a
-            # service restart and never drifts to the fixture root or to
-            # another run's tree.
-            run_workspace = self._resolve_run_workspace(conn, run)
+            # Issue #117: an approved HOLD executes against the ORIGINAL run's
+            # workspace, resolved from the stored run so it survives a service
+            # restart and never drifts to the fixture root or to another run's
+            # tree. Deliberately resolved in the dispatch branch below rather
+            # than up here: a reviewer calling this endpoint must stay able to
+            # DENY an approval, and an expired or terminal one must still get
+            # its documented status, even when the run's workspace has gone.
+            # Resolving early turned every such call into a 503 and stranded
+            # the approval PENDING with no way to clear it.
 
             # Invariant: Cannot approve if deterministic decision is DENY
             if approve and decision.outcome == PolicyOutcome.DENY:
@@ -1465,6 +1500,13 @@ capture_token: Optional[str] = None,
 
             receipt: Optional[ExecutionReceipt] = None
             generated_events: list[EvidenceEvent] = []
+            run_workspace: Optional[Path] = None
+
+            # Only for the dispatch path, and before phase 1 so a workspace
+            # that cannot be resolved leaves no approval or EXECUTION_STARTED
+            # evidence behind (evidence before effect, in both directions).
+            if approve:
+                run_workspace = self._resolve_run_workspace(conn, run)
 
             updated_approval: Optional[ApprovalRequest] = None
             exec_started: Optional[str] = None
@@ -1561,6 +1603,7 @@ capture_token: Optional[str] = None,
                         approval_request=updated_approval,
                         db_path=conn,
                         task_scope=run.task_scope,
+                        run_workspace=self.run_workspaces.workspace_key(run.id),
                     )
                 except Exception as exc:
                     failed_at = datetime.now(timezone.utc).isoformat()

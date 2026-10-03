@@ -303,11 +303,14 @@ class RemoteExecutor:
 
         # Issue #117: the runner mounts one volume holding every run's workspace
         # side by side, so the dispatch must say WHICH run's directory to use.
-        # The key is the run id, which is also how the service names the run's
-        # workspace directory. Deriving it from ``workspace_root`` instead
-        # would couple the wire contract to a host path name, so an explicit
-        # value always wins and the run id is the fallback.
-        workspace_key = run_workspace if run_workspace else action.run_id
+        # ``workspace_root`` is this host's path, which tells the runner nothing:
+        # it is a different container with its own mount of the same volume. So
+        # the key comes from the caller, which owns the workspace identity, and
+        # is the run id — which is also how the service names the directory.
+        # Deriving it from ``workspace_root`` instead would couple the wire
+        # contract to a host path name and make a mismatch between the announced
+        # key and the actual directory silent rather than loud.
+        workspace_key = run_workspace or action.run_id
 
         # Build the body and its digest together so the digest always
         # describes the arguments the runner receives (#104).
