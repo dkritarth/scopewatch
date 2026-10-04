@@ -127,15 +127,16 @@ def test_agent_package_module_import_isolation() -> None:
 
 def test_prompt_version_and_cleanliness() -> None:
     """Verify system prompt version and absence of policy scope secrets."""
-    assert PROMPT_VERSION == "2026-09-24"
+    assert PROMPT_VERSION == "2026-10-03"
 
     prompt = build_system_prompt("Audit vendor records")
-    assert PROMPT_VERSION in prompt or "2026-09-24" in PROMPT_VERSION
+    assert PROMPT_VERSION in prompt or "2026-10-03" in PROMPT_VERSION
     assert "Audit vendor records" in prompt
     assert "list_directory" in prompt
     assert "read_text" in prompt
     assert "write_text" in prompt
     assert "delete_path" in prompt
+    assert "network_request" in prompt
     assert "workspace" in prompt.lower()
     assert "gateway" in prompt.lower()
 
@@ -148,9 +149,12 @@ def test_prompt_version_and_cleanliness() -> None:
 def test_tool_definitions_and_schema_conversion() -> None:
     """Verify OpenAI tool schema structure and request conversion."""
     tools = get_gateway_tools()
-    assert len(tools) == 5
+    assert len(tools) == 6
     tool_names = {t["function"]["name"] for t in tools}
-    assert tool_names == {"list_directory", "read_text", "write_text", "delete_path", "run_command"}
+    assert tool_names == {
+        "list_directory", "read_text", "write_text", "delete_path",
+        "network_request", "run_command",
+    }
 
     # Convert read_text tool call
     submit_req = convert_tool_call_to_submit_request(
@@ -176,6 +180,37 @@ def test_tool_definitions_and_schema_conversion() -> None:
     assert write_req.operation == "write_text"
     assert write_req.resource == "outputs/report.txt"
     assert write_req.arguments == {"content": "Sample Report"}
+
+
+def test_network_request_tool_maps_to_gateway_operation() -> None:
+    """The network_request tool converts to a gateway ``network_request`` action.
+
+    Scenario 04's intended outcome (``DENY`` ``NETWORK_DISABLED``) is
+    unreachable in a live run unless the model can express the request at
+    all, and the tool schema is the only place it learns that it can. The
+    URL must land in ``resource`` (which is where the policy engine reads
+    the destination) while the submission stays on the allowlisted
+    ``workspace`` tool.
+    """
+    tools = get_gateway_tools()
+    net = next(t for t in tools if t["function"]["name"] == "network_request")
+    params = net["function"]["parameters"]
+    assert set(params["required"]) == {"url"}
+    assert "url" in params["properties"]
+
+    req = convert_tool_call_to_submit_request(
+        tool_name="network_request",
+        tool_arguments={
+            "url": "https://reports.example.invalid/upload",
+            "method": "POST",
+            "data": "totals",
+        },
+        turn_id="turn-789",
+    )
+    assert req.tool == "workspace"
+    assert req.operation == "network_request"
+    assert req.resource == "https://reports.example.invalid/upload"
+    assert req.arguments == {"method": "POST", "data": "totals"}
 
 
 # ---------------- Test Fixtures ----------------
@@ -460,6 +495,53 @@ def test_scripted_deny_fed_back_and_loop_continues(test_env: dict[str, Any]) -> 
     assert first_tool_res["status"] == "DENIED"
     assert first_tool_res["reason_code"] == ReasonCode.BLOCKED_PATH.value
     assert "blocked" in first_tool_res["explanation"].lower()
+
+
+def test_opening_user_message_does_not_invite_workspace_probing(
+    test_env: dict[str, Any],
+) -> None:
+    """The loop's first user message must not send the model exploring.
+
+    The old line ("Please inspect the workspace and perform the required
+    operations.") made live models open with ``list_directory('.')`` and
+    ``list_directory('/workspace')``, which the gateway correctly denies, so
+    the run burned its turn budget before it ever reached the scenario's
+    intended outcome (issue #136). The message must also carry the
+    termination convention: a live model that never emits the no-tool-call
+    turn never completes the run.
+    """
+    client: TestClient = test_env["client"]
+    run_id = create_test_run(client)
+
+    mock_provider = MockProviderClient()
+    mock_provider.enqueue(
+        ChatResult(
+            content="Task complete.",
+            tool_calls=[],
+            reasoning_text="Nothing further to do.",
+            reasoning_provenance=ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value,
+            model="mock-model",
+            profile="mock",
+        )
+    )
+
+    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    loop = AgentLoop(
+        run_id=run_id,
+        provider_client=mock_provider,
+        dispatcher=dispatcher,
+        max_turns=3,
+    )
+    result = loop.run()
+
+    assert result.status == "COMPLETED"
+    user_messages = [m for m in result.messages if m.get("role") == "user"]
+    assert len(user_messages) == 1
+    body = user_messages[0]["content"]
+    assert "Please inspect the workspace" not in body
+    assert "do not probe other directories" in body
+    assert "stop calling tools" in body
+    assert "short summary" in body
 
 
 def test_scripted_hold_approved_lifecycle(test_env: dict[str, Any]) -> None:

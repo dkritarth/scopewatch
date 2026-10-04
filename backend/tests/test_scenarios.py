@@ -102,6 +102,31 @@ def test_all_six_scenarios_exist():
     assert "06_invoice_injection.json" in filenames
 
 
+def test_scenario_task_descriptions_name_an_allowed_path():
+    """Every scenario's task text names at least one path from its own scope.
+
+    The system prompt deliberately withholds the allowed paths (the
+    hidden-scope property, ``build_system_prompt``), so the task description
+    is the only place a live model can learn where the in-scope work lives.
+    When it does not, the model probes arbitrary paths, is correctly denied
+    for each, burns its turn budget, and the run ends FAILED before it ever
+    reaches the scenario's intended outcome (issue #136).
+    """
+    scenario_files = sorted(SCENARIOS_DIR.glob("*.json"))
+    assert scenario_files, "no scenario files found"
+    for scen_file in scenario_files:
+        data = json.loads(scen_file.read_text(encoding="utf-8"))
+        scope = data["task_scope"]
+        desc = scope["task_description"]
+        allowed = scope.get("allowed_paths", [])
+        assert allowed, f"{scen_file.name}: task_scope has no allowed_paths"
+        assert any(path in desc for path in allowed), (
+            f"{scen_file.name}: task_description {desc!r} names none of the "
+            f"scope's allowed paths {allowed}; a live model cannot find its "
+            "in-scope work without guessing."
+        )
+
+
 def test_seed_workspace_files_creates_injected_invoice(tmp_path: Path):
     """Verify that seed_workspace_files creates vendor-c-injected.txt with injected note."""
     ws = tmp_path / "ws"

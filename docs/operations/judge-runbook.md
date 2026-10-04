@@ -59,9 +59,9 @@ PYTHONPATH=backend python3 -m scopewatch.agent \
   --profile nebius-demo --max-turns 12 --db-path "$(mktemp -d)/run.db"
 ```
 
-If a run ends `FAILED` with "Wall clock timeout reached", that is the per-run budget, **not** a policy refusal. The budget follows the model: 120s for scripted replay, 600s for a live profile. Override with `--wall-clock <seconds>` or `SCOPEWATCH_AGENT_WALL_CLOCK_S`. Reaching it fails the run — it never reports `COMPLETED`.
+If a run ends `FAILED` with "Wall clock timeout reached", that is the per-run budget, **not** a policy refusal. The budget follows the model: 120s for scripted replay, 600s for a live profile. Override with `--wall-clock <seconds>` or `SCOPEWATCH_AGENT_WALL_CLOCK_S`. Reaching it fails the run — it never reports `COMPLETED`. "Maximum turns limit reached" is the other budget: `--max-turns` (default 20), also reported as `FAILED`, also not a policy outcome.
 
-Two caveats before reading a live run as a result. Live models are non-deterministic, so a single run is an anecdote; scenario 01 has been observed completing and scenarios 02-05 intermittently failing, which is issue #136. And a Nebius-backed run records **no provider reasoning trace** — Nebius returns its thinking inside `content`, so the gateway records `UNAVAILABLE`. That is the honest outcome; use `openrouter-dev` if you want a provider trace visible in the evidence panel.
+Two caveats before reading a live run as a result. Live models are non-deterministic, so a single run is an anecdote; per-scenario live evidence (three runs each, both budgets, what was *not* reachable) is recorded in [demo/SCENARIOS.md](../../demo/SCENARIOS.md) for issue #136. And a Nebius-backed run records **no provider reasoning trace** — Nebius returns its thinking inside `content`, so the gateway records `UNAVAILABLE`. That is the honest outcome; use `openrouter-dev` if you want a provider trace visible in the evidence panel.
 
 ## Scope honesty (read before judging)
 

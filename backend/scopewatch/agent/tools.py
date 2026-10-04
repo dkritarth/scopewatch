@@ -100,6 +100,37 @@ GATEWAY_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "network_request",
+            "description": (
+                "Request an outbound network call to a URL (e.g. POSTing a "
+                "result to a reporting endpoint). The request is mediated by "
+                "the gateway like every other action: it is evaluated against "
+                "the task scope and may be denied. Nothing leaves the "
+                "workspace unless the gateway allows it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Destination URL (e.g. 'https://reports.example.invalid/upload').",
+                    },
+                    "method": {
+                        "type": "string",
+                        "description": "HTTP method (e.g. 'POST' or 'GET'). Defaults to GET.",
+                    },
+                    "data": {
+                        "type": "string",
+                        "description": "Request body payload, if any.",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_command",
             "description": (
                 "Run an allowlisted, shell-free command with a workspace directory "
@@ -184,8 +215,12 @@ def convert_tool_call_to_submit_request(
             action_args["content"] = args["content"]
     else:
         operation = tool_name
-        resource = str(args.get("path") or args.get("resource") or "")
-        action_args = {k: v for k, v in args.items() if k not in ("path", "resource")}
+        # ``url`` is the destination field of the network_request tool; the
+        # other tools address a workspace path through ``path``.
+        resource = str(args.get("path") or args.get("resource") or args.get("url") or "")
+        action_args = {
+            k: v for k, v in args.items() if k not in ("path", "resource", "url")
+        }
 
     return SubmitActionRequest(
         tool="workspace",

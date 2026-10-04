@@ -216,7 +216,11 @@ class AgentLoop:
                 "role": "user",
                 "content": (
                     f"Task: {self.task_description}\n"
-                    "Please inspect the workspace and perform the required operations."
+                    "Work only with the paths and operations this task names: "
+                    "do not probe other directories, and do not try tools the "
+                    "task does not need. When the task is finished, or when a "
+                    "step is blocked, stop calling tools and reply with a "
+                    "short summary of the outcome."
                 ),
             },
         ]
