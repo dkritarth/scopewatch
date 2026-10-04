@@ -526,7 +526,8 @@ def test_m1_wall_clock_failed(tmp_path: Path) -> None:
 def test_m1_tool_definitions_gateway_mapping() -> None:
     tools = get_gateway_tools()
     assert {t["function"]["name"] for t in tools} == {
-        "list_directory", "read_text", "write_text", "delete_path", "run_command"}
+        "list_directory", "read_text", "write_text", "delete_path",
+        "network_request", "run_command"}
     req = convert_tool_call_to_submit_request(
         tool_name="read_text",
         tool_arguments={"path": "invoices/approved/vendor-a.txt"},
@@ -544,7 +545,7 @@ def test_m1_prompt_clean() -> None:
     assert "Audit invoices" in prompt
     assert "allowed_paths" not in prompt
     assert "blocked_paths" not in prompt
-    assert PROMPT_VERSION == "2026-09-24"
+    assert PROMPT_VERSION == "2026-10-03"
 
 
 # ---------------------------------------------------------------------------

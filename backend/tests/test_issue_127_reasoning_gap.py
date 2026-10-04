@@ -21,7 +21,7 @@ from scopewatch.service import ScopewatchService
 
 def test_agent_prompt_includes_rationale_instruction():
     prompt = build_system_prompt("Summarize vendor invoices.")
-    assert PROMPT_VERSION == "2026-09-24"
+    assert PROMPT_VERSION == "2026-10-03"
     assert "Always provide a brief explanation of your intent and rationale before calling tools" in prompt
     assert "security auditor" in prompt
     # Invariant: No scope secrets in prompt
