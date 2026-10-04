@@ -242,6 +242,14 @@ def resolve_run_workspace(
     against the shared fixture, which is exactly the isolation gap #117
     closes. Symlinks are refused because a link inside the mounted root can
     point at a sibling run's directory.
+
+    ``RuntimeError`` is caught alongside ``OSError`` because ``resolve()``
+    raises it for a symlink loop. This matters more here than anywhere else:
+    an uncaught exception escapes ``handle_execute`` into
+    ``BaseHTTPRequestHandler``, which closes the connection with no HTTP
+    response at all, instead of the structured refusal every other
+    bad-workspace shape gets (#172). ``policy.py`` already guards its four
+    ``resolve()`` calls the same way.
     """
     if (
         not isinstance(run_workspace, str)
@@ -253,7 +261,7 @@ def resolve_run_workspace(
         candidate = (root / run_workspace)
         resolved = candidate.resolve()
         resolved.relative_to(root)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         return None, "run workspace unavailable"
     if resolved == root:
         return None, "run workspace unavailable"

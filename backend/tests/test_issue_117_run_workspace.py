@@ -22,8 +22,10 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import uuid
 
@@ -44,6 +46,8 @@ from scopewatch.schemas import (
 )
 from scopewatch.service import ScopewatchService
 from scopewatch.workspaces import (
+    RUN_WORKSPACE_DIR_MODE,
+    RUN_WORKSPACE_FILE_MODE,
     RunWorkspaceError,
     RunWorkspaceManager,
     WORKSPACE_MARKER_NAME,
@@ -574,6 +578,254 @@ def test_run_with_unresolvable_workspace_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(ScopewatchAPIError) as excinfo:
         _submit(service, run.id, "read_text", "outputs/archive.txt")
     assert excinfo.value.code == "RUN_WORKSPACE_UNAVAILABLE"
+
+
+# --------------------------------------------------------------------------
+# #172 -- a symlink loop must fail closed as a DOCUMENTED error.
+#
+# `Path.resolve()` raises RuntimeError for ELOOP (verified on CPython 3.12,
+# strict=False included) and OSError for everything else it can hit. Both call
+# sites caught only OSError, so a loop escaped as an unhandled 500 on the
+# service path and as a dropped connection on the sidecar. `policy.py` already
+# guarded its four `resolve()` calls with `(OSError, RuntimeError)`; these are
+# the two that did not.
+#
+# The property under test is that EVERY resolution failure arrives as the
+# documented refusal, and that nothing is executed on the way to finding out.
+# --------------------------------------------------------------------------
+
+
+def _plant_symlink_loop(directory: Path, name: str) -> Path:
+    """Plant a two-link symlink loop AT ``directory/name``; return that path.
+
+    ``name`` must not already exist. A loop is the only shape that makes
+    ``resolve()`` raise rather than return: a symlink pointing somewhere else
+    resolves fine and is refused later, by the containment comparison.
+    """
+    (directory / f"{name}B").symlink_to(directory / name, target_is_directory=True)
+    (directory / name).symlink_to(directory / f"{name}B", target_is_directory=True)
+    return directory / name
+
+
+def _run_with_looped_workspace(tmp_path: Path) -> tuple[ScopewatchService, object, Path]:
+    """A real service and run whose workspace path is now a symlink loop."""
+    service = _service(tmp_path)
+    run, _ = service.create_run(name="looped", task_scope=_scope())
+    workspace = Path(run.workspace_path)
+    root = workspace.parent
+    shutil.rmtree(workspace)
+    _plant_symlink_loop(root, workspace.name)
+    return service, run, workspace
+
+
+def test_symlink_loop_at_the_workspace_path_fails_closed_with_503(
+    tmp_path: Path,
+) -> None:
+    """#172: the documented 503, not an unhandled RuntimeError."""
+    service, run, workspace = _run_with_looped_workspace(tmp_path)
+
+    with pytest.raises(ScopewatchAPIError) as caught:
+        _submit(service, run.id, "write_text", "outputs/looped.txt", content="x")
+
+    assert caught.value.status_code == 503
+    assert caught.value.code == "RUN_WORKSPACE_UNAVAILABLE"
+    # Fail closed, not just tidy: the containment check is never reached, so
+    # there is no path outside the root that could have been executed against.
+    assert not (workspace / "outputs" / "looped.txt").exists()
+
+
+def test_symlink_loop_is_a_sanitized_503_over_http_not_an_unhandled_500(
+    tmp_path: Path,
+) -> None:
+    """#172 through the real ASGI app, with server exceptions NOT re-raised.
+
+    This is the operator-visible half. Before the fix the client received a
+    500 with a sanitized body -- no path leak, no traceback -- which is why
+    this is an observability and contract defect rather than a disclosure one.
+    The 503 carries the code an operator can act on.
+    """
+    workspace_root = _seed_fixture(tmp_path / "workspace")
+    app = create_app(
+        db_path=str(tmp_path / "eloop.db"),
+        workspace_root=str(workspace_root),
+        run_workspaces_root=tmp_path / "runs",
+    )
+    # raise_server_exceptions=False is what makes an unhandled 500 observable
+    # as a response instead of blowing up the test.
+    client = TestClient(app, raise_server_exceptions=False)
+
+    created = client.post(
+        "/api/v1/runs",
+        json={"name": "eloop", "task_scope": _scope().model_dump(mode="json")},
+    )
+    assert created.status_code == 201, created.text
+    run_id = created.json()["id"]
+
+    runs_root = tmp_path / "runs"
+    shutil.rmtree(runs_root / run_id)
+    _plant_symlink_loop(runs_root, run_id)
+
+    body = {
+        "tool": "workspace",
+        "operation": "write_text",
+        "resource": "outputs/eloop.txt",
+        "arguments": {"content": "x"},
+        "requested_by": "acp-agent",
+    }
+    response = client.post(f"/api/v1/runs/{run_id}/actions", json=body)
+
+    assert response.status_code == 503, response.text
+    assert response.json()["error"]["code"] == "RUN_WORKSPACE_UNAVAILABLE"
+    # Still sanitized: the refusal must not become a path-disclosure channel.
+    assert str(runs_root) not in response.text
+    assert "Traceback" not in response.text
+
+
+def test_symlink_loop_inside_the_managed_root_fails_closed(tmp_path: Path) -> None:
+    """#172: a loop anywhere inside the managed root, at a stored path.
+
+    Distinct from a loop *at* this run's own directory: this is the stored
+    path pointing at some other entry of the root, which is what a tampered
+    row would look like.
+    """
+    fixture = _seed_fixture(tmp_path / "workspace")
+    root = tmp_path / "runs"
+    manager = RunWorkspaceManager(fixture, root)
+    manager.initialize("run-a")
+    stray = _plant_symlink_loop(root, "stray-loop")
+
+    with pytest.raises(RunWorkspaceError) as caught:
+        manager.resolve("run-a", stored_path=str(stray))
+
+    assert caught.value.code == "RUN_WORKSPACE_UNAVAILABLE"
+
+
+def test_symlink_loop_on_the_managed_root_itself_fails_closed(tmp_path: Path) -> None:
+    """#172: the second ``resolve()`` in the guard, on ``self.root``.
+
+    ``resolve`` resolves the managed root as well as the stored path, so a loop
+    planted on the ROOT is a separate way in. Covered separately because it is
+    a different line of the same guard, and a mutation that fixed only the
+    candidate would leave this one raising.
+    """
+    fixture = _seed_fixture(tmp_path / "workspace")
+    root = tmp_path / "runs"
+    _plant_symlink_loop(tmp_path, "runs")  # <tmp>/runs -> runsB -> runs
+
+    manager = RunWorkspaceManager(fixture, root)
+    assert root.is_symlink()
+
+    with pytest.raises(RunWorkspaceError) as caught:
+        manager.resolve("run-a", stored_path=str(root / "run-a"))
+
+    assert caught.value.code == "RUN_WORKSPACE_UNAVAILABLE"
+
+
+def test_symlink_loop_guards_do_not_refuse_a_legitimate_workspace(
+    tmp_path: Path,
+) -> None:
+    """Catching ``RuntimeError`` broadly must not swallow the good path."""
+    manager, run_a, run_b, root = _two_runs(tmp_path)
+    _plant_symlink_loop(root, "stray-loop")  # a loop present, not resolved through
+
+    assert manager.resolve(run_a, stored_path=str(root / "run-a")) == (
+        root / "run-a"
+    ).resolve()
+    assert manager.resolve(run_b, stored_path=str(root / "run-b")) == (
+        root / "run-b"
+    ).resolve()
+
+
+def _runner_module() -> object:
+    """The real sidecar module, loaded from its authored location."""
+    import importlib.util
+
+    runner_path = (
+        Path(__file__).resolve().parents[2] / "deploy" / "executor-runner" / "runner.py"
+    )
+    spec = importlib.util.spec_from_file_location("scopewatch_runner_117_loop", runner_path)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    return runner
+
+
+def test_runner_refuses_a_symlink_loop_with_its_structured_reason(
+    tmp_path: Path,
+) -> None:
+    """#172, runner side: ``(None, reason)``, never an exception.
+
+    The sidecar is the socket-holding process. Anything that escapes
+    ``resolve_run_workspace`` reaches ``BaseHTTPRequestHandler`` and closes the
+    connection with no HTTP response at all, instead of the refusal every other
+    bad-workspace shape produces.
+    """
+    runner = _runner_module()
+    root = tmp_path / "runner-root"
+    root.mkdir()
+    (root / "run-b").mkdir()  # a run's own directory, to prove the guard is narrow
+    # A loop at the announced key, plus one at another entry inside the root.
+    _plant_symlink_loop(root, "run-a")
+    _plant_symlink_loop(root, "stray-loop")
+
+    for key in ("run-a", "stray-loop"):
+        resolved, reason = runner.resolve_run_workspace(root, key)
+        assert resolved is None, f"{key!r} resolved to {resolved}"
+        assert reason == "run workspace unavailable", key
+
+    # A run's own directory still resolves.
+    resolved, reason = runner.resolve_run_workspace(root, "run-b")
+    assert reason is None and resolved == (root / "run-b").resolve()
+
+
+def test_runner_handle_execute_answers_a_symlink_loop_instead_of_raising(
+    tmp_path: Path,
+) -> None:
+    """#172 at the boundary that matters: a signed dispatch gets a response.
+
+    Drives the real ``handle_execute`` with a correctly signed, correctly
+    digested, unexpired, single-use dispatch whose announced key is a symlink
+    loop. Every gate before workspace resolution passes, so this isolates the
+    one that used to raise. The one-shot token is already consumed by the time
+    resolution runs, so a raise here is a connection error for the gateway --
+    which is precisely the failure mode being fixed.
+    """
+    import time
+
+    from scopewatch.executor_remote import sign_dispatch_payload
+
+    runner = _runner_module()
+    config = runner.RunnerConfig()
+    config.token = "synthetic-runner-token"
+    config.signing_key = "synthetic-independent-signing-key"
+    config.workspace = tmp_path / "runs"
+    config.workspace.mkdir()
+    _plant_symlink_loop(config.workspace, "run-looped")
+
+    store = runner.DispatchTokenStore()
+    action = {
+        "id": "a-loop",
+        "run_id": "run-looped",
+        "operation": "read_text",
+        "resource": "outputs/archive.txt",
+        "arguments": {},
+    }
+    decision = {"id": "d-loop", "action_request_id": "a-loop", "outcome": "ALLOW"}
+    body = {
+        "issued_at": time.time(),
+        "dispatch_token": "single-use-token",
+        "action_digest": runner.canonical_action_digest(action, decision, "run-looped"),
+        "run_workspace": "run-looped",
+        "action": action,
+        "policy_decision": decision,
+        "approval": None,
+    }
+    body["dispatch_signature"] = sign_dispatch_payload(body, config.signing_key)
+
+    status, payload = runner.handle_execute(dict(body), config, store)
+
+    assert status == 500
+    assert payload == {"error": "run workspace unavailable"}
 
 
 # --------------------------------------------------------------------------
@@ -1291,3 +1543,281 @@ def test_preview_agrees_with_submission_after_fixture_changes(
         "preflight must agree with the deterministic decision it previews "
         f"(preview={preview_outcome}, submission={submitted_outcome})"
     )
+
+
+# --------------------------------------------------------------------------
+# #173 -- the run workspace's permissions are its own, not the fixture's.
+#
+# `shutil.copytree` finishes every directory it copies with `copystat`, so the
+# copy inherited the source's mode. A read-only fixture therefore produced a
+# read-only run workspace and EVERY `create_run` failed -- at the marker write,
+# inside a directory this uid owns but cannot write to -- reporting
+# RUN_WORKSPACE_UNAVAILABLE "could not initialize an isolated workspace for
+# this run". That message blames the run when the cause is the source tree's
+# mode, which is the expensive part to diagnose from the symptom alone.
+#
+# Trigger, stated precisely because it is easy to get wrong: the culprit is
+# read-only PERMISSION BITS on the fixture, not a read-only MOUNT. A `:ro`
+# mount does not change any inode's mode, so it would not by itself have
+# tripped this. `chmod -R a-w` on the host before the volume is first
+# populated does, and that is exactly the step an operator reaches for while
+# hardening the baseline -- which is why fixing the inheritance is what makes
+# the hardening safe to attempt.
+# --------------------------------------------------------------------------
+
+
+def _make_tree_read_only(root: Path) -> None:
+    """`chmod -R a-w`: what hardening the scenario baseline looks like.
+
+    ``lstat`` and an explicit symlink skip, because ``chmod`` follows links --
+    a helper that did not would quietly rewrite the host targets that
+    ``test_workspace_mode_pass_does_not_follow_symlinks_out_of_the_tree`` is
+    about, and make that test pass for the wrong reason. (It did, once.)
+    """
+    for path in sorted(root.rglob("*"), reverse=True):
+        if path.is_symlink():
+            continue
+        path.chmod(stat.S_IMODE(os.lstat(path).st_mode) & ~0o222)
+    root.chmod(stat.S_IMODE(os.lstat(root).st_mode) & ~0o222)
+
+
+def _make_tree_writable(root: Path) -> None:
+    """Undo ``_make_tree_read_only`` so pytest can clean the tree up."""
+    for path in sorted(root.rglob("*"), reverse=True):
+        if path.is_symlink():
+            continue
+        path.chmod(stat.S_IMODE(os.lstat(path).st_mode) | 0o200)
+    root.chmod(stat.S_IMODE(os.lstat(root).st_mode) | 0o700)
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(os.lstat(path).st_mode)
+
+
+def test_a_read_only_fixture_still_yields_a_usable_run_workspace(
+    tmp_path: Path,
+) -> None:
+    """#173: the whole run lifecycle over a read-only baseline.
+
+    Not just "initialize did not raise": the run actually writes, through the
+    real service and the real executor, into the workspace it was given.
+    """
+    fixture = _seed_fixture(tmp_path / "workspace")
+    _make_tree_read_only(fixture)
+    try:
+        service = _service(tmp_path, fixture)
+
+        run, _ = service.create_run(name="read-only-fixture", task_scope=_scope())
+        workspace = Path(run.workspace_path)
+
+        # A new output file, and an in-place rewrite of a copied baseline file.
+        produced = _submit(
+            service, run.id, "write_text", "outputs/produced.txt", content="NEW"
+        )
+        assert produced.execution_receipt.status == ExecutionStatus.EXECUTED, (
+            produced.execution_receipt.sanitized_result
+        )
+        rewritten = _submit(
+            service,
+            run.id,
+            "write_text",
+            "invoices/approved/vendor-a.txt",
+            content="REWRITTEN BY THE RUN",
+        )
+        assert rewritten.execution_receipt.status == ExecutionStatus.EXECUTED, (
+            rewritten.execution_receipt.sanitized_result
+        )
+
+        assert (workspace / "outputs" / "produced.txt").read_text(
+            encoding="utf-8"
+        ) == "NEW"
+        assert "REWRITTEN" in (workspace / "invoices" / "approved" / "vendor-a.txt").read_text(
+            encoding="utf-8"
+        )
+        # The baseline itself is untouched, which is the point of the copy.
+        assert _mode(fixture / "outputs" / "archive.txt") & 0o222 == 0
+        assert not (fixture / "outputs" / "produced.txt").exists()
+    finally:
+        _make_tree_writable(fixture)
+
+
+def test_read_only_fixture_must_not_have_broken_create_run(
+    tmp_path: Path,
+) -> None:
+    """MUTATION CHECK for the test above: the shipped bug is reproduced here.
+
+    Copies the fixture the way `initialize` used to, without the deliberate
+    mode pass, and asserts the resulting workspace cannot be written into. If
+    this ever stops failing, the test above is proving nothing: it would be
+    exercising a tree that was writable for a reason other than the fix.
+    """
+    fixture = _seed_fixture(tmp_path / "workspace")
+    _make_tree_read_only(fixture)
+    try:
+        staging = tmp_path / "inherited"
+        shutil.copytree(fixture, staging, symlinks=True)
+        assert _mode(staging) == _mode(fixture), (
+            "copytree no longer copies the source directory's mode; re-check "
+            "whether the fix below is still the one doing the work"
+        )
+        with pytest.raises(PermissionError):
+            (staging / WORKSPACE_MARKER_NAME).write_text("{}", encoding="utf-8")
+    finally:
+        _make_tree_writable(fixture)
+
+
+def test_run_workspace_directories_take_their_own_mode_not_the_fixtures(
+    tmp_path: Path,
+) -> None:
+    """#173: every directory, at every depth -- the fix is not top-level only.
+
+    `copytree` copystat's every directory it descends into, so a top-level
+    chmod would have left `outputs/` read-only, which is where the marker write
+    actually failed.
+    """
+    fixture = _seed_fixture(tmp_path / "workspace")
+    _make_tree_read_only(fixture)
+    try:
+        workspace = RunWorkspaceManager(fixture, tmp_path / "runs").initialize("run-a")
+
+        assert _mode(workspace) == RUN_WORKSPACE_DIR_MODE
+        for directory in sorted(p for p in workspace.rglob("*") if p.is_dir()):
+            assert _mode(directory) == RUN_WORKSPACE_DIR_MODE, (
+                f"{directory.relative_to(workspace)} kept the fixture's mode"
+            )
+        # And the mode does not depend on what the fixture happened to be.
+        assert _mode(fixture) & 0o222 == 0
+    finally:
+        _make_tree_writable(fixture)
+
+
+def test_run_workspace_files_are_owner_writable_even_when_the_fixtures_are_not(
+    tmp_path: Path,
+) -> None:
+    """#173: the in-place-rewrite case, which a directories-only fix misses.
+
+    `chmod -R a-w` turns a 0644 fixture file into 0444. Widening only the
+    directories would let `create_run` succeed and then fail every `write_text`
+    aimed at a copied baseline file, with the same misleading symptom one
+    level down.
+    """
+    fixture = _seed_fixture(tmp_path / "workspace")
+    baseline = fixture / "invoices" / "approved" / "vendor-a.txt"
+    baseline.chmod(0o444)
+    _make_tree_read_only(fixture)
+    try:
+        # The guarantee is a named contract, not a literal: this is what
+        # "the mode is set deliberately and documented" has to mean if a later
+        # change to these constants is going to be deliberate too.
+        assert RUN_WORKSPACE_FILE_MODE & 0o600 == 0o600
+        assert RUN_WORKSPACE_DIR_MODE & 0o700 == 0o700
+
+        workspace = RunWorkspaceManager(fixture, tmp_path / "runs").initialize("run-a")
+        copied = workspace / "invoices" / "approved" / "vendor-a.txt"
+
+        assert _mode(baseline) & 0o222 == 0
+        assert _mode(copied) & stat.S_IWUSR, (
+            "a copied baseline file must be rewritable by the run that owns it"
+        )
+        # Truncate-in-place, which is what the local executor's write_text does.
+        with open(copied, "w", encoding="utf-8") as handle:
+            handle.write("rewritten")
+        assert copied.read_text(encoding="utf-8") == "rewritten"
+    finally:
+        _make_tree_writable(fixture)
+
+
+def test_run_workspace_keeps_an_execute_bit_the_fixture_shipped(
+    tmp_path: Path,
+) -> None:
+    """#173: why files are widened rather than pinned to a fixed value.
+
+    `stage_workspace_copy` opens the STAGING copy to world access -- `S_IRWXO`
+    on directories, `S_IROTH|S_IWOTH` on files -- so a script keeps its
+    execute bit only if it still has one in the run workspace. Pinning every
+    file to a fixed 0600 would silently turn a fixture-shipped script into a
+    non-executable file for `run_command`.
+    """
+    fixture = _seed_fixture(tmp_path / "workspace")
+    script = fixture / "outputs" / "collect.sh"
+    script.write_text("#!/bin/sh\necho synthetic\n", encoding="utf-8")
+    script.chmod(0o700)
+
+    workspace = RunWorkspaceManager(fixture, tmp_path / "runs").initialize("run-a")
+    copied = workspace / "outputs" / "collect.sh"
+    assert _mode(copied) & stat.S_IXUSR, (
+        "the fixture shipped an executable file and the copy must stay executable"
+    )
+
+    # And the bit survives the staging copy the container actually sees.
+    from scopewatch.docker_job import stage_workspace_copy
+
+    staging_root, staged = stage_workspace_copy(workspace)
+    try:
+        assert _mode(staged / "outputs" / "collect.sh") & stat.S_IXUSR
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def test_workspace_mode_pass_does_not_follow_symlinks_out_of_the_tree(
+    tmp_path: Path,
+) -> None:
+    """#173: chmod follows links on Linux, so the pass must skip them.
+
+    A fixture containing a symlink to a host target must not have that
+    target's mode changed -- the same reason
+    `docker_job.make_world_accessible` skips links.
+
+    The targets are given modes the pass would actually *change* (group and
+    other bits set), so asserting "unchanged" has teeth: a pass that follows
+    the link rewrites them to ``0o600``.
+    """
+    outside_file = tmp_path / "host-target.txt"
+    outside_file.write_text("synthetic", encoding="utf-8")
+    outside_file.chmod(0o644)
+    outside_dir = tmp_path / "host-dir"
+    outside_dir.mkdir()
+    (outside_dir / "inner.txt").write_text("synthetic", encoding="utf-8")
+    outside_dir.chmod(0o755)
+
+    fixture = _seed_fixture(tmp_path / "workspace")
+    (fixture / "outputs" / "escape.txt").symlink_to(outside_file)
+    (fixture / "outputs" / "escape-dir").symlink_to(outside_dir, target_is_directory=True)
+    _make_tree_read_only(fixture)
+    try:
+        RunWorkspaceManager(fixture, tmp_path / "runs").initialize("run-a")
+
+        assert _mode(outside_file) == 0o644, (
+            "the mode pass chmod'd a host file through a fixture symlink"
+        )
+        assert _mode(outside_dir) == 0o755, (
+            "the mode pass chmod'd a host directory through a fixture symlink"
+        )
+        # The links themselves are copied as links, which is the point of
+        # `symlinks=True` on the copytree.
+        workspace = tmp_path / "runs" / "run-a"
+        assert (workspace / "outputs" / "escape.txt").is_symlink()
+        assert (workspace / "outputs" / "escape-dir").is_symlink()
+    finally:
+        _make_tree_writable(fixture)
+
+
+def test_reused_workspace_is_not_re_chmod_ed(tmp_path: Path) -> None:
+    """#173 must not turn idempotency into a re-initialization.
+
+    ``initialize`` returns an existing workspace untouched so a run's output
+    survives a restart. That also means the mode pass does not run again --
+    stated here so the boundary is deliberate rather than accidental.
+    """
+    fixture = _seed_fixture(tmp_path / "workspace")
+    manager = RunWorkspaceManager(fixture, tmp_path / "runs")
+    workspace = manager.initialize("run-a")
+    _make_tree_read_only(workspace)
+    try:
+        again = manager.initialize("run-a")
+        assert again == workspace
+        assert _mode(again) & 0o222 == 0, (
+            "an already-initialized workspace is left exactly as it was"
+        )
+    finally:
+        _make_tree_writable(workspace)
