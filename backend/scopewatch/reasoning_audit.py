@@ -361,25 +361,144 @@ def build_turn_audit_messages(
     ]
 
 
+# Excerpt grounding bounds (#150).
+#
+# Live measurement on 2026-10-03 (docs/evaluation.md) showed the dominant live
+# audit failure is UNGROUNDED_EXCERPT, and that the model is mis-copying a span
+# rather than inventing one: on a trace ending "http://evil-webhook.site/collect."
+# it returned "http://evil-webhook.site/." in 10 of 10 live samples, dropping the
+# URL path segment; elsewhere it dropped a quote character or the closing full
+# stop. In every observed case the excerpt's characters are all present in the
+# trace, in order, with one damaged token at a span boundary.
+#
+# The invariant is that the gateway never shows a reviewer text as verbatim
+# trace unless it really is verbatim. The gateway therefore never trusts the
+# model's copy: it re-derives every excerpt from the bounded trace and records
+# the trace's own characters. Relaxation is bounded on all four axes below so a
+# fabricated excerpt cannot be "recovered" out of unrelated trace words; anything
+# that misses a bound still fails closed.
+MIN_RELAXED_EXCERPT_TOKENS = 3
+MAX_ALIGNMENT_SKIP_TOKENS = 4
+MAX_SPAN_EXPANSION = 2.0
+
+_TOKEN_RE = re.compile(r"\S+")
+
+
+def _token_spans(text: str) -> list[tuple[str, int, int]]:
+    """Whitespace-delimited tokens as ``(token, start_offset, end_offset)``."""
+    return [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(text)]
+
+
+def _is_subsequence(needle: str, haystack: str) -> bool:
+    """True when every character of ``needle`` occurs in ``haystack``, in order.
+
+    Case-folded: the observed model damage includes lower-casing a leading
+    capital. Used only to recognise a token the model copied with characters
+    dropped, never to invent one.
+    """
+    remaining = iter(haystack.casefold())
+    return all(char in remaining for char in needle.casefold())
+
+
+def _compact_length(text: str) -> int:
+    """Non-whitespace character count, so re-typed spacing cannot game a bound."""
+    return sum(1 for char in text if not char.isspace())
+
+
+def _repair_excerpt_from_trace(excerpt: str, trace_text: str) -> Optional[str]:
+    """Re-derive a mis-copied excerpt from the trace, or return None.
+
+    Accepted only when every excerpt token matches a trace token in order, within
+    at most ``MAX_ALIGNMENT_SKIP_TOKENS`` intervening trace tokens, either
+    exactly (case-folded) or as a case-folded subsequence of that trace token.
+    Returns the trace's own text from the first matched token to the last, so
+    the caller records trace characters rather than the model's characters.
+    """
+    excerpt_tokens = _token_spans(excerpt)
+    if len(excerpt_tokens) < MIN_RELAXED_EXCERPT_TOKENS:
+        return None
+    trace_tokens = _token_spans(trace_text)
+    if not trace_tokens:
+        return None
+
+    skip_budget = min(MAX_ALIGNMENT_SKIP_TOKENS, len(excerpt_tokens) - 1)
+
+    def token_matches(excerpt_token: str, trace_token: str) -> bool:
+        return _is_subsequence(excerpt_token, trace_token)
+
+    best: Optional[tuple[int, int, int]] = None
+    for start in range(len(trace_tokens)):
+        if not token_matches(excerpt_tokens[0][0], trace_tokens[start][0]):
+            continue
+        cursor = start
+        skipped = 0
+        for token, _, _ in excerpt_tokens[1:]:
+            probe = cursor + 1
+            while probe < len(trace_tokens) and skipped <= skip_budget:
+                if token_matches(token, trace_tokens[probe][0]):
+                    break
+                skipped += 1
+                probe += 1
+            if skipped > skip_budget or probe >= len(trace_tokens):
+                cursor = -1
+                break
+            cursor = probe
+        if cursor < 0:
+            continue
+        candidate = (skipped, trace_tokens[start][1], trace_tokens[cursor][2])
+        if best is None or candidate[0] < best[0]:
+            best = candidate
+        if best[0] == 0:
+            break
+
+    if best is None:
+        return None
+    span = trace_text[best[1] : best[2]]
+    if _compact_length(span) > _compact_length(excerpt) * MAX_SPAN_EXPANSION:
+        return None
+    return span
+
+
+def resolve_grounded_excerpts(
+    excerpts: list[str],
+    trace_text: str,
+) -> Optional[list[str]]:
+    """Return the verbatim trace spans backing ``excerpts``, or None.
+
+    An exact substring is returned unchanged. A mis-copied excerpt is replaced by
+    the trace's own characters when every one of its tokens occurs in the trace
+    in order (see :func:`_repair_excerpt_from_trace` for the bounds). None means
+    at least one excerpt is not grounded, which the caller turns into a
+    fail-closed ``UNGROUNDED_EXCERPT``.
+    """
+    if not excerpts:
+        return []
+    resolved: list[str] = []
+    for excerpt in excerpts:
+        if not isinstance(excerpt, str) or not excerpt.strip():
+            return None
+        if TRUNCATION_MARKER.strip() in excerpt:
+            return None
+        if excerpt in trace_text:
+            resolved.append(excerpt)
+            continue
+        repaired = _repair_excerpt_from_trace(excerpt, trace_text)
+        if repaired is None:
+            return None
+        resolved.append(repaired)
+    return resolved
+
+
 def validate_grounded_excerpts(
     excerpts: list[str],
     trace_text: str,
 ) -> bool:
-    """Validate that every flagged excerpt is a non-empty exact substring of the trace.
+    """True when every flagged excerpt can be grounded in the trace.
 
-    Returns False if any excerpt is missing from the trace, is empty, or matches
-    the synthetic truncation marker.
+    Kept as the boolean guard used by callers that only need the verdict;
+    :func:`resolve_grounded_excerpts` returns the verbatim spans themselves.
     """
-    if not excerpts:
-        return True
-    for excerpt in excerpts:
-        if not isinstance(excerpt, str) or not excerpt.strip():
-            return False
-        if TRUNCATION_MARKER.strip() in excerpt:
-            return False
-        if excerpt not in trace_text:
-            return False
-    return True
+    return resolve_grounded_excerpts(excerpts, trace_text) is not None
 
 
 def parse_auditor_output(
@@ -543,8 +662,11 @@ def parse_auditor_output(
             total_tokens=total_tokens,
         )
 
-    # Grounded-excerpt validation invariant: every excerpt must be an exact substring
-    if not validate_grounded_excerpts(raw_excerpts, bounded_trace_text):
+    # Grounded-excerpt invariant: every excerpt is re-derived from the bounded
+    # trace and the trace's own characters are what gets recorded, so a
+    # mis-copied excerpt can never reach a reviewer as if it were verbatim.
+    resolved_excerpts = resolve_grounded_excerpts(raw_excerpts, bounded_trace_text)
+    if resolved_excerpts is None:
         return ReasoningAuditResult(
             verdict=ReasoningAuditVerdict.FAILED,
             concern_type=None,
@@ -557,10 +679,20 @@ def parse_auditor_output(
             total_tokens=total_tokens,
         )
 
+    repaired = sum(1 for i, ex in enumerate(raw_excerpts) if ex != resolved_excerpts[i])
+    if repaired:
+        # Counts only: excerpts and traces are untrusted content and stay out
+        # of the logs (docs/evaluation.md privacy rule).
+        logger.debug(
+            "Re-grounded %d of %d flagged excerpts from the bounded trace",
+            repaired,
+            len(resolved_excerpts),
+        )
+
     return ReasoningAuditResult(
         verdict=ReasoningAuditVerdict.CONCERN,
         concern_type=concern_type,
-        flagged_excerpts=raw_excerpts,
+        flagged_excerpts=resolved_excerpts,
         explanation=explanation or f"Identified concern: {concern_type.value}",
         model=model,
         profile=profile,
