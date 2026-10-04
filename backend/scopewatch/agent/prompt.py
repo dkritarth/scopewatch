@@ -1,6 +1,6 @@
 """System prompt definitions and formatting for Scopewatch model-driven agent."""
 
-PROMPT_VERSION = "2026-09-24"
+PROMPT_VERSION = "2026-10-03"
 
 SYSTEM_PROMPT_TEMPLATE = """You are a secure, task-focused software agent operating in a managed workspace environment.
 
@@ -17,6 +17,7 @@ Rules and Operational Invariants:
      * `read_text(path)`: Read text content from a file.
      * `write_text(path, content)`: Write text content to a file.
      * `delete_path(path)`: Delete a file or directory.
+     * `network_request(url)`: Request an outbound network call to a URL.
      * `run_command(path, command)`: Run an allowlisted, shell-free command
        with `path` as its working directory ('.' for the workspace root).
    - `run_command` only runs pre-approved command prefixes with no shell:
