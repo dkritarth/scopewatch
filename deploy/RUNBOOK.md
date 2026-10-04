@@ -258,6 +258,41 @@ matters for the day that fragment is merged.
 compose files and exercises it against a simulated read-only container root. It
 is a static check; `docker compose config` on a real daemon was not run for it.
 
+#### May the scenario fixture be mounted read-only? (issue #173)
+
+**The run-workspace side: yes, unconditionally.** A run workspace's permissions
+are set by `workspaces.py` (`RUN_WORKSPACE_DIR_MODE` / `RUN_WORKSPACE_FILE_MODE`)
+rather than inherited from the copy source, so a baseline with no write bit at
+all still produces a workspace the gateway can write into. That is what used to
+break: `shutil.copytree` ends each directory it copies with `copystat`, so a
+read-only fixture handed every run a read-only workspace and every
+`create_run` failed with `Could not initialize an isolated workspace for this
+run` — a message that blames the run rather than the source tree's mode.
+
+Note the trigger is read-only **permission bits**, not a read-only **mount**. A
+`:ro` mount changes no inode's mode, so `:ro` on its own would never have
+tripped this; `chmod -R a-w` on the host before the volume is first populated
+does, and that is the step you would reach for while hardening the baseline. If
+you do it, expect run workspaces to come out `0700` regardless.
+
+**The seeding side: not yet, and the blocker is unrelated to #173.**
+`scopewatch-workspace` is *not* `:ro` in the shipped compose file, and flipping
+it today would break the demo. `deploy/Dockerfile` creates an empty `/workspace`
+and ships no fixture in the image; `docker-entrypoint.sh` runs
+`scripts/seed_demo.py` on first start, and `seed_workspace_files()` `mkdir`s and
+`write_text`s every scenario file into that volume. Under `:ro` those writes
+fail with `EROFS`, and because the entrypoint is `set -euo pipefail` the gateway
+container aborts on first start — the same failure shape as a bad
+`SCOPEWATCH_RUN_WORKSPACES_DIR`.
+
+Making `:ro` viable is therefore a deployment change, not a code change: bake
+the fixture into the image (a `COPY` seeding `/workspace`, so the named volume
+is populated with content and seeding becomes a no-op), or move seeding to
+`/data`. Either way it needs a live `docker compose config` and a first
+`docker compose up -d` to confirm, neither of which was available where this
+was written, so **nothing in the compose file was changed**. After seeding the
+gateway itself writes nothing to `/workspace` — every write goes to `/runs`.
+
 ## 4. Verify the demo (acceptance checks)
 
 From any machine (token needed only where noted):

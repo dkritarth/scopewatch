@@ -731,3 +731,149 @@ def test_no_environment_leakage_between_the_two_layout_tests(
     assert RUN_WORKSPACES_ENV_VAR not in os.environ or not os.environ.get(
         RUN_WORKSPACES_ENV_VAR
     ).strip()
+
+
+# --------------------------------------------------------------------------
+# #172 -- a symlink loop is a refusal, not an exception, in the deployed layout
+# --------------------------------------------------------------------------
+
+
+def _plant_symlink_loop(directory: Path, name: str) -> Path:
+    """Plant a two-link symlink loop AT ``directory/name``.
+
+    A loop is the only shape that makes ``Path.resolve()`` raise: it is what
+    turns the resolver's ``except`` clause into the thing under test.
+    """
+    (directory / f"{name}B").symlink_to(directory / name, target_is_directory=True)
+    (directory / name).symlink_to(directory / f"{name}B", target_is_directory=True)
+    return directory / name
+
+
+def test_runner_resolver_refuses_a_symlink_loop_in_the_deployed_layout(
+    writable_container: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#172, at the shared volume the two containers actually mount.
+
+    Uses the real sidecar module against the volume compose declares, so this
+    is the shape the deployed runner would meet: a loop where a run's directory
+    is expected, inside the only path the sidecar can see.
+    """
+    resolve_run_workspace = _load_runner().resolve_run_workspace
+
+    runs = _host_path(writable_container, RUN_WORKSPACES_MOUNT)
+    fixture = _host_path(writable_container, GATEWAY_FIXTURE_ROOT)
+    monkeypatch.setenv(RUN_WORKSPACES_ENV_VAR, str(runs))
+    manager = RunWorkspaceManager(fixture)
+    manager.initialize(SIBLING_RUN_ID)
+    _plant_symlink_loop(runs, RUN_ID)
+
+    resolved, reason = resolve_run_workspace(runs, RUN_ID)
+
+    assert resolved is None, f"the runner resolved {RUN_ID} through a symlink loop"
+    assert reason == "run workspace unavailable"
+    # And the sibling it must still be able to reach is untouched.
+    ok, ok_reason = resolve_run_workspace(runs, SIBLING_RUN_ID)
+    assert ok_reason is None and ok == (runs / SIBLING_RUN_ID).resolve()
+
+
+# --------------------------------------------------------------------------
+# #173 -- the scenario fixture may carry no write bit at all
+# --------------------------------------------------------------------------
+
+
+def _strip_write_bits(root: Path) -> None:
+    """``chmod -R a-w``: what hardening the scenario baseline looks like."""
+    for path in sorted(root.rglob("*"), reverse=True):
+        if path.is_symlink():
+            continue
+        path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o222)
+    root.chmod(stat.S_IMODE(root.stat().st_mode) & ~0o222)
+
+
+def test_read_only_fixture_still_starts_a_run_in_the_deployed_layout(
+    writable_container: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#173, end to end in the layout compose ships.
+
+    `/workspace` here is the copy SOURCE volume. The gateway writes only to
+    `/runs`, so a baseline with no write bit must not stop a run from starting
+    -- and before #173 it did, with a 503 whose message blamed the run.
+    """
+    fixture = _host_path(writable_container, GATEWAY_FIXTURE_ROOT)
+    runs = _host_path(writable_container, RUN_WORKSPACES_MOUNT)
+    _strip_write_bits(fixture)
+    try:
+        monkeypatch.setenv(RUN_WORKSPACES_ENV_VAR, str(runs))
+        service = _service(fixture)
+
+        run, _ = service.create_run(name="read-only", task_scope=_scope())
+        workspace = Path(run.workspace_path)
+
+        assert workspace.parent == runs
+        assert workspace.is_dir()
+        # The workspace is writable even though nothing it was copied from is.
+        assert stat.S_IMODE(workspace.stat().st_mode) & 0o200
+        (workspace / "outputs" / "produced.txt").write_text("run output", encoding="utf-8")
+        assert (workspace / "outputs" / "produced.txt").read_text(
+            encoding="utf-8"
+        ) == "run output"
+        assert not (fixture / "outputs" / "produced.txt").exists()
+    finally:
+        _make_writable(fixture)
+
+
+def test_deployment_docs_state_the_read_only_fixture_finding() -> None:
+    """#173's last acceptance criterion is a documentation claim; check it.
+
+    Two claims have to be written down, because both are easy to get backwards:
+    the run-workspace side is safe, and the `:ro` mount is still blocked -- by
+    runtime seeding, not by the workspace code. A doc that only says "now
+    safe" would send an operator to break first start.
+    """
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+    compose = COMPOSE.read_text(encoding="utf-8")
+
+    for text, label in ((runbook, "RUNBOOK.md"), (compose, "compose.yaml")):
+        assert "seed_workspace_files" in text, (
+            f"{label} must name what actually blocks the :ro mount"
+        )
+        assert ":ro" in text, f"{label} must address the read-only mount question"
+
+    # The run-workspace guarantee, stated as the code's own contract.
+    assert "RUN_WORKSPACE_DIR_MODE" in runbook
+    assert "RUN_WORKSPACE_FILE_MODE" in runbook
+    # And the mount is genuinely still :rw -- the doc must not drift from it.
+    assert "scopewatch-workspace:/workspace\n" in compose, (
+        "the fixture mount changed; update the RUNBOOK section and re-verify "
+        "with a live docker compose up -d before claiming it works"
+    )
+
+
+def test_fixture_seeding_still_writes_the_workspace_volume() -> None:
+    """The `:ro` blocker, pinned where it lives: first-start seeding.
+
+    `/workspace` is created empty by the image and populated at runtime, so the
+    read-only mount cannot be flipped until the fixture is baked in or seeding
+    moves. This asserts the two facts that make that true, so if either changes
+    the blocking reason cannot quietly become wrong.
+    """
+    dockerfile = (DEPLOY / "Dockerfile").read_text(encoding="utf-8")
+    entrypoint = (DEPLOY / "docker-entrypoint.sh").read_text(encoding="utf-8")
+
+    assert "COPY demo/workspace" not in dockerfile, (
+        "/workspace is now baked into the image, so runtime seeding is not what "
+        "writes the fixture volume; revisit the ':ro blocker' reasoning and the "
+        "RUNBOOK section that states it"
+    )
+    assert "seed_demo.py" in entrypoint, (
+        "the entrypoint no longer seeds; the ':ro' analysis needs redoing"
+    )
+    assert "set -euo pipefail" in entrypoint, (
+        "a seeding failure no longer aborts the container; re-check the "
+        "failure mode before flipping the mount"
+    )
+
+    seed_source = (REPO_ROOT / "scripts" / "seed_demo.py").read_text(encoding="utf-8")
+    assert "workspace_root /" in seed_source, (
+        "seed_demo.py no longer writes into the workspace root"
+    )

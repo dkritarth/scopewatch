@@ -67,6 +67,16 @@ services:
       - scopewatch-data:/data
       # Synthetic agent workspace ONLY. Never mount the repo, the home
       # directory, or anything containing keys here.
+      #
+      # Deliberately NOT `:ro` yet, and the blocker is NOT #173: a run
+      # workspace's mode is set by workspaces.py rather than inherited from this
+      # volume, so a read-only baseline no longer breaks create_run. What still
+      # blocks `:ro` is that /workspace is EMPTY in the image and
+      # docker-entrypoint.sh -> scripts/seed_demo.py::seed_workspace_files()
+      # creates every scenario file in it on first start. Under `:ro` those
+      # writes fail EROFS and `set -euo pipefail` aborts the container. Bake
+      # the fixture into the image first. See deploy/RUNBOOK.md
+      # "May the scenario fixture be mounted read-only?".
       - scopewatch-workspace:/workspace
       # Per-run workspace copies (#117). Separate from /workspace so the
       # fixture stays pristine, and shared with executor-runner so the remote

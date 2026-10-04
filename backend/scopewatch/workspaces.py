@@ -43,6 +43,23 @@ executor-runner sidecar is a separate container that can only reach directories
 it mounts itself. See ``deploy/RUNBOOK.md`` §3 and
 ``backend/tests/test_run_workspaces_deployment.py``, which asserts both the
 default and the shipped layout against a simulated read-only container root.
+
+Two properties this module guarantees to its callers rather than inheriting
+from the environment (#172, #173), both found by the second-pass review of
+#117:
+
+- **A symlink loop fails closed as a documented error.** ``Path.resolve()``
+  raises ``RuntimeError`` for ELOOP and ``OSError`` for everything else, so
+  ``resolve`` catches both and every other resolution failure arrives as a
+  ``RunWorkspaceError`` — a 503 on the service path, the runner's structured
+  refusal on the sidecar. Nothing here can escape as an unhandled 500 or a
+  dropped connection.
+- **The run workspace is writable because it is a run workspace.** ``copytree``
+  copies the source's permission bits onto every directory it copies, so the
+  copy used to inherit the fixture's mode. A run workspace's mode is now set
+  deliberately (see ``RUN_WORKSPACE_DIR_MODE`` /
+  ``RUN_WORKSPACE_FILE_MODE``), which is what lets the deployment treat the
+  scenario fixture as genuinely read-only.
 """
 
 from __future__ import annotations
@@ -77,6 +94,39 @@ RUN_WORKSPACES_DIRNAME = ".runs"
 # rather than ``match``: ``$`` also matches just before a trailing newline,
 # which would let ``"run\\n"`` name a directory.
 _SAFE_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+# --- Run-workspace permissions (#173) -------------------------------------
+#
+# A run workspace is writable state: the run writes outputs into it, creates
+# and traverses subdirectories in it, and rewrites baseline files it copied.
+# Those needs are a property of the ROLE the directory plays, so the mode is
+# set here rather than inherited from whatever the fixture happened to carry.
+#
+# ``copytree`` ends each directory with ``copystat``, so a read-only fixture
+# hands the copy a read-only mode and every ``create_run`` then fails — at the
+# marker write, inside a directory nobody can write to. The fix therefore has
+# to cover every copied directory, not just the top one.
+#
+# Directories: a fixed ``0o700``. A run must create, list and traverse
+# everything under its own workspace with no exceptions, so nothing about the
+# baseline should be able to change that.
+#
+# Files: owner read and write are guaranteed and every other bit is kept.
+# Files differ from directories because an execute bit on a copied file is
+# load-bearing: ``stage_workspace_copy`` opens the *staging* copy to world
+# access with ``S_IRWXO`` on directories and ``S_IROTH|S_IWOTH`` on files, so a
+# fixture-shipped script at ``0o700`` reaches the container still executable
+# (``0o706``) while a forced ``0o600`` would arrive as ``0o606`` and stop being
+# runnable. Widening fixes the read-only case without taking away a capability
+# ``run_command`` may legitimately rely on.
+#
+# Nothing here widens: every operator bit is already guaranteed, so the only
+# bits added are ones the fixture denied. The one principal that reads these
+# trees is the gateway uid — the sidecar declares no ``USER`` and runs as root,
+# which mode bits do not constrain, and the container never sees this tree at
+# all, only the staging copy.
+RUN_WORKSPACE_DIR_MODE = 0o700
+RUN_WORKSPACE_FILE_MODE = 0o600
 
 MARKER_VERSION = 1
 
@@ -198,6 +248,45 @@ class RunWorkspaceManager:
             return set()
         return {self.root.name} if self.root.name in names else set()
 
+    def _apply_workspace_modes(self, staging: Path) -> None:
+        """Give the copied tree its own permissions instead of the fixture's (#173).
+
+        ``copytree`` finishes every directory it copies with ``copystat``, so a
+        read-only fixture produces a read-only copy and the marker write below
+        fails on a directory the gateway owns but cannot write to. That surfaced
+        as every ``create_run`` returning 503 "could not initialize an isolated
+        workspace for this run", which blames the run rather than the source
+        tree's mode.
+
+        Runs before the marker write, because that write is the first thing
+        that needs the directory to be writable.
+
+        Symlinks are skipped, as in ``docker_job.make_world_accessible``: chmod
+        follows a link on Linux, so touching one would change the mode of a
+        host target the fixture merely points at. ``followlinks=False`` keeps a
+        symlinked directory out of the descent for the same reason.
+
+        A failure here is an ``OSError`` and is handled by the caller's
+        existing cleanup, exactly as a copy failure is: a workspace whose mode
+        cannot be set is not one this gateway should execute against.
+        """
+        os.chmod(staging, RUN_WORKSPACE_DIR_MODE)
+        for dirpath, dirnames, filenames in os.walk(staging, followlinks=False):
+            for name in dirnames:
+                entry = Path(dirpath) / name
+                if entry.is_symlink():
+                    continue
+                os.chmod(entry, RUN_WORKSPACE_DIR_MODE)
+            for name in filenames:
+                entry = Path(dirpath) / name
+                if entry.is_symlink():
+                    continue
+                # Keep whatever the copy chose beyond the owner bits -- in
+                # particular an execute bit, which `run_command` may need --
+                # and only guarantee owner read/write on top of it.
+                mode = os.stat(entry).st_mode
+                os.chmod(entry, RUN_WORKSPACE_FILE_MODE | (mode & 0o111))
+
     # ---------------- Initialization ----------------
 
     def initialize(self, run_id: str) -> Path:
@@ -207,6 +296,10 @@ class RunWorkspaceManager:
         present) is returned untouched so prior run output survives; a missing
         one is built by copying into a temporary sibling and renaming it into
         place, so a partially copied workspace is never observable.
+
+        The copy's permissions are set to the run workspace's own modes rather
+        than the fixture's (#173), so a read-only baseline still yields a
+        workspace this gateway can write into.
         """
         segment = workspace_segment(run_id)
         target = self.root / segment
@@ -227,6 +320,7 @@ class RunWorkspaceManager:
             shutil.copytree(
                 self.source_root, staging, symlinks=True, ignore=self._copy_ignore
             )
+            self._apply_workspace_modes(staging)
             marker = {
                 "version": MARKER_VERSION,
                 "run_id": segment,
@@ -264,6 +358,13 @@ class RunWorkspaceManager:
         When the row carries no path (a run created before per-run
         workspaces existed) the workspace is initialized lazily and returned
         for the caller to persist.
+
+        A symlink loop on either path fails closed as a
+        :class:`RunWorkspaceError`, not as a ``RuntimeError``: ``resolve()``
+        raises ``RuntimeError`` for ELOOP and ``OSError`` for everything else
+        it can hit, so both are caught here (#172). This matches the four
+        ``resolve()`` guards in ``policy.py``, which already handle both; only
+        ``except OSError`` left a loop escaping as an unhandled 500.
         """
         if stored_path:
             candidate = Path(stored_path)
@@ -271,7 +372,7 @@ class RunWorkspaceManager:
             try:
                 managed = self.root.resolve()
                 resolved = candidate.resolve()
-            except OSError as exc:
+            except (OSError, RuntimeError) as exc:
                 raise RunWorkspaceError(
                     "Stored run workspace could not be resolved."
                 ) from exc
