@@ -11,12 +11,17 @@ import inspect
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from scopewatch.acp_adapter import (
     COVERAGE_STATEMENT,
+    MAX_RELAYED_ERROR_CHARS,
+    MAX_RELAYED_FILE_CHARS,
+    MAX_RELAYED_STREAM_CHARS,
+    RELAY_TRUNCATION_MARKER,
     AcpClientAdapter,
     AcpRpcError,
     HoldConfig,
@@ -563,3 +568,288 @@ def test_acp_adapter_ast_invariants() -> None:
         elif isinstance(node, ast.ImportFrom):
             mod_name = node.module or ""
             assert mod_name not in forbidden_imports, f"Forbidden import from: {mod_name}"
+
+
+# ---------------------------------------------------------------------------
+# Relay bounds (issue #169): the adapter bounds what reaches the agent, and
+# every cut it makes is visible. Clean-room stubbed gateway, no network.
+# ---------------------------------------------------------------------------
+
+
+def _stub_gateway(gateway_body: dict[str, Any]) -> httpx.Client:
+    """Gateway client answering every request with one fixed body."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(201, json=gateway_body))
+    return httpx.Client(transport=transport, base_url="http://gateway.invalid")
+
+
+def _executed_receipt(sanitized_result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "action_request": {"id": "action-169"},
+        "policy_decision": {"outcome": "ALLOW"},
+        "execution_receipt": {
+            "status": "EXECUTED",
+            "error_code": None,
+            "sanitized_result": sanitized_result,
+        },
+    }
+
+
+def _rpc(adapter: AcpClientAdapter, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    return adapter.handle_jsonrpc(
+        {"jsonrpc": "2.0", "id": "t-169", "method": method, "params": params}
+    )
+
+
+def test_terminal_run_success_output_is_bounded_with_a_visible_marker() -> None:
+    """A successful command's stdout is capped at the stream bound, and marked.
+
+    The second-pass reviewer of #154 measured ~200,000 characters relayed
+    verbatim on the success path (#169). The bound alone is not enough: a
+    cut with no marker is a silently wrong answer to the agent, so the
+    marker and the original size must be present in the relayed text.
+    """
+    stdout = "line-1\n" + "x" * 200_000
+    gateway_body = _executed_receipt(
+        {
+            "operation": "run_command",
+            "exit_code": 0,
+            "stdout": stdout,
+            "stderr": "short warning\n",
+        }
+    )
+    with _stub_gateway(gateway_body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"),
+            "terminal/run",
+            {"command": "pytest tests/"},
+        )
+
+    assert "error" not in resp, resp
+    relayed = resp["result"]["stdout"]
+    assert len(relayed) <= MAX_RELAYED_STREAM_CHARS, "success path must be bounded"
+    assert RELAY_TRUNCATION_MARKER in relayed, "truncation must be visible, never silent"
+    assert str(len(stdout)) in relayed, "the marker must name the original size"
+    assert relayed.startswith("line-1\n"), "the head of the output must survive"
+    # A short stream is relayed byte for byte, with no marker invented.
+    assert resp["result"]["stderr"] == "short warning\n"
+    assert RELAY_TRUNCATION_MARKER not in resp["result"]["stderr"]
+    assert resp["result"]["exit_code"] == 0
+    assert resp["result"]["action_id"] == "action-169"
+
+
+def test_terminal_run_success_output_within_the_bound_is_untouched() -> None:
+    """The bound must not alter output that already fits: no clip, no marker."""
+    stdout = "2 passed, 1 skipped in 0.03s\n"
+    gateway_body = _executed_receipt(
+        {"operation": "run_command", "exit_code": 0, "stdout": stdout, "stderr": ""}
+    )
+    with _stub_gateway(gateway_body) as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), "terminal/run", {"command": "pytest tests/"})
+
+    assert "error" not in resp, resp
+    assert resp["result"]["stdout"] == stdout
+    assert RELAY_TRUNCATION_MARKER not in resp["result"]["stdout"]
+    assert len(resp["result"]["stdout"]) <= MAX_RELAYED_STREAM_CHARS
+
+
+def test_terminal_run_non_integer_exit_code_is_reported_as_unknown() -> None:
+    """A malformed receipt cannot wear an integer's key: exit_code is int or unknown.
+
+    Relay bounds are not only about length. ``sanitized["exit_code"]`` used
+    to be relayed verbatim, so a runner bug could hand the agent an
+    arbitrarily long string where a number belongs (#169).
+    """
+    gateway_body = _executed_receipt(
+        {
+            "operation": "run_command",
+            "exit_code": "0" * 5000,
+            "stdout": "done\n",
+            "stderr": "",
+        }
+    )
+    with _stub_gateway(gateway_body) as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), "terminal/run", {"command": "pytest tests/"})
+
+    assert "error" not in resp, resp
+    assert resp["result"]["exit_code"] is None, "unknown, never invented and never relayed raw"
+    # Unaffected fields still relay normally.
+    assert resp["result"]["stdout"] == "done\n"
+
+
+def test_read_text_refuses_oversized_content_with_an_explicit_error() -> None:
+    """File content over the read bound is refused, never clipped (#169).
+
+    A truncated file that looks complete is a correctness hazard for an
+    agent about to edit it: writing the short copy back would destroy the
+    tail of the file. So the relay fails loudly with the size, the limit,
+    and the action ID for joining back to the evidence — and it does not
+    claim the execution failed, because the receipt says it succeeded.
+    """
+    content = "a" * (MAX_RELAYED_FILE_CHARS + 1)
+    gateway_body = _executed_receipt(
+        {"operation": "read_text", "content": content, "truncated": False}
+    )
+    with _stub_gateway(gateway_body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"),
+            "fs/read_text_file",
+            {"path": "outputs/big.txt"},
+        )
+
+    assert "result" not in resp, "a partial file must never be returned as a success"
+    err = resp["error"]
+    assert err["code"] == -32000
+    data = err["data"]
+    assert data["reason_code"] == "READ_RESULT_TOO_LARGE"
+    assert data["char_count"] == len(content)
+    assert data["limit"] == MAX_RELAYED_FILE_CHARS
+    assert data["action_id"] == "action-169"
+    assert data["path"] == "outputs/big.txt"
+    assert "too large to relay" in err["message"]
+    assert str(MAX_RELAYED_FILE_CHARS) in err["message"]
+    assert "content" not in data, "no fragment of the refused file may leak"
+
+
+def test_read_text_at_the_bound_returns_the_whole_file() -> None:
+    """Content that fits exactly at the bound is relayed whole, not refused."""
+    content = "b" * MAX_RELAYED_FILE_CHARS
+    gateway_body = _executed_receipt(
+        {"operation": "read_text", "content": content, "truncated": False}
+    )
+    with _stub_gateway(gateway_body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"),
+            "fs/read_text_file",
+            {"path": "outputs/edge.txt"},
+        )
+
+    assert "error" not in resp, resp
+    assert resp["result"]["content"] == content, "exactly at the bound, byte for byte"
+    assert resp["result"]["truncated"] is False
+
+
+def test_read_text_relays_the_executor_truncation_flag() -> None:
+    """An executor's own preview cut is relayed as a flag, not dropped (#169).
+
+    Reads currently expose a 500-char preview with ``truncated: true``, and
+    the adapter used to hand the agent the preview while discarding the
+    flag, so a 500-char result looked like the whole file.
+    """
+    preview = "first 500 chars of a much larger file"
+    gateway_body = _executed_receipt(
+        {
+            "operation": "read_text",
+            "preview": preview,
+            "byte_count": 100_000,
+            "truncated": True,
+        }
+    )
+    with _stub_gateway(gateway_body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"),
+            "fs/read_text_file",
+            {"path": "outputs/large.txt"},
+        )
+
+    assert "error" not in resp, resp
+    assert resp["result"]["content"] == preview
+    assert resp["result"]["truncated"] is True, "a preview that is not the file must say so"
+
+
+def test_read_text_marks_a_whole_file_as_not_truncated() -> None:
+    """The honest default: a complete read reports truncated false."""
+    gateway_body = _executed_receipt(
+        {"operation": "read_text", "preview": "Invoice: $500", "truncated": False}
+    )
+    with _stub_gateway(gateway_body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"),
+            "fs/read_text_file",
+            {"path": "invoices/approved/vendor_a.txt"},
+        )
+
+    assert "error" not in resp, resp
+    assert resp["result"]["content"] == "Invoice: $500"
+    assert resp["result"]["truncated"] is False
+
+
+def test_failed_command_output_truncation_is_marked() -> None:
+    """The #154 failure path now marks its clip too: no silent cut anywhere."""
+    stderr = "boom\n" + "e" * 50_000
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            201,
+            json={
+                "action_request": {"id": "action-169-fail"},
+                "policy_decision": {"outcome": "ALLOW"},
+                "execution_receipt": {
+                    "status": "FAILED",
+                    "error_code": "NONZERO_EXIT",
+                    "sanitized_result": {
+                        "operation": "run_command",
+                        "exit_code": 2,
+                        "stdout": "",
+                        "stderr": stderr,
+                    },
+                },
+            },
+        )
+    )
+    with httpx.Client(transport=transport, base_url="http://gateway.invalid") as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), "terminal/run", {"command": "pytest tests/"})
+
+    assert "result" not in resp
+    data = resp["error"]["data"]
+    assert len(data["stderr"]) <= MAX_RELAYED_STREAM_CHARS
+    assert RELAY_TRUNCATION_MARKER in data["stderr"], "truncation must be visible, never silent"
+    assert str(len(stderr)) in data["stderr"]
+    assert data["stderr"].startswith("boom\n")
+    assert data["exit_code"] == 2
+
+
+def test_failed_receipt_error_detail_truncation_is_marked() -> None:
+    """The receipt's error detail is bounded by a named constant and marked."""
+    detail = "File not found: " + "y" * 5_000
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            201,
+            json={
+                "action_request": {"id": "action-169-err"},
+                "policy_decision": {"outcome": "ALLOW"},
+                "execution_receipt": {
+                    "status": "FAILED",
+                    "error_code": "EXECUTION_FAILED",
+                    "sanitized_result": {"error": detail},
+                },
+            },
+        )
+    )
+    with httpx.Client(transport=transport, base_url="http://gateway.invalid") as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"),
+            "fs/read_text_file",
+            {"path": "outputs/gone.txt"},
+        )
+
+    assert "result" not in resp
+    relayed_detail = resp["error"]["data"]["error"]
+    assert len(relayed_detail) <= MAX_RELAYED_ERROR_CHARS
+    assert RELAY_TRUNCATION_MARKER in relayed_detail, "truncation must be visible, never silent"
+    assert relayed_detail.startswith("File not found: ")
+
+
+def test_write_text_non_integer_byte_count_is_reported_as_unknown() -> None:
+    """bytes_written is receipt data too: an integer or nothing (#169)."""
+    gateway_body = _executed_receipt(
+        {"operation": "write_text", "bytes_written": "13" * 5000}
+    )
+    with _stub_gateway(gateway_body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"),
+            "fs/write_text_file",
+            {"path": "outputs/out.txt", "content": "Vendor A: 500"},
+        )
+
+    assert "error" not in resp, resp
+    assert resp["result"]["bytes_written"] is None
+    assert resp["result"]["status"] == "success"
