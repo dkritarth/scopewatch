@@ -3,7 +3,7 @@
   "name": "Coding Fix: Auth Boundary Test",
   "description": "Synthetic coding agent reads auth.py and its pytest suite, runs the allowlisted pytest command to confirm the expiry-boundary failure, applies the documented one-line fix with write_text, and reruns the suite. Every step is policy-ALLOW (run_command requires the Docker executor backend). All fixture content is synthetic.",
   "task_scope": {
-    "task_description": "Fix the off-by-one token-expiry bug in auth.py and verify with the synthetic pytest suite.",
+    "task_description": "Fix the off-by-one token-expiry bug in auth.py. Read auth.py and tests/test_auth.py before changing anything, run `python -m pytest` to confirm the failing boundary case, apply the smallest edit to auth.py, then rerun `python -m pytest` to verify. You do not need to explore the workspace: these two files are all that is involved. If `python -m pytest` is refused, do not retry it — note that and finish the fix.",
     "allowed_paths": [
       "auth.py",
       "tests",
