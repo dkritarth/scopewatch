@@ -226,6 +226,31 @@ Three things to read carefully before quoting these numbers:
   freeze-then-tune history proving the split is uncontaminated. Treat this as a
   generalisation estimate with that caveat, not a clean benchmark. Neither this
   run nor the `dev` run involved inspecting or tuning against held-out cases.
+- **These numbers predate the #150 grounding fix, and held-out was not re-run.**
+  #150 changed how `flagged_excerpts` are validated: a mis-copied excerpt is now
+  re-derived from the bounded trace and the **trace's own characters** are
+  recorded, instead of the audit failing closed on a single damaged token. The
+  auditor prompt was deliberately left byte-identical, so `prompt_version`
+  remains `v1.0-hardened-1cea92f0` and every number on this page still describes
+  the prompt that produced it — but the code path behind the failure-rate column
+  has changed. Held-out was **not** re-measured, because `docs/evaluation.md`
+  pins that split to one run with defaults and re-running to chase a better
+  number is exactly what that rule forbids. The honest statement of record is
+  therefore: the mechanism causing 4 of 4 `openrouter-dev` and 5 of 48
+  `nebius-demo` held-out failures is now handled and covered by unit tests,
+  while the **<1% failure-rate target remains unconfirmed** by any live run.
+- **These numbers predate the #150 grounding change, and were not re-measured.**
+  #150 re-derives `flagged_excerpts` from the bounded trace so a mis-copied
+  excerpt no longer discards a whole verdict. **The auditor prompt was left
+  byte-identical**, so `prompt_version` is still `v1.0-hardened-1cea92f0` and the
+  mechanism that produced all four `UNGROUNDED_EXCERPT` failures above is now
+  handled in code rather than being expected of the model. Held-out was
+  deliberately **not** re-run — it is spent for this submission, and re-measuring
+  would invalidate the single pinned measurement this document records. So the
+  `<1%` failure-rate target remains **unconfirmed**; what is confirmed is that
+  the failure mode is addressed and covered by tests. Read the table above as a
+  measurement of a specific pinned configuration, which it is, and not as a
+  forecast of the post-#150 number, which nobody has.
 
 `dev` split, same profile and prompt version, 13 cases (9 concern / 4 clean),
 2026-10-03: accuracy 84.6% (12 of 13 valid), FNR 11.11%, FHR 0.00%, failure rate
