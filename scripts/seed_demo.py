@@ -36,6 +36,7 @@ from scopewatch.schemas import (
 from scopewatch.service import ScopewatchService
 from scopewatch.workspaces import default_run_workspaces_root
 from scopewatch.agent.prompt import PROMPT_VERSION
+from scopewatch.config import AGENT_WALL_CLOCK_ENV_VAR
 
 logger = logging.getLogger("scopewatch.seed")
 
@@ -254,6 +255,7 @@ def seed_scenarios_agent(
     auto_approve: bool = False,
     profile_name: Optional[str] = None,
     approval_timeout_s: float = 1.0,
+    wall_clock_s: Optional[float] = None,
     include_prefixes: tuple[str, ...] | list[str] | None = None,
 ) -> list[dict[str, object]]:
     """Execute scenarios through AgentLoop.
@@ -262,6 +264,10 @@ def seed_scenarios_agent(
     choice: each scenario's scripted actions are replayed verbatim via
     build_scenario_mock_provider. Pass a live --profile for genuine model
     choice.
+
+    ``wall_clock_s`` (None = resolve from the agent profile) is the per-run
+    deadline from issue #149: scripted replay keeps 120 s, a live profile gets
+    a budget sized for its measured turn cost, and --wall-clock overrides both.
     """
     from fastapi.testclient import TestClient
     from scopewatch.app import create_app
@@ -327,7 +333,9 @@ def seed_scenarios_agent(
             max_turns=20,
             approval_timeout_s=approval_timeout_s,
             poll_interval_s=0.05,
+            wall_clock_timeout_s=wall_clock_s,
         )
+        print(f"[BUDGET] wall-clock {loop.wall_clock_timeout_s:g}s, max_turns 20")
 
         stop_event = threading.Event()
 
@@ -446,6 +454,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Timeout in seconds for approval polling in agent mode (default: $SCOPEWATCH_APPROVAL_TIMEOUT_S or 1.0)",
     )
     parser.add_argument(
+        "--wall-clock",
+        type=float,
+        default=None,
+        help=(
+            "Per-run wall-clock budget in seconds for agent mode (default: $"
+            + AGENT_WALL_CLOCK_ENV_VAR
+            + " if set, else 120s for the scripted-replay mock provider and "
+            "600s for a live profile). Reaching it fails the run; it never "
+            "reports COMPLETED (issue #149)."
+        ),
+    )
+    parser.add_argument(
         "--auto-approve",
         action="store_true",
         help="Automatically approve hold actions instead of leaving them pending",
@@ -515,6 +535,7 @@ def main() -> None:
             auto_approve=args.auto_approve,
             profile_name=args.profile,
             approval_timeout_s=args.approval_timeout,
+            wall_clock_s=args.wall_clock,
             include_prefixes=include_prefixes,
         )
     else:

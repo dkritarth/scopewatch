@@ -17,6 +17,7 @@ import httpx
 from scopewatch.agent.loop import AgentLoop, AgentRunResult, sanitize_failure_reason
 from scopewatch.agent.prompt import PROMPT_VERSION
 from scopewatch.agent.tools import GatewayDispatcher
+from scopewatch.config import AGENT_WALL_CLOCK_ENV_VAR
 from scopewatch.models import ReasoningProvenance
 from scopewatch.providers.client import ChatResult, MockProviderClient, ProviderClient
 from scopewatch.providers.loader import get_agent_profile, get_profile
@@ -144,6 +145,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Maximum conversation turns (default: 20)",
     )
     parser.add_argument(
+        "--wall-clock-s",
+        type=float,
+        default=None,
+        help=(
+            "Per-run wall-clock budget in seconds. Default: $"
+            + AGENT_WALL_CLOCK_ENV_VAR
+            + " if set, else 600s for a live profile and 120s for scripted "
+            "replay. Reaching it fails the run (never COMPLETED); see "
+            "docs/operations/judge-runbook.md"
+        ),
+    )
+    parser.add_argument(
         "--db-path",
         type=str,
         default=None,
@@ -223,11 +236,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             provider_client=provider_client,
             dispatcher=dispatcher,
             max_turns=args.max_turns,
+            wall_clock_timeout_s=args.wall_clock_s,
         )
 
         print(f"Starting Scopewatch Agent for Run: {run_id}")
         print(f"Task: {task_scope.get('task_description')}")
         print(f"Profile: {profile.name} (model: {profile.model})")
+        print(f"Wall-clock budget: {loop.wall_clock_timeout_s:g}s")
         print("-" * 60)
 
         result: AgentRunResult = loop.run()

@@ -38,7 +38,30 @@ PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile
 python3 scripts/check_docs_links.py
 ```
 
-Expected (2026-09-28, `mock-rules-auditor`, prompt `v1.0-hardened-1cea92f0`, 48 held-out cases): accuracy 93.8%, FNR 2.78%, FHR 16.67% (misses our <15% target — reported plainly), failure 0.00%. A bounded Nebius capability probe ran on 2026-10-01, but no live accuracy evaluation exists (issue #101).
+Expected (2026-09-28, `mock-rules-auditor`, prompt `v1.0-hardened-1cea92f0`, 48 held-out cases): accuracy 93.8%, FNR 2.78%, FHR 16.67% (misses our <15% target — reported plainly), failure 0.00%.
+
+Live accuracy evaluations now exist for both providers (issue #101). Held-out, one pinned run each, 2026-10-03, integrity-checked:
+
+| Profile | Accuracy | FNR | FHR | Failure | Latency p50 |
+| --- | --- | --- | --- | --- | --- |
+| `openrouter-dev` | 87.5% | 5.56% | **0.00%** | 8.33% | 2,372 ms |
+| `nebius-demo` | 79.2% | 8.33% | **0.00%** | 14.58% | 619 ms |
+
+Both miss the <5% FNR target, and both miss it in the same place: `injection_following`, where the auditor returns `NO_CONCERN` where a concern was expected. No clean action was ever held on either profile. Full record, including the measured latency spread and what was *not* verified, is in `docs/spikes/2026-10-nemotron-provider-verification.md`.
+
+## Running a live agent scenario
+
+```bash
+set -o allexport; source .env; set +o allexport
+export SCOPEWATCH_AGENT_PROFILE=nebius-demo SCOPEWATCH_AUDITOR_PROFILE=nebius-demo
+PYTHONPATH=backend python3 -m scopewatch.agent \
+  --scenario demo/scenarios/01_safe_audit.json \
+  --profile nebius-demo --max-turns 12 --db-path "$(mktemp -d)/run.db"
+```
+
+If a run ends `FAILED` with "Wall clock timeout reached", that is the per-run budget, **not** a policy refusal. The budget follows the model: 120s for scripted replay, 600s for a live profile. Override with `--wall-clock <seconds>` or `SCOPEWATCH_AGENT_WALL_CLOCK_S`. Reaching it fails the run — it never reports `COMPLETED`.
+
+Two caveats before reading a live run as a result. Live models are non-deterministic, so a single run is an anecdote; scenario 01 has been observed completing and scenarios 02-05 intermittently failing, which is issue #136. And a Nebius-backed run records **no provider reasoning trace** — Nebius returns its thinking inside `content`, so the gateway records `UNAVAILABLE`. That is the honest outcome; use `openrouter-dev` if you want a provider trace visible in the evidence panel.
 
 ## Scope honesty (read before judging)
 
