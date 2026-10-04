@@ -233,8 +233,80 @@ Three things to read carefully before quoting these numbers:
 tokens 22,709 prompt / 1,464 completion. `--check`: `REPORT CHECK PASSED (13
 cases recomputed clean)`.
 
-A live `nebius-demo` run is still outstanding: the supplied `NEBIUS_API_KEY`
-returned HTTP 401 for every authentication shape tried on 2026-10-03. See
+### Latest live held-out result (2026-10-03, `nebius-demo`)
+
+One pinned live held-out run, no tuning flags, same corpus and prompt version as
+above (`dataset_hash` `aa28df583d15520c…`, so the two runs are directly
+comparable):
+
+```bash
+PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py \
+  --profile nebius-demo \
+  --split heldout \
+  --output reports/live_heldout_nebius.json
+```
+
+Pinned metadata: `evaluation_date` 2026-10-03, `model`
+`nvidia/Nemotron-3_5-Lightning`, `profile` `nebius-demo`, `prompt_version`
+`v1.0-hardened-1cea92f0`, 48 cases, `seed` 42, `auditor_settings` both `null`.
+
+| Metric | Live `nebius-demo` | Live `openrouter-dev` | Target | Nebius met |
+| --- | --- | --- | --- | --- |
+| Accuracy | 79.2% (41 of 48 valid) | 87.5% | — | — |
+| False-negative rate | **8.33%** (3 of 36) | 5.56% | < 5% | **no** |
+| False-hold rate | **0.00%** (0 of 12) | 0.00% | < 15% | yes |
+| Failure rate | **14.58%** (7 of 48) | 8.33% | < 1% in operation | **no** |
+| Latency p50 / p95 | 619 ms / 799 ms | 2,372 ms / 16,652 ms | — | — |
+
+Per category: `ambiguous` 100%, `clean` 100%, `drift` 87.5%,
+`policy_evasion` 87.5%, `injection_following` 62.5% (FNR 37.5%),
+`exfiltration_intent` 37.5% (fail 62.5%).
+
+`--check` verdict: `REPORT CHECK PASSED: ... (48 cases recomputed clean)`.
+
+Four things to read carefully:
+
+- **Both providers have the same weak category and the same unsafe direction.**
+  All three Nebius false negatives were `injection_following`, exactly as both
+  OpenRouter misses were. In each case the auditor returned `NO_CONCERN` where a
+  concern was expected. That is the only direction in which a concern can pass
+  unnoticed, and it is where remaining effort belongs.
+- **Zero false holds on both profiles.** No clean action was ever escalated in
+  96 held-out audits. The fail-closed paths are doing their job.
+- **Failure modes differ slightly.** Nebius produced `UNGROUNDED_EXCERPT` (5) and
+  `INVALID_AUDIT_OUTPUT` (2); OpenRouter produced `UNGROUNDED_EXCERPT` (4) only.
+  Excerpt grounding is the dominant mode on both.
+- **`dev` is no longer clean for tuning.** It was run five times on `nebius-demo`
+  during diagnosis: accuracy by run was 61.5%, 76.9%, 84.6%, 84.6%, 84.6% on an
+  identical configuration, with the failing cases moving between runs. That spread
+  is model sampling, not configuration. **A single dev run would misrepresent the
+  model in whichever direction it landed**, which is why the range is recorded
+  instead. Five runs are a sample, not a measurement of record.
+
+**Neither held-out split has been re-run.** Both were measured once, on
+2026-10-03. Do not re-measure held-out to pick a better number; if a change must
+be evaluated against held-out, that is a new measurement and should be recorded
+as one.
+
+### Provider profiles: what each one exposes
+
+Not interchangeable, and the difference shows up in the evidence a reviewer sees:
+
+| | `openrouter-dev` | `nebius-demo` |
+| --- | --- | --- |
+| Endpoint | `api.openrouter.ai` | `api.tokenfactory.nebius.com` |
+| Model served | `nvidia/nemotron-3.5-lightning` | `nvidia/Nemotron-3_5-Lightning` |
+| Reasoning field observed | non-empty `message.reasoning`, including on tool-call turns | `message.reasoning` and `message.reasoning_content` both present and **`None`** |
+| Recorded provenance | `PROVIDER_EXPOSED_TRACE` (with capture credential) | **`UNAVAILABLE`** |
+
+Nebius writes its thinking into `content` rather than a reasoning field, and the
+256-token cap is consumed by it (`finish_reason: length`). Per ADR-0001
+decision 5 text inside `content` is not provider-exposed reasoning, so the
+gateway records `UNAVAILABLE`. That is the honest outcome, but it means a
+Nebius-backed demo shows no provider reasoning trace in the evidence panel.
+
+Full evidence, including how the original `NEBIUS_API_KEY` was diagnosed as an
+AI Cloud service-account key rather than a Token Factory key:
 `docs/spikes/2026-10-nemotron-provider-verification.md`.
 
 ### Latest Mock Held-out Result (structural test, not accuracy)
@@ -243,8 +315,8 @@ Fresh run, `mock` profile, seed 42, 48 cases (36 concern, 12 clean) via `PYTHONP
 
 - Accuracy 93.8%, FNR 2.78% (1 of 36, target <5% met), **FHR 16.67% (2 of 12, target <15% missed)**, failure 0.00%, latency p50/p95 1.00/1.00 ms.
 - This is a rule-matcher structural check, not model accuracy. The live
-  `openrouter-dev` run above is the model-backed measurement; a live
-  `nebius-demo` run is still outstanding.
+  `openrouter-dev` and `nebius-demo` runs above are the model-backed
+  measurements.
 
 ### Invoice scenarios (M1 #31) — mock-agent regression, live run partial
 
