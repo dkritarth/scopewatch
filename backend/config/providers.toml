@@ -41,6 +41,11 @@ base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 timeout_s = 60.0
 max_retries = 3
+# Measured 2026-10-03, 20 isolated tool-calling turns: p50 11.5 s, p95 14.4 s,
+# max 14.6 s, plus one ~39 s turn observed mid-run. Sizing hint for the agent
+# wall-clock budget (issue #149): the loop warns when the budget buys fewer
+# than 4 turns at this cost. A measured sample, not a guarantee.
+agent_turn_plan_s = 14.4
 
 # How to request reasoning from this provider (forwarded as extra request params).
 # Observed 2026-10-03: this provider returns the trace in message.reasoning

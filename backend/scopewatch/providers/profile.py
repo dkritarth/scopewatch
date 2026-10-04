@@ -16,6 +16,12 @@ class ProviderProfile(BaseModel):
     reasoning_param: Optional[dict[str, Any]] = Field(default=None, alias="reasoning")
     timeout_s: float = Field(default=30.0, gt=0)
     max_retries: int = Field(default=3, ge=0)
+    #: Measured cost of one tool-calling agent turn against this profile, in
+    #: seconds. A planning hint for sizing the agent wall-clock budget
+    #: (issue #149), not a promise: it is whatever the live samples showed on
+    #: the date recorded next to it in providers.toml. ``None`` means "not
+    #: measured", and the agent loop skips the budget-size check.
+    agent_turn_plan_s: Optional[float] = Field(default=None, gt=0)
     extra_body: dict[str, Any] = Field(default_factory=dict)
     auditor_body: dict[str, Any] = Field(default_factory=dict)
 

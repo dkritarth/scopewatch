@@ -41,10 +41,16 @@ from scopewatch.agent.tools import (
     convert_tool_call_to_submit_request,
     get_gateway_tools,
 )
+from scopewatch.config import AGENT_WALL_CLOCK_ENV_VAR, agent_wall_clock_timeout_s
 from scopewatch.models import ApprovalStatus, PolicyOutcome, ReasoningProvenance
 from scopewatch.providers.client import ChatResult, ProviderClient
 from scopewatch.providers.loader import get_agent_profile
 from scopewatch.schemas import ActionResponse, Run
+
+#: How many measured-p95 turns a wall-clock budget should be able to buy.
+#: Fewer than this and a run is very likely to be cut off mid-scenario, which
+#: looks like a policy failure but is only a mis-sized deadline (issue #149).
+MIN_TURNS_AT_MEASURED_P95 = 4
 
 
 class AgentRunResult(BaseModel):
@@ -88,7 +94,7 @@ class AgentLoop:
         transport: Optional[httpx.BaseTransport] = None,
         max_turns: int = 20,
         max_tool_calls: int = 50,
-        wall_clock_timeout_s: float = 120.0,
+        wall_clock_timeout_s: Optional[float] = None,
         approval_timeout_s: float = 30.0,
         poll_interval_s: float = 0.5,
         requested_by: str = "scopewatch-agent",
@@ -97,7 +103,6 @@ class AgentLoop:
         self.run_id = run_id
         self.max_turns = max_turns
         self.max_tool_calls = max_tool_calls
-        self.wall_clock_timeout_s = wall_clock_timeout_s
         self.approval_timeout_s = approval_timeout_s
         self.poll_interval_s = poll_interval_s
         self.requested_by = requested_by
@@ -128,6 +133,73 @@ class AgentLoop:
         else:
             profile = get_agent_profile()
             self.provider_client = ProviderClient(profile)
+
+        self.wall_clock_timeout_s = self._resolve_wall_clock(wall_clock_timeout_s)
+        self._warn_if_budget_below_measured_turns()
+
+    def _agent_profile_identity(self) -> tuple[str, str]:
+        """(name, base_url) of the profile this loop drives, or blanks."""
+        profile = getattr(self.provider_client, "profile", None)
+        return (
+            str(getattr(profile, "name", "") or ""),
+            str(getattr(profile, "base_url", "") or ""),
+        )
+
+    def _resolve_wall_clock(self, explicit: Optional[float]) -> float:
+        """Resolve the per-run wall-clock budget.
+
+        An explicit value (CLI flag, ``seed_demo.py --wall-clock``) always
+        wins. Otherwise the budget follows the agent model: scripted replay
+        keeps the short historical budget and a live profile gets the budget
+        sized for its measured turn cost (issue #149). ``SCOPEWATCH_AGENT_WALL_CLOCK_S``
+        overrides both. The deadline logic itself is unchanged, so a run that
+        finishes past its budget still reports FAILED, never COMPLETED (#125).
+        """
+        name, base_url = self._agent_profile_identity()
+        resolved = (
+            float(explicit)
+            if explicit is not None
+            else agent_wall_clock_timeout_s(name, base_url)
+        )
+        source = (
+            "explicit"
+            if explicit is not None
+            else f"{AGENT_WALL_CLOCK_ENV_VAR}/profile default"
+        )
+        logger.info(
+            "Agent run %s wall-clock budget: %.1fs (%s, profile '%s')",
+            self.run_id,
+            resolved,
+            source,
+            name or "unknown",
+        )
+        return resolved
+
+    def _warn_if_budget_below_measured_turns(self) -> None:
+        """Warn when the budget cannot buy a few measured-cost turns.
+
+        A truncated run reports FAILED with a wall-clock reason, which reads
+        like a policy failure. This makes a mis-sized budget visible up front
+        instead of silently truncating the scenario (issue #149). It never
+        changes behaviour: the budget stays whatever the operator resolved.
+        """
+        profile = getattr(self.provider_client, "profile", None)
+        turn_plan = getattr(profile, "agent_turn_plan_s", None)
+        if not isinstance(turn_plan, (int, float)) or turn_plan <= 0:
+            return
+        turns_that_fit = self.wall_clock_timeout_s / float(turn_plan)
+        if turns_that_fit < MIN_TURNS_AT_MEASURED_P95:
+            logger.warning(
+                "Agent wall-clock budget %.1fs buys only ~%.1f turns at the "
+                "measured %.1fs per turn for profile '%s'; a run will likely "
+                "be truncated before it reaches a policy outcome. Raise %s or "
+                "pass --wall-clock.",
+                self.wall_clock_timeout_s,
+                turns_that_fit,
+                float(turn_plan),
+                getattr(profile, "name", "unknown"),
+                AGENT_WALL_CLOCK_ENV_VAR,
+            )
 
     def run(self) -> AgentRunResult:
         """Run the model-driven agent loop to completion or failure."""
