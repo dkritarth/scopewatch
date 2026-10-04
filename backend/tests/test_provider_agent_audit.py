@@ -36,6 +36,7 @@ from scopewatch.providers.client import (
     extract_reasoning,
 )
 from scopewatch.providers.errors import ProviderError, ProviderErrorCode
+from tests.scripted_clock import ScriptedClock
 from scopewatch.providers.loader import (
     get_agent_profile,
     get_api_key_for_profile,
@@ -509,6 +510,7 @@ def test_m1_max_tool_calls_failed(tmp_path: Path) -> None:
 def test_m1_wall_clock_failed(tmp_path: Path) -> None:
     client, _ = _isolated_client(tmp_path)
     run_id = _create_run(client)
+    clock = ScriptedClock()
     mock = MockProviderClient()
     mock.enqueue(ChatResult(
         content="slow",
@@ -518,9 +520,13 @@ def test_m1_wall_clock_failed(tmp_path: Path) -> None:
         model="mm", profile="mock"))
     loop = AgentLoop(run_id=run_id, provider_client=mock,
                      dispatcher=GatewayDispatcher(base_url="http://t", http_client=client),
-                     wall_clock_timeout_s=0.0)
+                     wall_clock_timeout_s=0.0,
+                     time_fn=clock, sleep_fn=clock.sleep)
     result = loop.run()
     assert result.status == "FAILED"
+    # A budget of zero is expired from the first check: same outcome, driven
+    # by the injected clock rather than by whatever the real clock reads (#159).
+    assert "Wall clock timeout reached" in (result.error or "")
 
 
 def test_m1_tool_definitions_gateway_mapping() -> None:
