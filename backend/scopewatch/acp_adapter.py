@@ -28,6 +28,11 @@ Design rules (following AGENTS.md and ADR-0001 invariants):
   the adapter never claims or forwards a raw provider trace.
 * Coverage: See COVERAGE_STATEMENT. Mediation applies strictly to operations
   submitted through the negotiated ACP capabilities.
+* Relay bounds (#154, #169): whatever a receipt relays, the adapter decides
+  how much reaches the agent. Command streams and receipt error details are
+  clipped with a visible RELAY_TRUNCATION_MARKER (never silently), file
+  content is refused above MAX_RELAYED_FILE_CHARS rather than clipped, and
+  directory listings are capped by count and name length.
 """
 
 from __future__ import annotations
@@ -42,13 +47,80 @@ from scopewatch.models import ReasoningProvenance
 
 GATEWAY_TOOL = "workspace"
 
-# Bounds on executor-supplied data relayed back to the agent. Command output
-# is what a terminal caller would legitimately see; directory listings are not,
-# and an unbounded relay there would hand the agent an arbitrarily large
-# payload straight out of the workspace.
+# Bounds on executor-supplied data relayed back to the agent (#154, #169).
+# The adapter is the boundary that decides what reaches the agent, so the
+# bounds live here rather than depending on whichever executor happened to
+# cap its own output (docker_job clips streams at 64 KiB, reads expose a
+# 500-char preview, executor_remote relays runner results verbatim).
+#
+# This is a documented per-field set rather than one shared number, because
+# the three kinds of data fail differently:
+#
+# * Streams (stdout/stderr, on the success and the failure path) and receipt
+#   error details are clipped to a prefix, because that is what a terminal
+#   caller would see, and a cut is only honest if it is marked: every clip
+#   ends in RELAY_TRUNCATION_MARKER, so truncation is never silent (#169).
+# * File content is never clipped. A short read that looks complete invites
+#   the agent to write it back and destroy the tail of the file, so a read
+#   whose content exceeds MAX_RELAYED_FILE_CHARS is refused with an error
+#   that names the size and the limit instead of being silently shortened.
+# * Directory listings are capped by count and per-name length, because a
+#   listing is an index, not content (#154).
+#
+# The stream bound (2000) is reused unchanged from #154 so a command result
+# is relayed identically whether it succeeded or failed; the error-detail
+# bound (500) is the same value #123 already applied, now named. The file
+# bound (64 KiB) mirrors the docker runner's own per-stream cap, so no
+# executor in this repository trips it today, and it sits below the
+# gateway's MAX_READ_BYTES (256 KiB) so the adapter refuses before the
+# gateway would.
 MAX_RELAYED_STREAM_CHARS = 2000
+MAX_RELAYED_ERROR_CHARS = 500
+MAX_RELAYED_FILE_CHARS = 64 * 1024
 MAX_RELAYED_ENTRIES = 500
 MAX_RELAYED_NAME_CHARS = 512
+
+# Marks every adapter-side clip so a shortened relay is always visible to
+# the caller (#169). Reads are refused rather than marked, because a marker
+# inside file content would be written back into the file by the agent.
+RELAY_TRUNCATION_MARKER = "...[truncated by scopewatch relay bound]"
+
+
+def _bounded_text(value: Any, limit: int) -> str:
+    """Bound relayed executor text to ``limit`` characters, marking any cut.
+
+    The result is never longer than ``limit``, and when a cut happened it
+    ends with ``RELAY_TRUNCATION_MARKER`` naming the original size and how
+    much was relayed, so the truncation is visible rather than silent.
+    A value that already fits is returned byte-for-byte unchanged.
+    ``None`` relays as empty output (not the string "None"); any other
+    non-text value is coerced to text first, so a malformed receipt cannot
+    smuggle an unbounded object past the bound.
+    """
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else str(value)
+    if len(text) <= limit:
+        return text
+    marker = f"\n{RELAY_TRUNCATION_MARKER}: {len(text)} chars total, {limit} relayed\n"
+    kept = limit - len(marker)
+    if kept <= 0:
+        # Pathological limit smaller than the marker itself: the marker is
+        # the honest content, so it wins over the head of the text.
+        return marker[:limit]
+    return text[:kept] + marker
+
+
+def _receipt_int(value: Any) -> Optional[int]:
+    """Relay an executor-reported integer, or ``None`` when it is not one.
+
+    A receipt field that is supposed to be a count or an exit status is
+    relayed only as an integer: a malformed runner could otherwise hand the
+    agent an arbitrarily long string wearing an integer's key (#169).
+    ``type(...) is int`` rather than ``isinstance`` on purpose, so a ``bool``
+    is excluded too — a flag is not an exit code.
+    """
+    return value if type(value) is int else None
 
 
 def _bounded_entries(entries: Any) -> list[Any]:
@@ -304,10 +376,44 @@ class AcpClientAdapter:
         )
         receipt = action_resp.get("execution_receipt") or {}
         sanitized = receipt.get("sanitized_result") or {}
-        content = sanitized.get("content") or sanitized.get("preview", "")
+        # #169: content is relayed whole or refused, never clipped. No
+        # executor in this repository returns "content" today (reads expose
+        # a preview), but executor_remote passes runner results through
+        # verbatim, so the adapter cannot assume the key stays small.
+        content = sanitized.get("content")
+        if content is None:
+            content = sanitized.get("preview")
+        if content is None:
+            content = ""
+        elif not isinstance(content, str):
+            content = str(content)
+        if len(content) > MAX_RELAYED_FILE_CHARS:
+            # Refuse, not truncate: partial content that looks complete
+            # would be written back by an agent about to edit the file.
+            # The receipt really did EXECUTED, so the error carries the
+            # action ID (evidence join) plus the size and the limit; it
+            # never claims the execution failed.
+            raise AcpRpcError(
+                code=-32000,
+                message=(
+                    f"File content too large to relay: {len(content)} characters "
+                    f"exceeds the {MAX_RELAYED_FILE_CHARS}-character read bound"
+                ),
+                data={
+                    "action_id": (action_resp.get("action_request") or {}).get("id"),
+                    "reason_code": "READ_RESULT_TOO_LARGE",
+                    "char_count": len(content),
+                    "limit": MAX_RELAYED_FILE_CHARS,
+                    "path": path,
+                },
+            )
         return {
             "path": path,
             "content": content,
+            # An executor that already cut the file says so; the flag is
+            # relayed instead of being dropped, so a preview that is not the
+            # whole file never looks complete (#169).
+            "truncated": bool(sanitized.get("truncated", False)),
             "action_id": (action_resp.get("action_request") or {}).get("id"),
         }
 
@@ -329,10 +435,13 @@ class AcpClientAdapter:
         sanitized = receipt.get("sanitized_result") or {}
         # #123: an EXECUTED receipt is guaranteed by _require_executed_receipt,
         # so "success" is earned. The byte count is still reported only when
-        # the executor measured it, never inferred from the request.
+        # the executor measured it, never inferred from the request, and only
+        # when it really is an integer: a malformed receipt would otherwise
+        # relay an arbitrarily long string as a byte count (#169).
+        bytes_written = _receipt_int(sanitized.get("bytes_written"))
         return {
             "path": path,
-            "bytes_written": sanitized.get("bytes_written"),
+            "bytes_written": bytes_written,
             "action_id": (action_resp.get("action_request") or {}).get("id"),
             "status": "success",
         }
@@ -399,11 +508,17 @@ class AcpClientAdapter:
         # #123: an EXECUTED receipt is guaranteed here, so exit_code and the
         # output streams come from the executor. A missing exit_code is
         # reported as unknown rather than invented as 0.
+        # #169: the success path is bounded exactly like the failure path —
+        # same stream bound, same visible marker — so a verbose command
+        # cannot relay an arbitrarily large payload to the agent, and an
+        # exit_code that is not an integer is malformed receipt data rather
+        # than something to relay verbatim.
+        exit_code = _receipt_int(sanitized.get("exit_code"))
         return {
             "command": command,
-            "exit_code": sanitized.get("exit_code"),
-            "stdout": sanitized.get("stdout", ""),
-            "stderr": sanitized.get("stderr", ""),
+            "exit_code": exit_code,
+            "stdout": _bounded_text(sanitized.get("stdout"), MAX_RELAYED_STREAM_CHARS),
+            "stderr": _bounded_text(sanitized.get("stderr"), MAX_RELAYED_STREAM_CHARS),
             "action_id": (action_resp.get("action_request") or {}).get("id"),
         }
 
@@ -671,15 +786,16 @@ class AcpClientAdapter:
 
         detail = sanitized.get("error")
         if isinstance(detail, str) and detail:
-            error_data["error"] = detail[:500]
+            # Clipped with a visible marker (#169), never silently shortened.
+            error_data["error"] = _bounded_text(detail, MAX_RELAYED_ERROR_CHARS)
         # run_command failures carry the command's own output, which a terminal
-        # caller would legitimately see. Bounded and taken from the sanitized
-        # receipt only.
+        # caller would legitimately see. Bounded and marked by the same helper
+        # the success path uses (#169), from the sanitized receipt only.
         for key in ("exit_code", "stdout", "stderr"):
             value = sanitized.get(key)
             if isinstance(value, str):
-                error_data[key] = value[:MAX_RELAYED_STREAM_CHARS]
-            elif isinstance(value, int):
+                error_data[key] = _bounded_text(value, MAX_RELAYED_STREAM_CHARS)
+            elif type(value) is int:  # same integer rule as the success path (#169)
                 error_data[key] = value
 
         raise AcpRpcError(
