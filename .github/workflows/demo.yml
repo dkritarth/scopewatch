@@ -1,0 +1,30 @@
+name: Demo and deploy tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+      - name: Check backend lock file matches requirements.txt
+        run: |
+          python -m pip install "uv==0.12.18"
+          cp backend/requirements.lock /tmp/backend-requirements.lock
+          uv pip compile backend/requirements.txt --generate-hashes --python-version 3.12 -o /tmp/backend-requirements.lock --custom-compile-command "uv pip compile backend/requirements.txt --generate-hashes --python-version 3.12 -o backend/requirements.lock"
+          cmp -s backend/requirements.lock /tmp/backend-requirements.lock || (echo "backend/requirements.lock is inconsistent with backend/requirements.txt."; exit 1)
+      - run: python -m pip install --require-hashes -r backend/requirements.lock
+      - run: python -m pytest deploy -q
+      - run: ./scripts/verify_scenario.sh

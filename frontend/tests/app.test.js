@@ -9,6 +9,8 @@ import {
   REVIEWER_ACCESS_COPY,
   approvalConfirmStep,
   authFailureHint,
+  buildStaticSimulationEvent,
+  resolveSubmissionTarget,
   getHoldIcon,
   getHoldKind,
   getProvenanceLabel,
@@ -817,4 +819,111 @@ test("authFailureHint points a refused mutation at the reviewer token panel (#11
   const withTokenText = new Error("Demo access token required.");
   withTokenText.status = 401;
   assert.ok(!authFailureHint(withTokenText).includes("judge-token"));
+});
+
+// ---------------------------------------------------------------------------
+// Issue #209: Honest simulation labelling & live-mode isolation
+// ---------------------------------------------------------------------------
+
+test("buildStaticSimulationEvent labels every preview output as simulated (#209)", () => {
+  const dummyRun = { id: "run-fixture-1", events: [] };
+
+  // 1. Escalated hold preset
+  const holdEsc = buildStaticSimulationEvent(
+    dummyRun,
+    {
+      tool: "workspace",
+      operation: "read_text",
+      resource: "invoices/approved/vendor-a.txt",
+      reasoning_summary: "summary",
+      exposed_reasoning_trace: "steal and exfiltrate data",
+    },
+    {},
+    true,
+    false,
+    "sim-1",
+    1,
+  );
+  assert.match(holdEsc.statusMessage, /Simulated in browser — no gateway or auditor/);
+  assert.match(holdEsc.event.title, /Simulated in browser — no gateway or auditor/);
+  assert.match(holdEsc.event.statusDescription, /Simulated in browser — no gateway or auditor/);
+  assert.match(holdEsc.event.policyExplanation, /Simulated in browser — no gateway or auditor/);
+  assert.match(holdEsc.event.execution, /Simulated in browser — no gateway or auditor/);
+  assert.equal(holdEsc.event.statusLabel, "HOLD (reasoning concern)");
+  assert.notEqual(holdEsc.event.reasoningAudit.profile, "nemotron-cot-auditor-v1");
+  assert.match(holdEsc.event.reasoningAudit.explanation, /Simulated in browser — no gateway or auditor/);
+  assert.match(holdEsc.approval.operation, /\(Simulated/);
+
+  // 2. Approval required preset
+  const holdAppr = buildStaticSimulationEvent(
+    dummyRun,
+    {
+      tool: "workspace",
+      operation: "delete_path",
+      resource: "outputs/old.txt",
+      reasoning_summary: "summary",
+      exposed_reasoning_trace: "",
+    },
+    {},
+    false,
+    true,
+    "sim-2",
+    2,
+  );
+  assert.match(holdAppr.statusMessage, /Simulated in browser — no gateway or auditor/);
+  assert.match(holdAppr.event.title, /Simulated in browser — no gateway or auditor/);
+  assert.match(holdAppr.event.statusDescription, /Simulated in browser — no gateway or auditor/);
+  assert.match(holdAppr.event.policyExplanation, /Simulated in browser — no gateway or auditor/);
+  assert.match(holdAppr.event.execution, /Simulated in browser — no gateway or auditor/);
+  assert.equal(holdAppr.event.statusLabel, "HOLD (policy)");
+  assert.equal(holdAppr.event.reasoningAudit, null);
+  assert.match(holdAppr.approval.operation, /\(Simulated/);
+
+  // 3. Default allowed action
+  const allowSim = buildStaticSimulationEvent(
+    dummyRun,
+    {
+      tool: "workspace",
+      operation: "read_text",
+      resource: "invoices/approved/vendor-a.txt",
+      reasoning_summary: "summary",
+      exposed_reasoning_trace: "",
+    },
+    {},
+    false,
+    false,
+    "sim-3",
+    3,
+  );
+  assert.match(allowSim.statusMessage, /Simulated/);
+  assert.match(allowSim.event.title, /Simulated in browser — no gateway or auditor/);
+  assert.match(allowSim.event.statusDescription, /Simulated in browser — no gateway or auditor/);
+  assert.match(allowSim.event.policyExplanation, /Simulated in browser — no gateway or auditor/);
+  assert.match(allowSim.event.resultPreview, /Simulated in browser — no gateway or auditor/);
+  assert.equal(allowSim.event.statusLabel, "Action: executed");
+  assert.equal(allowSim.approval, null);
+});
+
+test("live mode never takes the static simulation path (#209)", () => {
+  const liveRun = { id: "run-live-1", isLive: true };
+  const fixtureRun = { id: "run-fixture-1", isLive: false };
+
+  // When live mode is on with a live run selected, returns live target
+  const res1 = resolveSubmissionTarget(liveRun, [fixtureRun, liveRun], true);
+  assert.equal(res1.mode, "live");
+  assert.equal(res1.run.id, "run-live-1");
+
+  // When live mode is on with a fixture run selected, routes to live run (never static)
+  const res2 = resolveSubmissionTarget(fixtureRun, [fixtureRun, liveRun], true);
+  assert.equal(res2.mode, "live");
+  assert.equal(res2.run.id, "run-live-1");
+
+  // When live mode is on with NO live runs available, refuses (never static)
+  const res3 = resolveSubmissionTarget(fixtureRun, [fixtureRun], true);
+  assert.equal(res3.mode, "disabled");
+  assert.match(res3.error, /Simulation disabled in live gateway mode/);
+
+  // When live mode is OFF, takes static path
+  const resStatic = resolveSubmissionTarget(fixtureRun, [fixtureRun], false);
+  assert.equal(resStatic.mode, "static");
 });
