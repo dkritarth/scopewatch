@@ -14,7 +14,15 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from scopewatch import __version__
-from scopewatch.config import DB_PATH, DEMO_REVIEWER_ID, WORKSPACE_ROOT
+from scopewatch.config import (
+    API_KEY,
+    CORS_ALLOW_CREDENTIALS,
+    CORS_ALLOW_ORIGINS,
+    DB_PATH,
+    DEMO_REVIEWER_ID,
+    WORKSPACE_ROOT,
+    is_demo_mode,
+)
 from scopewatch.db import init_db
 from scopewatch.demo_guards import (
     DemoGuardConfig,
@@ -105,13 +113,40 @@ capture_token: Optional[str] = None,
         lifespan=lifespan,
     )
 
+    # CORS configuration (issue #185): configurable origins for production
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
+        allow_origins=CORS_ALLOW_ORIGINS,
+        allow_credentials=CORS_ALLOW_CREDENTIALS,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
+
+    # Security headers middleware (issue #185)
+    @app.middleware("http")
+    async def security_headers_middleware(request: Request, call_next):
+        response = await call_next(request)
+        # HSTS - only in production (when not in demo mode)
+        if not is_demo_mode():
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        # CSP - restrict sources
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "font-src 'self'; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
+        )
+        # Other security headers
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        return response
 
     # Register standardized error handlers
     app.add_exception_handler(ScopewatchAPIError, scopewatch_api_error_handler)  # type: ignore
@@ -123,6 +158,24 @@ capture_token: Optional[str] = None,
     # middleware and the service so rate/budget state never diverges.
     guards = DemoGuardPolicy(demo_config if demo_config is not None else DemoGuardConfig.from_env())
     app.state.guards = guards
+
+    # API Key authentication for production (issue #185): when not in demo mode,
+    # require X-API-Key header on mutating /api/* endpoints
+    @app.middleware("http")
+    async def api_key_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+        """Require API key on mutating /api/* when not in demo mode.
+
+        Health, dashboard reads, and static assets stay public.
+        Demo mode uses its own token (x-demo-token) instead.
+        """
+        if not guards.config.enabled and is_mutating_api_call(request.method, request.url.path):
+            provided_key = request.headers.get("x-api-key")
+            if not provided_key or provided_key != API_KEY:
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": "api_key_required", "message": "API key required. Send it as the X-API-Key header."},
+                )
+        return await call_next(request)
 
     @app.middleware("http")
     async def demo_token_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
