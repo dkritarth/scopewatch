@@ -6,7 +6,7 @@ import os
 import time
 from typing import Any, NamedTuple, Optional
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from scopewatch.budget_store import is_mock_profile, record_completion
 from scopewatch.providers.errors import ProviderError, ProviderErrorCode
@@ -110,6 +110,31 @@ def _normalize_detail(detail: Any) -> ReasoningExtraction:
         return ReasoningExtraction(summary, "AGENT_AUTHORED_SUMMARY", "reasoning.summary")
     # `content` is deliberately never mined: message content is not reasoning.
     return ReasoningExtraction(None, "UNAVAILABLE", None)
+
+
+def _normalize_content(content: Any) -> Optional[str]:
+    """Normalize a message ``content`` field into text or ``None``.
+
+    A string is returned unchanged and JSON ``null`` stays ``None``. A list of
+    content parts is a legitimate OpenAI-compatible shape: each part's string
+    ``text`` field is joined, and an empty list normalizes to empty text.
+    Anything else is ``None``; the caller must then fail closed, because an
+    unexpected shape must never surface as a caller-visible ``ValidationError``
+    whose text embeds model output (issue #199).
+    """
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return None
 
 
 def _best(extractions: list[ReasoningExtraction]) -> ReasoningExtraction:
@@ -441,23 +466,61 @@ class ProviderClient:
                 f"Provider '{self.profile.name}' returned invalid message format.",
             )
 
-        content = message.get("content")
-        tool_calls = message.get("tool_calls") or []
-        extraction = extract_reasoning(message)
-        usage = data.get("usage") or {}
-        model = data.get("model") or self.profile.model
+        content_raw = message.get("content")
+        content = _normalize_content(content_raw)
+        if content is None and content_raw is not None:
+            # Present but neither a string nor a list of content parts.
+            raise ProviderError(
+                ProviderErrorCode.MALFORMED_RESPONSE,
+                f"Provider '{self.profile.name}' returned unsupported message content shape.",
+            )
 
-        return ChatResult(
-            content=content,
-            tool_calls=tool_calls,
-            reasoning_text=extraction.text,
-            reasoning_provenance=extraction.provenance,
-            reasoning_detail_type=extraction.detail_type,
-            usage=usage,
-            latency_ms=latency_ms,
-            model=model,
-            profile=self.profile.name,
-        )
+        tool_calls = message.get("tool_calls") or []
+        if not isinstance(tool_calls, list) or not all(
+            isinstance(tc, dict) for tc in tool_calls
+        ):
+            raise ProviderError(
+                ProviderErrorCode.MALFORMED_RESPONSE,
+                f"Provider '{self.profile.name}' returned invalid tool_calls shape.",
+            )
+
+        extraction = extract_reasoning(message)
+
+        usage = data.get("usage")
+        if usage is None:
+            usage = {}
+        elif not isinstance(usage, dict):
+            raise ProviderError(
+                ProviderErrorCode.MALFORMED_RESPONSE,
+                f"Provider '{self.profile.name}' returned invalid usage shape.",
+            )
+
+        model = data.get("model")
+        if not isinstance(model, str) or not model:
+            # A model field that is missing or not text is reported as the
+            # requested model rather than echoing an unexpected provider value.
+            model = self.profile.model
+
+        try:
+            return ChatResult(
+                content=content,
+                tool_calls=tool_calls,
+                reasoning_text=extraction.text,
+                reasoning_provenance=extraction.provenance,
+                reasoning_detail_type=extraction.detail_type,
+                usage=usage,
+                latency_ms=latency_ms,
+                model=model,
+                profile=self.profile.name,
+            )
+        except ValidationError:
+            # Defence in depth: any residual shape mismatch fails closed with a
+            # sanitized error, so model output never reaches evidence inside a
+            # pydantic ValidationError (issue #199).
+            raise ProviderError(
+                ProviderErrorCode.MALFORMED_RESPONSE,
+                f"Provider '{self.profile.name}' returned a chat response with unexpected field types.",
+            ) from None
 
 
 class MockProviderClient:

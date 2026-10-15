@@ -769,6 +769,124 @@ def test_sanitized_error_on_200_envelope_error() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 6b. Unexpected response shapes fail closed, sanitized (#199)
+#
+# A list-of-parts content field is a legitimate OpenAI-compatible shape and is
+# joined. Any other unexpected shape (non-list tool_calls, non-dict usage,
+# non-string content) must raise ProviderError(MALFORMED_RESPONSE) rather than
+# a pydantic ValidationError whose text embeds model output.
+# ---------------------------------------------------------------------------
+
+def _client_returning_full(data: dict[str, Any]) -> ProviderClient:
+    """Provider client whose transport returns one raw response ``data`` dict."""
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=data)
+
+    return ProviderClient(
+        profile=ProviderProfile(
+            name="test-shape",
+            base_url="https://api.example.com",
+            model="test-model",
+            max_retries=0,
+        ),
+        api_key="synthetic-test-key",
+        transport=httpx.MockTransport(mock_handler),
+    )
+
+
+def _response_with_message(message: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "model": "test-model",
+        "choices": [{"message": message, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
+
+
+def test_list_of_parts_content_is_accepted_and_joined() -> None:
+    """A list-of-parts content field is normalized instead of crashing (#199)."""
+    client = _client_returning_full(
+        _response_with_message(
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "First part."},
+                    {"type": "text", "text": "Second part."},
+                ],
+            }
+        )
+    )
+
+    result = client.complete([{"role": "user", "content": "synthetic"}])
+
+    assert result.content == "First part.\nSecond part."
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"role": "assistant", "content": {"unexpected": "object"}},
+        {"role": "assistant", "content": 42},
+        {"role": "assistant", "content": "ok", "tool_calls": "not-a-list"},
+        {"role": "assistant", "content": "ok", "tool_calls": [1, 2]},
+    ],
+    ids=["content-object", "content-int", "tool-calls-string", "tool-calls-non-dict"],
+)
+def test_unexpected_message_shapes_raise_malformed_response(
+    message: dict[str, Any],
+) -> None:
+    """Unexpected message shapes fail closed with a sanitized code (#199)."""
+    client = _client_returning_full(_response_with_message(message))
+
+    with pytest.raises(ProviderError) as exc_info:
+        client.complete([{"role": "user", "content": "synthetic"}])
+
+    assert exc_info.value.code == ProviderErrorCode.MALFORMED_RESPONSE
+
+
+def test_non_dict_usage_raises_malformed_response() -> None:
+    """A non-dict usage field fails closed instead of a ValidationError (#199)."""
+    data = _response_with_message({"role": "assistant", "content": "ok"})
+    data["usage"] = "not-a-dict"
+    client = _client_returning_full(data)
+
+    with pytest.raises(ProviderError) as exc_info:
+        client.complete([{"role": "user", "content": "synthetic"}])
+
+    assert exc_info.value.code == ProviderErrorCode.MALFORMED_RESPONSE
+
+
+def test_malformed_response_error_never_echoes_model_output() -> None:
+    """The failure reason must not embed provider output (issue #199 repro)."""
+    synthetic_key_shaped = "sk-synthetic-key-shaped-string-abcdef123456"
+    client = _client_returning_full(
+        _response_with_message(
+            {
+                "role": "assistant",
+                # Pre-fix this unexpected shape raised a pydantic
+                # ValidationError whose text embedded the value verbatim.
+                "content": {"text": synthetic_key_shaped},
+            }
+        )
+    )
+
+    with pytest.raises(ProviderError) as exc_info:
+        client.complete([{"role": "user", "content": "synthetic"}])
+
+    from scopewatch.agent.loop import sanitize_failure_reason
+
+    stored_reason = (
+        f"Agent loop aborted: {type(exc_info.value).__name__}: "
+        f"{sanitize_failure_reason(exc_info.value)}"
+    )
+
+    assert exc_info.value.code == ProviderErrorCode.MALFORMED_RESPONSE
+    assert synthetic_key_shaped not in str(exc_info.value)
+    assert synthetic_key_shaped not in repr(exc_info.value)
+    assert synthetic_key_shaped not in stored_reason
+
+
+# ---------------------------------------------------------------------------
 # 7. Mock provider queue execution
 # ---------------------------------------------------------------------------
 
