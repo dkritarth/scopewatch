@@ -39,10 +39,12 @@ def build_scenario_mock_provider(
     Mock-agent mode is deterministic replay, not model choice: one tool call
     is enqueued per entry in the scenario's ``actions`` list, verbatim
     (operation, resource, arguments, and reasoning fields). The mock provider
-    never invents, reorders, or skips actions. Use a live provider profile
-    for genuine model choice. Scenario files carry no per-scenario mode key;
-    the global ``--mode`` (scripted vs agent) selects how actions run
-    (see demo/SCENARIOS.md).
+    never invents, reorders, or skips actions. An action with no reasoning
+    fields replays as ``UNAVAILABLE`` with no text, so missing reasoning stays
+    visibly missing rather than being wrongly labelled provider-exposed. Use a
+    live provider profile for genuine model choice. Scenario files carry no
+    per-scenario mode key; the global ``--mode`` (scripted vs agent) selects how
+    actions run (see demo/SCENARIOS.md).
 
     The scripted response model label is derived from the active profile, never
     hard-coded: core code carries no model IDs.
@@ -57,6 +59,25 @@ def build_scenario_mock_provider(
         if act.get("arguments"):
             args_payload.update(act["arguments"])
 
+        # Replay only the reasoning the scenario actually carries. When it
+        # carries none, the turn is UNAVAILABLE with no text: an invented
+        # sentence must never be stored under a provider-exposed (or any
+        # verified) provenance label (#200).
+        exposed_trace = act.get("exposed_reasoning_trace")
+        reasoning_summary = act.get("reasoning_summary")
+        if act.get("reasoning_provenance"):
+            reasoning_text = exposed_trace or reasoning_summary
+            reasoning_provenance = act["reasoning_provenance"]
+        elif exposed_trace:
+            reasoning_text = exposed_trace
+            reasoning_provenance = ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value
+        elif reasoning_summary:
+            reasoning_text = reasoning_summary
+            reasoning_provenance = ReasoningProvenance.AGENT_AUTHORED_SUMMARY.value
+        else:
+            reasoning_text = None
+            reasoning_provenance = ReasoningProvenance.UNAVAILABLE.value
+
         mock.enqueue(
             ChatResult(
                 content=f"Step {idx}: dispatching {act.get('operation')} on {act.get('resource')}.",
@@ -70,29 +91,15 @@ def build_scenario_mock_provider(
                         },
                     }
                 ],
-                reasoning_text=(
-                    act.get("exposed_reasoning_trace")
-                    or act.get("reasoning_summary")
-                    or f"Executing planned step {idx} for task completion."
-                ),
-                reasoning_provenance=(
-                    act.get("reasoning_provenance")
-                    or (
-                        ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value
-                        if act.get("exposed_reasoning_trace")
-                        else (
-                            ReasoningProvenance.AGENT_AUTHORED_SUMMARY.value
-                            if act.get("reasoning_summary")
-                            else ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value
-                        )
-                    )
-                ),
+                reasoning_text=reasoning_text,
+                reasoning_provenance=reasoning_provenance,
                 model=scripted_model,
                 profile="mock",
             )
         )
 
-    # Final completion turn with no tool calls
+    # Final completion turn with no tool calls. It carries no reasoning text:
+    # the mock must not author a trace at all (#200).
     mock.enqueue(
         ChatResult(
             content=(
@@ -100,8 +107,8 @@ def build_scenario_mock_provider(
                 "All planned actions were executed through the gateway."
             ),
             tool_calls=[],
-            reasoning_text="All required operations finished without violations.",
-            reasoning_provenance=ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value,
+            reasoning_text=None,
+            reasoning_provenance=ReasoningProvenance.UNAVAILABLE.value,
             model=scripted_model,
             profile="mock",
         )

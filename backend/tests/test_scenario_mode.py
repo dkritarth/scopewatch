@@ -80,6 +80,54 @@ def test_mock_provider_final_turn_completes_without_tools():
     assert "completed" in (final.content or "").lower()
 
 
+def test_missing_reasoning_replays_as_unavailable_never_invented():
+    """An action with no reasoning fields must not get invented reasoning (#200)."""
+    data = {
+        "name": "no-reasoning",
+        "actions": [{"operation": "read_text", "resource": "invoices/approved/vendor-a.txt"}],
+    }
+    mock = build_scenario_mock_provider(data)
+
+    action_turn = mock._queue[0]
+    assert action_turn.reasoning_text is None
+    assert action_turn.reasoning_provenance == "UNAVAILABLE"
+
+    # Neither the action turn nor the final completion turn may be labelled as
+    # a provider-exposed trace, and the invented default sentence is gone.
+    for queued in mock._queue:
+        assert queued.reasoning_provenance != "PROVIDER_EXPOSED_TRACE"
+        assert "Executing planned step" not in (queued.reasoning_text or "")
+
+    final_turn = mock._queue[-1]
+    assert final_turn.reasoning_text is None
+    assert final_turn.reasoning_provenance == "UNAVAILABLE"
+
+
+def test_present_reasoning_fields_keep_their_provenance():
+    """Scenario reasoning is replayed with the provenance its shape implies."""
+    data = {
+        "name": "with-reasoning",
+        "actions": [
+            {
+                "operation": "read_text",
+                "resource": "a.txt",
+                "exposed_reasoning_trace": "I read the allowlisted file.",
+            },
+            {
+                "operation": "read_text",
+                "resource": "b.txt",
+                "reasoning_summary": "Read an allowlisted file.",
+            },
+        ],
+    }
+    mock = build_scenario_mock_provider(data)
+
+    assert mock._queue[0].reasoning_text == "I read the allowlisted file."
+    assert mock._queue[0].reasoning_provenance == "PROVIDER_EXPOSED_TRACE"
+    assert mock._queue[1].reasoning_text == "Read an allowlisted file."
+    assert mock._queue[1].reasoning_provenance == "AGENT_AUTHORED_SUMMARY"
+
+
 def test_seed_mode_help_documents_replay_and_sole_control(tmp_path: Path):
     """seed_demo --mode help states replay semantics and sole control."""
     import subprocess
