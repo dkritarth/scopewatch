@@ -450,7 +450,7 @@ class ProviderClient:
     def audit_chat(
         self,
         messages: list[dict[str, Any]],
-        **_: Any,
+        **kwargs: Any,
     ) -> ChatResult:
         """Request a bounded JSON verdict using auditor-only provider options."""
         request_options: dict[str, Any] = {
@@ -458,6 +458,9 @@ class ProviderClient:
             "max_tokens": 256,
         }
         request_options.update(self.profile.auditor_body)
+        timeout = kwargs.get("request_timeout", kwargs.get("timeout"))
+        if timeout is not None:
+            request_options["request_timeout"] = timeout
         return self.complete(messages, **request_options)
 
     def _parse_chat_response(self, data: dict[str, Any], latency_ms: float) -> ChatResult:

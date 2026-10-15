@@ -417,6 +417,10 @@ def test_m2_dash_o_blocked_denied(
     )
 
 
+@pytest.mark.xfail(
+    reason="KNOWN-GAP (V1 gap 6): behavioural flags still ALLOW; fix to strict DENY.",
+    strict=True,
+)
 @pytest.mark.parametrize(
     "command",
     ["pytest --maxfail=2 tests/", "pytest -x tests/", "pytest -q tests/", "pytest --tb=short tests/"],
@@ -429,8 +433,7 @@ def test_m2_unchecked_flags_allow_KNOWN_GAP(
     containment for these rests on the Docker sandbox. New flag names beyond
     the ``-p``/``-k``/``--deselect`` forms already documented."""
     decision = evaluate_policy(_m2_cmd(m2_cmd_run, command=command), m2_cmd_run, m2_cmd_ws)
-    assert decision.outcome == PolicyOutcome.ALLOW
-    assert decision.reason_code == ReasonCode.ALLOWED_TOOL_AND_RESOURCE
+    assert decision.outcome == PolicyOutcome.DENY
 
 
 @pytest.mark.parametrize(
