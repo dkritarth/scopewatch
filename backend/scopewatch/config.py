@@ -18,6 +18,68 @@ DEFAULT_EXPIRY_SECONDS = int(os.environ.get("SCOPEWATCH_APPROVAL_TTL", "300"))
 MAX_READ_BYTES = 64 * 1024  # 64 KiB
 MAX_WRITE_BYTES = 64 * 1024  # 64 KiB
 
+# CORS and Security (issue #185)
+# Comma-separated list of allowed origins, e.g. "https://app.example.com,https://dashboard.example.com"
+# Defaults to empty list for default same-origin behavior (no cross-origin access allowed)
+CORS_ALLOW_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("SCOPEWATCH_CORS_ALLOW_ORIGINS", "").split(",")
+    if origin.strip()
+]
+# Whether to allow credentials (cookies, auth headers) in CORS requests
+CORS_ALLOW_CREDENTIALS = os.environ.get("SCOPEWATCH_CORS_ALLOW_CREDENTIALS", "false").lower() == "true"
+# API key for production authentication (when not in demo mode)
+API_KEY = os.environ.get("SCOPEWATCH_API_KEY", "")
+
+# Reviewer authentication (issue #185)
+# Distinct credential held only by human reviewers/judges to approve or deny holds.
+# The agent loop never receives this token.
+REVIEWER_TOKEN = (
+    os.environ.get("SCOPEWATCH_REVIEWER_TOKEN")
+    or os.environ.get("REVIEWER_TOKEN")
+    or os.environ.get("SCOPEWATCH_REVIEWER_KEY", "")
+)
+
+# Reviewer identity label override
+DEFAULT_REVIEWER_IDENTITY = os.environ.get("SCOPEWATCH_REVIEWER_ID", "")
+
+# Flag controlling demo state reset (issue #185)
+ALLOW_DEMO_RESET = os.environ.get("SCOPEWATCH_ALLOW_RESET", "false").lower() in ("true", "1", "yes")
+
+# Flag controlling HSTS (issue #185)
+ENABLE_HSTS = os.environ.get("SCOPEWATCH_ENABLE_HSTS", "false").lower() in ("true", "1", "yes")
+
+
+def reviewer_token_expected(env: dict[str, str] | None = None) -> str:
+    """Return the expected reviewer token, if any is configured or required."""
+    src = env if env is not None else os.environ
+    explicit = (
+        src.get("SCOPEWATCH_REVIEWER_TOKEN")
+        or src.get("REVIEWER_TOKEN")
+        or src.get("SCOPEWATCH_REVIEWER_KEY", "")
+    )
+    if explicit:
+        return explicit.strip()
+    demo_tok = str(src.get("DEMO_TOKEN", "") or "").strip()
+    if demo_tok:
+        return f"{demo_tok}-reviewer"
+    api_k = str(src.get("SCOPEWATCH_API_KEY", "") or "").strip()
+    if api_k:
+        return f"{api_k}-reviewer"
+    return ""
+
+
+def is_auth_configured(env: dict[str, str] | None = None) -> bool:
+    """True when any authentication (demo guards, API key, or reviewer token) is configured."""
+    src = env if env is not None else os.environ
+    return bool(
+        str(src.get("DEMO_TOKEN", "") or "").strip()
+        or str(src.get("SCOPEWATCH_API_KEY", "") or "").strip()
+        or str(src.get("SCOPEWATCH_REVIEWER_TOKEN", "") or "").strip()
+        or str(src.get("REVIEWER_TOKEN", "") or "").strip()
+    )
+
+
 # --- Gateway-native demo guards (issues #76 / #77) ---------------------------
 # Demo mode engages when DEMO_TOKEN is set; see scopewatch.demo_guards for the
 # enforced semantics (same env names as deploy/.env.example). Token budgets

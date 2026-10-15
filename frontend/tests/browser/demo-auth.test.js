@@ -80,7 +80,7 @@ function getFreePort() {
   });
 }
 
-async function startGateway(repoRoot, { demoMode, onSpawn = () => {} }) {
+async function startGateway(repoRoot, { demoMode, extraEnv = {}, onSpawn = () => {} }) {
   const tmpDir = mkdtempSync(join(tmpdir(), "scopewatch-demo-auth-"));
   const workspacePath = join(tmpDir, "workspace");
   mkdirSync(join(workspacePath, "invoices", "approved"), { recursive: true });
@@ -110,6 +110,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
       PYTHONPATH: join(repoRoot, "backend"),
       // Demo mode on/off drives whether the dashboard offers the panel.
       ...(demoMode ? { DEMO_TOKEN } : { DEMO_TOKEN: "" }),
+      ...extraEnv,
     },
   });
   onSpawn(proc);
@@ -380,6 +381,119 @@ test("a gateway without demo mode never asks for a token (#115)", { timeout: 600
       { timeout: 15000 },
     );
     assert.equal(await page.locator("#reviewer-access-panel").isVisible(), false);
+  } finally {
+    if (browser) await browser.close();
+    await terminateProcess(proc);
+  }
+});
+
+
+test("same-origin dashboard approve flow works in browser (#185)", { timeout: 30000 }, async () => {
+  const repoRoot = join(import.meta.dirname, "..", "..", "..");
+  const REVIEWER_TOKEN = "rev-browser-sec-xyz-987";
+  const { port, proc } = await startGateway(repoRoot, {
+    demoMode: true,
+    extraEnv: { SCOPEWATCH_REVIEWER_TOKEN: REVIEWER_TOKEN },
+  });
+
+  let browser;
+  try {
+    // Seed a run with requires_approval policy using agent/demo credential
+    const seeded = await fetch(`http://127.0.0.1:${port}/api/v1/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Demo-Token": DEMO_TOKEN },
+      body: JSON.stringify({
+        name: "Approval Browser Run",
+        task_scope: {
+          schema_version: "1",
+          task_description: "Audit invoices with approval requirement",
+          allowed_paths: ["invoices/approved", "outputs"],
+          blocked_paths: ["invoices/private"],
+          allowed_tools: ["workspace"],
+          allowed_operations: ["list_directory", "read_text", "write_text", "delete_path"],
+          allowed_network_destinations: [],
+          requires_approval: ["delete_path"],
+          created_at: new Date().toISOString(),
+        },
+      }),
+    });
+    if (!seeded.ok) {
+      throw new Error(`seeding run failed: ${await seeded.text()}`);
+    }
+    const run = await seeded.json();
+
+    // Create an action that triggers a hold using agent credential
+    const actRes = await fetch(`http://127.0.0.1:${port}/api/v1/runs/${run.id}/actions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Demo-Token": DEMO_TOKEN },
+      body: JSON.stringify({
+        tool: "workspace",
+        operation: "delete_path",
+        resource: "outputs/temp.txt",
+        arguments: { path: "outputs/temp.txt" },
+      }),
+    });
+    assert.equal(actRes.status, 201);
+    const act = await actRes.json();
+    assert.equal(act.policy_decision.outcome, "HOLD");
+    assert.ok(act.approval_request, "expected approval request generated");
+
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const requests = [];
+    page.on("request", (req) => {
+      requests.push({
+        url: req.url(),
+        method: req.method(),
+        headers: req.headers(),
+      });
+    });
+
+    await page.goto(`http://127.0.0.1:${port}/?live=1`);
+    await page.waitForFunction(
+      () => (document.getElementById("gateway-status")?.textContent || "").includes("Live gateway connected"),
+      { timeout: 15000 },
+    );
+
+    // Reviewer access panel should be present because demoMode is active
+    const panel = page.locator("#reviewer-access-panel");
+    await panel.waitFor({ state: "visible", timeout: 10000 });
+
+    // Reviewer enters credential
+    await page.fill("#reviewer-token-input", REVIEWER_TOKEN);
+    await page.click("#reviewer-token-save");
+
+    // Switch to the live run
+    await page.locator('#run-buttons button:has-text("Live")').first().click();
+
+    // Verify the approval card is visible
+    const polApprovalCard = page.locator(".approval-card").first();
+    await polApprovalCard.waitFor({ timeout: 10000 });
+
+    const approveBtn = polApprovalCard.locator(".btn-approve");
+    await approveBtn.click();
+    assert.equal(await approveBtn.innerText(), "Confirm approve");
+
+    // Second click executes the approval
+    await approveBtn.click();
+
+    // Wait for the approval card to be resolved and count to become 0
+    await page.locator("#no-approvals-msg").waitFor({ timeout: 15000 });
+    assert.equal(await page.locator("#pending-approvals-count").innerText(), "0");
+
+    // Check request made by browser to approve endpoint
+    const approveReq = requests.find((r) => r.url.includes("/approve") && r.method === "POST");
+    assert.ok(approveReq, "expected POST to /approve");
+    assert.equal(approveReq.headers["content-type"], "application/json");
+    assert.equal(approveReq.headers["x-reviewer-token"], REVIEWER_TOKEN);
+
+    // Confirm that the approval is now consumed on the backend with reviewer attribution
+    const approvalsRes = await fetch(`http://127.0.0.1:${port}/api/v1/approvals?run_id=${run.id}`);
+    const approvals = await approvalsRes.json();
+    const checkAppr = approvals.find((a) => a.id === act.approval_request.id);
+    assert.ok(checkAppr, "expected approval to be listed");
+    assert.equal(checkAppr.status, "CONSUMED");
+    assert.ok(checkAppr.resolved_by.startsWith("reviewer-"), `expected reviewer identity in resolved_by, got ${checkAppr.resolved_by}`);
   } finally {
     if (browser) await browser.close();
     await terminateProcess(proc);
