@@ -1227,10 +1227,13 @@ capture_token: Optional[str] = None,
             # Phase 2: Action dispatch for ALLOW outcome (evidence committed before effect #109)
             if decision.outcome == PolicyOutcome.ALLOW:
                 try:
-                    receipt = execute_action(
+                    # Run execution in thread pool to avoid blocking the event loop (#189)
+                    receipt = await asyncio.to_thread(
+                        execute_action,
                         action,
                         workspace,
                         policy_decision=decision,
+                        approval_request=None,
                         db_path=conn,
                         task_scope=fresh_run.task_scope,
                         # Issue #117: the wire key for the run's workspace
@@ -1696,7 +1699,9 @@ capture_token: Optional[str] = None,
             # Phase 2: Action dispatch for approved action (#109)
             if approve and updated_approval:
                 try:
-                    receipt = execute_action(
+                    # Run execution in thread pool to avoid blocking the event loop (#189)
+                    receipt = await asyncio.to_thread(
+                        execute_action,
                         action,
                         run_workspace,
                         policy_decision=decision,
