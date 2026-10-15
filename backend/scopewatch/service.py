@@ -1277,11 +1277,7 @@ capture_token: Optional[str] = None,
                     # Broadcast and return structured response with FAILED receipt
                     for ev in generated_events:
                         await broadcaster.publish(run_id, ev)
-                    raise ScopewatchAPIError(
-                        code="EXECUTION_SECURITY_ERROR",
-                        message=receipt.sanitized_result["error"],
-                        status_code=status.HTTP_409_CONFLICT,
-                    )
+                    raise exc
                 except Exception as exc:
                     # Other exceptions: sanitize error, persist FAILED receipt, return 500
                     failed_at = datetime.now(timezone.utc).isoformat()
@@ -1762,11 +1758,7 @@ capture_token: Optional[str] = None,
                             )
                     for ev in generated_events:
                         await broadcaster.publish(approval.run_id, ev)
-                    raise ScopewatchAPIError(
-                        code="EXECUTION_SECURITY_ERROR",
-                        message=receipt.sanitized_result["error"],
-                        status_code=status.HTTP_409_CONFLICT,
-                    )
+                    raise exc
                 except Exception as exc:
                     # Other exceptions: sanitize error, persist FAILED receipt, return 500
                     failed_at = datetime.now(timezone.utc).isoformat()

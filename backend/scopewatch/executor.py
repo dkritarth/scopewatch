@@ -25,12 +25,19 @@ from scopewatch.path_access import normalize_relative_path, scoped_path_reason
 from scopewatch.schemas import ActionRequest, ApprovalRequest, ExecutionReceipt, PolicyDecision, TaskScope
 
 
-class ExecutionSecurityError(Exception):
+from scopewatch.errors import ScopewatchAPIError
+
+
+class ExecutionSecurityError(ScopewatchAPIError):
     """Raised when execution invariants or policy boundaries are violated."""
 
-    def __init__(self, message: str, code: str = "EXECUTION_SECURITY_ERROR"):
-        super().__init__(message)
-        self.code = code
+    def __init__(
+        self,
+        message: str,
+        code: str = "EXECUTION_SECURITY_ERROR",
+        status_code: int = 409,
+    ):
+        super().__init__(code=code, message=message, status_code=status_code)
 
 
 LOCAL_EXECUTOR_NAME = "synthetic-workspace-executor"
