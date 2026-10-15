@@ -465,6 +465,9 @@ const elements = typeof document !== "undefined" ? {
 } : {};
 
 let activeRuns = [...fixtureRuns];
+// Baseline timestamps per run, used to turn event timestamps into relative
+// durations instead of synthetic sequence numbers (#211).
+const timestampOffsetBaseline = new Map();
 let liveStreamHandle = null;
 let isLiveMode = false;
 let pendingApprovals = [];
@@ -630,7 +633,7 @@ function renderRunButtons() {
     button.dataset.runId = run.id;
     button.dataset.status = run.status || "ACTIVE";
     button.setAttribute("aria-pressed", String(run.id === selectedRun?.id));
-    button.textContent = run.name;
+    button.textContent = `${run.name} [${run.status || "ACTIVE"}]`;
     if (!existingButton) {
       button.addEventListener("click", () => {
         if (state.runId !== run.id) {
@@ -1705,7 +1708,19 @@ export function transformApiEvent(ev, context = null) {
     }
   }
 
-  const offset = `+00:${String(ev.sequence ?? 0).padStart(2, "0")}`;
+  const timestampRaw = ev.timestamp ?? ev.created_at ?? ev.occurred_at ?? null;
+  let offset = `+00:${String(ev.sequence ?? 0).padStart(2, "0")}`;
+  if (timestampRaw) {
+    const parsed = new Date(timestampRaw);
+    if (!Number.isNaN(parsed.getTime())) {
+      const runKey = ev.run_id || ev.runId || ev.action_request_id || ev.turn_id || "_default";
+      if (!timestampOffsetBaseline.has(runKey)) {
+        timestampOffsetBaseline.set(runKey, parsed.getTime());
+      }
+      const diffSec = Math.max(0, Math.round((parsed.getTime() - timestampOffsetBaseline.get(runKey)) / 1000));
+      offset = `+${String(Math.floor(diffSec / 60)).padStart(2, "0")}:${String(diffSec % 60).padStart(2, "0")}`;
+    }
+  }
   const title = ev.summary || (d.operation ? `${d.operation} on ${d.resource}` : `${type}`);
 
   // Approval tracking & join across turn / action events (#134)
@@ -2396,6 +2411,10 @@ async function bootstrap() {
   if (health && health.status === "ok") {
     isLiveMode = true;
     updateGatewayStatus("Live gateway connected", "connected");
+    const bannerMode = document.getElementById("synthetic-banner-mode");
+    if (bannerMode) {
+      bannerMode.textContent = "Connected to a live gateway; mutations require a reviewer token.";
+    }
     // Demo mode means the gate requires the reviewer token for every mutating
     // call (#115), so offer the credential panel up front instead of letting a
     // judge discover it through a 401.
@@ -2449,7 +2468,18 @@ async function bootstrap() {
       }
       const formattedLiveRuns = buildLiveRuns(backendRuns, eventsByRun);
 
-      activeRuns = [...fixtureRuns, ...formattedLiveRuns];
+      activeRuns = [...formattedLiveRuns];
+      // Open on a live run that has a pending approval (prefer run with holds),
+      // so the reviewer immediately sees an actionable hold instead of a fixture.
+      const preferredLiveRun =
+        formattedLiveRuns.find((run) =>
+          run.status === "WAITING_FOR_APPROVAL" ||
+          (Array.isArray(run.events) && run.events.some((ev) => ev.status === "pending-approval"))
+        ) || formattedLiveRuns[0];
+      if (preferredLiveRun) {
+        state.runId = preferredLiveRun.id;
+        state.eventId = preferredLiveRun.events?.[0]?.id || null;
+      }
       // Keep selection valid when new runs arrive; prefer the first live run
       // with held events so the M1 escalation headline is one click away.
       renderRunButtons();
