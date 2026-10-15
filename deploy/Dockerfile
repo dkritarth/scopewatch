@@ -23,8 +23,8 @@ WORKDIR /app
 # isolation" and compose.yaml comments.)
 RUN useradd -r -u 10001 -m -s /usr/sbin/nologin appuser
 
-COPY backend/requirements.txt ./backend/requirements.txt
-RUN pip install --no-cache-dir -r ./backend/requirements.txt
+COPY backend/requirements.lock ./backend/requirements.lock
+RUN pip install --no-cache-dir --require-hashes -r ./backend/requirements.lock
 
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
