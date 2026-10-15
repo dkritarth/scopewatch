@@ -1233,8 +1233,13 @@ capture_token: Optional[str] = None,
                         action,
                         workspace,
                         policy_decision=decision,
-                        db_path=self.db_path,  # pass path, not connection, for thread safety
+                        approval_request=None,
+                        db_path=conn,
                         task_scope=fresh_run.task_scope,
+                        # Issue #117: the wire key for the run's workspace
+                        # directory, stated by the caller that owns the
+                        # workspace identity rather than re-derived from a host
+                        # path inside the remote backend.
                         run_workspace=self.run_workspaces.workspace_key(fresh_run.id),
                     )
                 except ExecutionSecurityError as exc:
@@ -1701,7 +1706,7 @@ capture_token: Optional[str] = None,
                         run_workspace,
                         policy_decision=decision,
                         approval_request=updated_approval,
-                        db_path=self.db_path,  # pass path, not connection, for thread safety
+                        db_path=conn,
                         task_scope=run.task_scope,
                         run_workspace=self.run_workspaces.workspace_key(run.id),
                     )
