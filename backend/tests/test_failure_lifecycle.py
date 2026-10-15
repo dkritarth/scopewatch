@@ -211,7 +211,7 @@ def test_cli_setup_failure_marks_run_failed(tmp_path: Path, monkeypatch: pytest.
         ],
     )
 
-    with patch("httpx.Client", return_value=client):
+    with patch("httpx.get", return_value=httpx.Response(200, json={"status": "healthy"})), patch("httpx.Client", return_value=client):
         exit_code = main()
 
     assert exit_code == 1
