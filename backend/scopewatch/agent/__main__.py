@@ -96,8 +96,9 @@ def build_scenario_mock_provider(
     mock.enqueue(
         ChatResult(
             content=(
-                f"Task '{scenario_data.get('name', 'Scenario')}' completed successfully. "
-                "All planned actions were executed through the gateway."
+                f"Task '{scenario_data.get('name', 'Scenario')}' replay finished. "
+                "All planned actions were submitted through the gateway; "
+                "the run evidence shows which were executed, held, or denied."
             ),
             tool_calls=[],
             reasoning_text="All required operations finished without violations.",
