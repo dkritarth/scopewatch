@@ -2468,14 +2468,19 @@ async function bootstrap() {
       }
       const formattedLiveRuns = buildLiveRuns(backendRuns, eventsByRun);
 
-      activeRuns = [...formattedLiveRuns];
-      // Open on a live run that has a pending approval (prefer run with holds),
-      // so the reviewer immediately sees an actionable hold instead of a fixture.
+      // Keep synthetic fixtures available as a fallback, but show live runs first
+      // and open on a live run with a pending approval when one exists.
+      activeRuns = [...formattedLiveRuns, ...fixtureRuns];
       const preferredLiveRun =
         formattedLiveRuns.find((run) =>
-          run.status === "WAITING_FOR_APPROVAL" ||
-          (Array.isArray(run.events) && run.events.some((ev) => ev.status === "pending-approval"))
-        ) || formattedLiveRuns[0];
+          (Array.isArray(run.events) && run.events.length > 0) &&
+          (
+            run.status === "WAITING_FOR_APPROVAL" ||
+            run.events.some((ev) => ev.status === "pending-approval")
+          )
+        ) ||
+        formattedLiveRuns.find((run) => Array.isArray(run.events) && run.events.length > 0) ||
+        null;
       if (preferredLiveRun) {
         state.runId = preferredLiveRun.id;
         state.eventId = preferredLiveRun.events?.[0]?.id || null;
