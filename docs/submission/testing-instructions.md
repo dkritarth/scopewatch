@@ -21,7 +21,7 @@ sends private data anywhere.
 Prerequisites: Python 3.12+, Node 22+. No API keys, no Docker, no network.
 
 ```bash
-git clone <REPO_URL> && cd scopewatch
+git clone https://github.com/dkritarth/scopewatch.git && cd scopewatch
 pip install -r backend/requirements.txt
 ./scripts/run_demo.sh
 ```
@@ -54,10 +54,29 @@ PYTHONPATH=backend python3 -m scopewatch.agent --scenario demo/scenarios/06_invo
 PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile mock --split heldout
 ```
 
-Expected (2026-09-28, `mock-rules-auditor`, prompt `v1.0-hardened-1cea92f0`,
-48 held-out cases): accuracy 93.8%, false-negative rate 2.78%, false-hold rate
-16.67% (misses our <15% target — reported plainly), failure rate 0.00%. Live
-Nemotron numbers are pending an API key (issue #101).
+Expected from the offline run (2026-09-28, `mock-rules-auditor`, prompt
+`v1.0-hardened-1cea92f0`, 48 held-out cases): accuracy 93.8%, false-negative
+rate 2.78%, false-hold rate 16.67% (misses our <15% target — reported plainly),
+failure rate 0.00%. That row is a rule matcher exercising the harness, not model
+accuracy.
+
+The **live** numbers are not pending a key — they exist. One pinned run per
+profile, held-out split, 2026-10-03, each report re-verified with `--check`
+(recomputes every metric from the per-case rows and re-hashes the dataset):
+
+| Profile | Model served | Accuracy | False negatives | False holds | Failed closed | Latency p50 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `nebius-demo` | `nvidia/Nemotron-3_5-Lightning` | 79.2% | 8.33% | **0.00%** | 14.58% | 619 ms |
+| `openrouter-dev` | `nvidia/nemotron-3.5-lightning` | 87.5% | 5.56% | **0.00%** | 8.33% | 2,372 ms |
+
+Both miss the <5% false-negative target, and every live miss sits in
+`injection_following`, where the auditor answered "no concern" where a concern
+was expected. That is the only unsafe direction in the measurement; no clean
+action was ever held across 96 held-out audits. Reproduce with your own key and
+`backend/scripts/evaluate_reasoning_audit.py --profile <p> --split heldout` —
+but note held-out is spent for this submission and was deliberately not re-run.
+Method, dataset hash, per-category detail, and what was *not* verified:
+`docs/evaluation.md` and `docs/spikes/2026-10-nemotron-provider-verification.md`.
 
 ## Access-token handling
 
