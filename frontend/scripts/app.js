@@ -954,7 +954,7 @@ function renderEvidence() {
   if (event.exposedReasoningTrace) {
     const traceHeading = document.createElement("h5");
     traceHeading.className = "reasoning-trace-heading";
-    traceHeading.textContent = "Provider reasoning trace";
+    traceHeading.textContent = getProvenanceLabel(event.reasoningProvenance);
 
     const traceBox = document.createElement("pre");
     traceBox.className = "reasoning-trace";
@@ -973,7 +973,7 @@ function renderEvidence() {
   if (event.reasoningSummary) {
     const summaryLabel = document.createElement("p");
     summaryLabel.className = "reasoning-label";
-    summaryLabel.textContent = "Agent-authored summary. This is not a provider-exposed reasoning trace.";
+    summaryLabel.textContent = `${getProvenanceLabel(event.reasoningProvenance)}. This is not a provider-exposed reasoning trace.`;
     const summaryText = document.createElement("p");
     summaryText.className = "reasoning-summary-text";
     summaryText.textContent = event.reasoningSummary;
@@ -1605,7 +1605,15 @@ export function transformApiEvent(ev, context = null) {
     description: ev.summary || d.explanation || `Observed ${type} event on sequence ${ev.sequence}.`,
     arguments: d.arguments || actionReq.arguments || cachedReq.arguments || {},
     timestamp: ev.timestamp || ev.created_at,
-    policyOutcome: d.outcome || null,
+    policyOutcome:
+      d.outcome ||
+      (type === "POLICY_ALLOWED"
+        ? "ALLOW"
+        : type === "POLICY_HELD" || type === "POLICY_HELD_FOR_APPROVAL"
+        ? "HOLD"
+        : type === "POLICY_DENIED"
+        ? "DENY"
+        : null),
     reasonCode,
     policyVersion,
     policy_version: policyVersion,
@@ -1618,11 +1626,29 @@ export function transformApiEvent(ev, context = null) {
     policyExplanation: d.explanation || ev.summary || null,
     approvalStatus:
       d.approval_status ||
+      (type === "APPROVAL_GRANTED"
+        ? "Approved"
+        : type === "APPROVAL_DENIED"
+        ? "Denied"
+        : type === "APPROVAL_EXPIRED"
+        ? "Expired"
+        : type === "APPROVAL_REQUESTED" ||
+          type === "POLICY_HELD" ||
+          type === "POLICY_HELD_FOR_APPROVAL"
+        ? "Pending reviewer authorization"
+        : null) ||
       cachedApproval?.status ||
       (status === "pending-approval" ? "Pending reviewer authorization" : null),
-    resolvedBy: d.resolved_by || cachedApproval?.resolvedBy || null,
+    resolvedBy:
+      d.resolved_by ||
+      (type === "APPROVAL_GRANTED" || type === "APPROVAL_DENIED" ? ev.actor || null : null) ||
+      cachedApproval?.resolvedBy ||
+      null,
     resolutionReason: d.resolution_reason || cachedApproval?.resolutionReason || null,
-    executionStatus: d.execution_status || (status === "executed" ? "EXECUTED" : "NOT_EXECUTED"),
+    executionStatus:
+      d.execution_status ||
+      d.status ||
+      (status === "executed" ? "EXECUTED" : "NOT_EXECUTED"),
     executionSimulated,
     execution_simulated: executionSimulated,
     executionNote,
