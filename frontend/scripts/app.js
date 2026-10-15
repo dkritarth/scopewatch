@@ -1,3 +1,21 @@
+export function resolveSubmissionTarget(run, activeRuns = [], isLiveMode = false) {
+  if (!isLiveMode) {
+    return { mode: "static", run };
+  }
+  if (run?.isLive) {
+    return { mode: "live", run };
+  }
+  const liveRun = activeRuns.find((r) => r.isLive);
+  if (liveRun) {
+    return { mode: "live", run: liveRun };
+  }
+  return {
+    mode: "disabled",
+    error:
+      "Simulation disabled in live gateway mode for fixture runs. Select or create an active live run to submit actions.",
+  };
+}
+
 "use strict";
 
 import { runs as fixtureRuns } from "./fixtures.js";
@@ -233,7 +251,10 @@ export function groupEventsByTurn(events) {
  * Exported so tests assert every seeded scenario run stays reachable.
  */
 export function formatLiveRun(backendRun, rawEvents = []) {
-  const transformedEvents = (rawEvents || []).map((e) => transformApiEvent(e));
+  const runId = backendRun?.id;
+  const transformedEvents = (rawEvents || []).map((e) =>
+    transformApiEvent(e, { runId }),
+  );
   const scope = backendRun?.task_scope;
   return {
     id: backendRun.id,
@@ -448,9 +469,18 @@ let liveStreamHandle = null;
 let isLiveMode = false;
 let pendingApprovals = [];
 
-const auditStore = new Map();
-const actionRequestStore = new Map();
+export const auditStore = new Map();
+export const actionRequestStore = new Map();
 export const approvalStore = new Map();
+
+/**
+ * Reset module-level stores across runs to prevent evidence leaking (#207).
+ */
+export function clearStores() {
+  actionRequestStore.clear();
+  auditStore.clear();
+  approvalStore.clear();
+}
 
 const state = {
   runId: fixtureRuns[0]?.id,
@@ -595,6 +625,9 @@ function renderRunButtons() {
     button.textContent = run.name;
     if (!existingButton) {
       button.addEventListener("click", () => {
+        if (state.runId !== run.id) {
+          clearStores();
+        }
         state.runId = run.id;
         state.eventId = run.events[0]?.id;
         if (isLiveMode && run.isLive) {
@@ -921,7 +954,7 @@ function renderEvidence() {
   if (event.exposedReasoningTrace) {
     const traceHeading = document.createElement("h5");
     traceHeading.className = "reasoning-trace-heading";
-    traceHeading.textContent = "Provider reasoning trace";
+    traceHeading.textContent = getProvenanceLabel(event.reasoningProvenance);
 
     const traceBox = document.createElement("pre");
     traceBox.className = "reasoning-trace";
@@ -940,7 +973,7 @@ function renderEvidence() {
   if (event.reasoningSummary) {
     const summaryLabel = document.createElement("p");
     summaryLabel.className = "reasoning-label";
-    summaryLabel.textContent = "Agent-authored summary. This is not a provider-exposed reasoning trace.";
+    summaryLabel.textContent = `${getProvenanceLabel(event.reasoningProvenance)}. This is not a provider-exposed reasoning trace.`;
     const summaryText = document.createElement("p");
     summaryText.className = "reasoning-summary-text";
     summaryText.textContent = event.reasoningSummary;
@@ -1021,6 +1054,9 @@ function timelineButton(event, run) {
   content.append(title, meta);
   button.append(time, content, status);
   button.addEventListener("click", () => {
+    if (state.runId !== run.id) {
+      clearStores();
+    }
     state.runId = run.id;
     state.eventId = event.id;
     if (elements.timeline) {
@@ -1298,8 +1334,27 @@ export function transformApiEvent(ev, context = null) {
   const type = ev.event_type || ev.type || "UNKNOWN";
   const d = ev.details || ev.payload || {};
   const actionReq = ev.action_request || context?.actionRequest || d.action_request || {};
-  const actionReqId = ev.action_request_id || d.action_request_id || (type === "ACTION_REQUESTED" ? ev.id : null);
+  const actionReqId =
+    ev.action_request_id ||
+    d.action_request_id ||
+    (type === "ACTION_REQUESTED" ? ev.id : null) ||
+    actionReq.id ||
+    actionReq.action_request_id ||
+    context?.actionRequestId ||
+    null;
+  const runId =
+    ev.run_id ??
+    ev.runId ??
+    d.run_id ??
+    d.runId ??
+    context?.runId ??
+    context?.run_id ??
+    null;
   const turnId = ev.turn_id ?? d.turn_id ?? actionReq.turn_id ?? null;
+
+  // Key stores strictly by run_id + action_request_id (#207).
+  // Never key by or fall back to turn_id, which leaks across actions/runs.
+  const storeKey = actionReqId ? (runId ? `${runId}:${actionReqId}` : actionReqId) : null;
 
   if (type === "ACTION_REQUESTED" || actionReq.tool) {
     const storedReq = {
@@ -1312,11 +1367,10 @@ export function transformApiEvent(ev, context = null) {
       reasoning_provenance: d.reasoning_provenance || actionReq.reasoning_provenance,
       turn_id: turnId,
     };
-    if (actionReqId) actionRequestStore.set(actionReqId, storedReq);
-    if (turnId) actionRequestStore.set(turnId, storedReq);
+    if (storeKey) actionRequestStore.set(storeKey, storedReq);
   }
 
-  const cachedReq = (actionReqId && actionRequestStore.get(actionReqId)) || (turnId && actionRequestStore.get(turnId)) || {};
+  const cachedReq = (storeKey && actionRequestStore.get(storeKey)) || {};
 
   const exposedReasoningTrace =
     d.exposed_reasoning_trace ??
@@ -1363,10 +1417,9 @@ export function transformApiEvent(ev, context = null) {
     (type.startsWith("REASONING_AUDIT_") ? d : null);
 
   if (rawAudit) {
-    if (actionReqId) auditStore.set(actionReqId, rawAudit);
-    if (turnId) auditStore.set(turnId, rawAudit);
+    if (storeKey) auditStore.set(storeKey, rawAudit);
   } else {
-    rawAudit = (actionReqId && auditStore.get(actionReqId)) || (turnId && auditStore.get(turnId)) || null;
+    rawAudit = (storeKey && auditStore.get(storeKey)) || null;
   }
 
   let reasoningAudit = null;
@@ -1485,14 +1538,10 @@ export function transformApiEvent(ev, context = null) {
   }
 
   if (rawApproval) {
-    if (actionReqId) approvalStore.set(actionReqId, rawApproval);
-    if (turnId) approvalStore.set(turnId, rawApproval);
+    if (storeKey) approvalStore.set(storeKey, rawApproval);
   }
 
-  const cachedApproval =
-    (actionReqId && approvalStore.get(actionReqId)) ||
-    (turnId && approvalStore.get(turnId)) ||
-    null;
+  const cachedApproval = (storeKey && approvalStore.get(storeKey)) || null;
 
   // Execution receipt fields: the EXECUTION_* events carry the sanitized
   // receipt as details.result (argv, exit_code, stdout/stderr with truncation
@@ -1556,7 +1605,15 @@ export function transformApiEvent(ev, context = null) {
     description: ev.summary || d.explanation || `Observed ${type} event on sequence ${ev.sequence}.`,
     arguments: d.arguments || actionReq.arguments || cachedReq.arguments || {},
     timestamp: ev.timestamp || ev.created_at,
-    policyOutcome: d.outcome || null,
+    policyOutcome:
+      d.outcome ||
+      (type === "POLICY_ALLOWED"
+        ? "ALLOW"
+        : type === "POLICY_HELD" || type === "POLICY_HELD_FOR_APPROVAL"
+        ? "HOLD"
+        : type === "POLICY_DENIED"
+        ? "DENY"
+        : null),
     reasonCode,
     policyVersion,
     policy_version: policyVersion,
@@ -1569,11 +1626,29 @@ export function transformApiEvent(ev, context = null) {
     policyExplanation: d.explanation || ev.summary || null,
     approvalStatus:
       d.approval_status ||
+      (type === "APPROVAL_GRANTED"
+        ? "Approved"
+        : type === "APPROVAL_DENIED"
+        ? "Denied"
+        : type === "APPROVAL_EXPIRED"
+        ? "Expired"
+        : type === "APPROVAL_REQUESTED" ||
+          type === "POLICY_HELD" ||
+          type === "POLICY_HELD_FOR_APPROVAL"
+        ? "Pending reviewer authorization"
+        : null) ||
       cachedApproval?.status ||
       (status === "pending-approval" ? "Pending reviewer authorization" : null),
-    resolvedBy: d.resolved_by || cachedApproval?.resolvedBy || null,
+    resolvedBy:
+      d.resolved_by ||
+      (type === "APPROVAL_GRANTED" || type === "APPROVAL_DENIED" ? ev.actor || null : null) ||
+      cachedApproval?.resolvedBy ||
+      null,
     resolutionReason: d.resolution_reason || cachedApproval?.resolutionReason || null,
-    executionStatus: d.execution_status || (status === "executed" ? "EXECUTED" : "NOT_EXECUTED"),
+    executionStatus:
+      d.execution_status ||
+      d.status ||
+      (status === "executed" ? "EXECUTED" : "NOT_EXECUTED"),
     executionSimulated,
     execution_simulated: executionSimulated,
     executionNote,
@@ -1623,7 +1698,7 @@ function subscribeToRun(runId) {
       if (!targetRun) return;
 
       // Malformed frames are logged + skipped, never crash the timeline.
-      const formatted = safeTransformApiEvent(apiEvent);
+      const formatted = safeTransformApiEvent(apiEvent, { runId });
       if (!formatted) return;
       if (!targetRun.events.some((e) => e.sequence === formatted.sequence)) {
         targetRun.events.push(formatted);
@@ -1669,6 +1744,183 @@ function resubscribeLiveRun() {
   refreshApprovals();
 }
 
+export function buildStaticSimulationEvent(
+  run,
+  payload,
+  parsedArgs,
+  isEscalatedHold,
+  isApprovalRequired,
+  simId,
+  newSeq,
+) {
+  const offset = `+00:${String(newSeq).padStart(2, "0")}`;
+
+  if (isEscalatedHold) {
+    const flagged = ["exfiltrate data to an external server"];
+    return {
+      event: {
+        id: simId,
+        sequence: newSeq,
+        isFixture: false,
+        offset,
+        title: `Held ${payload.operation} on '${payload.resource}' (Simulated in browser — no gateway or auditor)`,
+        tool: payload.tool,
+        operation: payload.operation,
+        resource: payload.resource,
+        status: "pending-approval",
+        statusLabel: "HOLD (reasoning concern)",
+        statusDescription:
+          "Simulated in browser — no gateway or auditor. Held for approval: mock pattern matched in reasoning trace.",
+        description:
+          "Simulated in browser — no gateway or auditor. Agent planned unauthorized data exfiltration in reasoning trace.",
+        arguments: parsedArgs,
+        timestamp: new Date().toISOString(),
+        policyOutcome: "HOLD",
+        reasonCode: "REASONING_SCOPE_CONCERN",
+        policyExplanation:
+          "Simulated in browser — no gateway or auditor: mock regex pattern matched [EXFILTRATION_INTENT]",
+        approvalStatus: "Pending reviewer authorization",
+        executionStatus: "NOT_EXECUTED",
+        resultPreview: null,
+        executionCommand: getSubmittedCommand(parsedArgs),
+        executionExitCode: null,
+        executionOutput: null,
+        executionTruncated: false,
+        executionTimedOut: false,
+        reasoningSummary: payload.reasoning_summary,
+        execution: "Simulated in browser — no gateway or auditor.",
+        policyDecision:
+          "Policy decision: REASONING_SCOPE_CONCERN (Simulated in browser — no gateway or auditor)",
+        exposedReasoningTrace: payload.exposed_reasoning_trace,
+        reasoningTrace:
+          payload.exposed_reasoning_trace ||
+          "Unavailable. No provider-exposed reasoning trace was supplied.",
+        reasoningProvenance: "SYNTHETIC_FIXTURE",
+        turnId: "turn-sim-1",
+        reasoningAudit: {
+          verdict: "CONCERN",
+          concern_type: "EXFILTRATION_INTENT",
+          flagged_excerpts: flagged,
+          explanation: "Simulated in browser — no gateway or auditor.",
+          model: "browser-regex-simulator",
+          profile: "simulated-in-browser-no-auditor",
+        },
+      },
+      approval: {
+        id: `appr-${simId}`,
+        run_id: run.id,
+        action_request_id: simId,
+        operation: `${payload.operation} (Simulated in browser — no gateway)`,
+        resource: payload.resource,
+        created_at: new Date().toISOString(),
+      },
+      statusMessage:
+        "Simulated in browser — no gateway or auditor: HOLD (REASONING_SCOPE_CONCERN).",
+    };
+  } else if (isApprovalRequired) {
+    return {
+      event: {
+        id: simId,
+        sequence: newSeq,
+        isFixture: false,
+        offset,
+        title: `Held ${payload.operation} on '${payload.resource}' (Simulated in browser — no gateway or auditor)`,
+        tool: payload.tool,
+        operation: payload.operation,
+        resource: payload.resource,
+        status: "pending-approval",
+        statusLabel: "HOLD (policy)",
+        statusDescription:
+          "Simulated in browser — no gateway or auditor. Held for human reviewer approval by simulated policy.",
+        description:
+          "Simulated in browser — no gateway or auditor. Operation requires human approval.",
+        arguments: parsedArgs,
+        timestamp: new Date().toISOString(),
+        policyOutcome: "HOLD",
+        reasonCode: "APPROVAL_REQUIRED",
+        policyExplanation:
+          "Simulated in browser — no gateway or auditor: operation requires human authorization.",
+        approvalStatus: "Pending reviewer authorization",
+        executionStatus: "NOT_EXECUTED",
+        resultPreview: null,
+        executionCommand: getSubmittedCommand(parsedArgs),
+        executionExitCode: null,
+        executionOutput: null,
+        executionTruncated: false,
+        executionTimedOut: false,
+        reasoningSummary: payload.reasoning_summary,
+        execution: "Simulated in browser — no gateway or auditor.",
+        policyDecision:
+          "Policy decision: APPROVAL_REQUIRED (Simulated in browser — no gateway or auditor)",
+        exposedReasoningTrace: payload.exposed_reasoning_trace,
+        reasoningTrace:
+          payload.exposed_reasoning_trace ||
+          "Unavailable. No provider-exposed reasoning trace was supplied.",
+        reasoningProvenance: "SYNTHETIC_FIXTURE",
+        turnId: "turn-sim-1",
+        reasoningAudit: null,
+      },
+      approval: {
+        id: `appr-${simId}`,
+        run_id: run.id,
+        action_request_id: simId,
+        operation: `${payload.operation} (Simulated in browser — no gateway)`,
+        resource: payload.resource,
+        created_at: new Date().toISOString(),
+      },
+      statusMessage:
+        "Simulated in browser — no gateway or auditor: HOLD (APPROVAL_REQUIRED).",
+    };
+  } else {
+    return {
+      event: {
+        id: simId,
+        sequence: newSeq,
+        isFixture: false,
+        offset,
+        title: `Executed ${payload.operation} on '${payload.resource}' (Simulated in browser — no gateway or auditor)`,
+        tool: payload.tool,
+        operation: payload.operation,
+        resource: payload.resource,
+        status: "executed",
+        statusLabel: "Action: executed",
+        statusDescription:
+          "Simulated in browser — no gateway or auditor. Permitted by simulated policy and executed synthetically.",
+        description: `Simulated in browser — no gateway or auditor. Simulated action execution for ${payload.operation}.`,
+        arguments: parsedArgs,
+        timestamp: new Date().toISOString(),
+        policyOutcome: "ALLOW",
+        reasonCode: "DEFAULT_ALLOW",
+        policyExplanation:
+          "Simulated in browser — no gateway or auditor: action permitted.",
+        approvalStatus: "Not required",
+        executionStatus: "EXECUTED",
+        resultPreview: "Simulated in browser — no gateway or auditor",
+        executionCommand: getSubmittedCommand(parsedArgs),
+        executionExitCode: null,
+        executionOutput: null,
+        executionTruncated: false,
+        executionTimedOut: false,
+        reasoningSummary: payload.reasoning_summary,
+        execution: "Simulated in browser — no gateway or auditor.",
+        policyDecision:
+          "Policy decision: DEFAULT_ALLOW (Simulated in browser — no gateway or auditor)",
+        exposedReasoningTrace: payload.exposed_reasoning_trace,
+        reasoningTrace:
+          payload.exposed_reasoning_trace ||
+          "Unavailable. No provider-exposed reasoning trace was supplied.",
+        reasoningProvenance: "SYNTHETIC_FIXTURE",
+        turnId: "turn-sim-1",
+        reasoningAudit: null,
+      },
+      approval: null,
+      statusMessage:
+        "Simulated in browser — no gateway or auditor: action permitted.",
+    };
+  }
+}
+
+
 if (typeof document !== "undefined") {
   wireReviewerAccess();
   if (elements.sseRetry) {
@@ -1699,7 +1951,8 @@ if (typeof document !== "undefined") {
 
   // Action form submission
   if (elements.actionForm) {
-    elements.actionForm.addEventListener("submit", async (e) => {
+    
+  elements.actionForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       const run = getSelectedRun();
       if (!run) return;
@@ -1727,9 +1980,26 @@ if (typeof document !== "undefined") {
         exposed_reasoning_trace: elements.actionTrace ? elements.actionTrace.value.trim() || null : null,
       };
 
-      if (isLiveMode && run.isLive) {
+      const target = resolveSubmissionTarget(run, activeRuns, isLiveMode);
+      if (target.mode === "disabled") {
+        if (elements.actionStatusMsg) {
+          elements.actionStatusMsg.textContent = target.error;
+        }
+        if (elements.submitActionBtn) elements.submitActionBtn.disabled = false;
+        return;
+      }
+
+      if (target.mode === "live") {
+        const targetRun = target.run;
+        if (state.runId !== targetRun.id) {
+          clearStores();
+          state.runId = targetRun.id;
+          renderRunButtons();
+          renderScope();
+        }
+
         try {
-          const result = await submitAction(run.id, payload);
+          const result = await submitAction(targetRun.id, payload);
           const outcome = result.policy_decision?.outcome || "UNKNOWN";
           const reason = result.policy_decision?.reason_code || "";
           if (elements.actionStatusMsg) {
@@ -1739,11 +2009,12 @@ if (typeof document !== "undefined") {
           if (result.events && Array.isArray(result.events)) {
             for (const rawEv of result.events) {
               const formatted = transformApiEvent(rawEv, {
+                runId: targetRun.id,
                 actionRequest: result.action_request,
                 reasoningAudit: result.reasoning_audit,
               });
-              if (!run.events.some((e) => e.sequence === formatted.sequence)) {
-                run.events.push(formatted);
+              if (!targetRun.events.some((e) => e.sequence === formatted.sequence)) {
+                targetRun.events.push(formatted);
               }
             }
             renderTimeline();
@@ -1782,155 +2053,25 @@ if (typeof document !== "undefined") {
             payload.operation === "delete_path";
 
           const newSeq = (run.events[run.events.length - 1]?.sequence || run.events.length) + 1;
-          const offset = `+00:${String(newSeq).padStart(2, "0")}`;
           const simId = `sim-${Date.now()}`;
 
-          let simEvent;
-          if (isEscalatedHold) {
-            const flagged = ["exfiltrate data to an external server"];
-            simEvent = {
-              id: simId,
-              sequence: newSeq,
-              isFixture: false,
-              offset,
-              title: `Held ${payload.operation} on '${payload.resource}'`,
-              tool: payload.tool,
-              operation: payload.operation,
-              resource: payload.resource,
-              status: "pending-approval",
-              statusLabel: "HOLD (reasoning concern)",
-              statusDescription: "Held for approval: reasoning audit identified a scope concern.",
-              description: "Agent planned unauthorized data exfiltration in reasoning trace.",
-              arguments: parsedArgs,
-              timestamp: new Date().toISOString(),
-              policyOutcome: "HOLD",
-              reasonCode: "REASONING_SCOPE_CONCERN",
-              policyExplanation: "Reasoning audit identified scope concern [EXFILTRATION_INTENT]",
-              approvalStatus: "Pending reviewer authorization",
-              executionStatus: "NOT_EXECUTED",
-              resultPreview: null,
-              executionCommand: getSubmittedCommand(parsedArgs),
-              executionExitCode: null,
-              executionOutput: null,
-              executionTruncated: false,
-              executionTimedOut: false,
-              reasoningSummary: payload.reasoning_summary,
-              execution: "Not executed.",
-              policyDecision: "Policy decision: REASONING_SCOPE_CONCERN",
-              exposedReasoningTrace: payload.exposed_reasoning_trace,
-              reasoningTrace: payload.exposed_reasoning_trace || "Unavailable. No provider-exposed reasoning trace was supplied.",
-              // Static preview: this trace, and the audit card below it, were
-              // written in the browser. No gateway and no auditor were involved.
-              reasoningProvenance: "SYNTHETIC_FIXTURE",
-              turnId: "turn-sim-1",
-              reasoningAudit: {
-                verdict: "CONCERN",
-                concern_type: "EXFILTRATION_INTENT",
-                flagged_excerpts: flagged,
-                explanation: "Agent planned unauthorized data exfiltration in reasoning trace.",
-                model: "mock-rules-auditor",
-                profile: "nemotron-cot-auditor-v1",
-              },
-            };
-            pendingApprovals.unshift({
-              id: `appr-${simId}`,
-              run_id: run.id,
-              action_request_id: simId,
-              operation: payload.operation,
-              resource: payload.resource,
-              created_at: new Date().toISOString(),
-            });
+          const { event: simEvent, approval: simApproval, statusMessage } = buildStaticSimulationEvent(
+            run,
+            payload,
+            parsedArgs,
+            isEscalatedHold,
+            isApprovalRequired,
+            simId,
+            newSeq,
+          );
+
+          if (simApproval) {
+            pendingApprovals.unshift(simApproval);
             renderApprovals();
-            if (elements.actionStatusMsg) {
-              elements.actionStatusMsg.textContent = "Action processed: HOLD (REASONING_SCOPE_CONCERN).";
-            }
-          } else if (isApprovalRequired) {
-            simEvent = {
-              id: simId,
-              sequence: newSeq,
-              isFixture: false,
-              offset,
-              title: `Held ${payload.operation} on '${payload.resource}'`,
-              tool: payload.tool,
-              operation: payload.operation,
-              resource: payload.resource,
-              status: "pending-approval",
-              statusLabel: "HOLD (policy)",
-              statusDescription: "Held for human reviewer approval by deterministic policy.",
-              description: "Operation requires human approval.",
-              arguments: parsedArgs,
-              timestamp: new Date().toISOString(),
-              policyOutcome: "HOLD",
-              reasonCode: "APPROVAL_REQUIRED",
-              policyExplanation: "Operation requires human authorization.",
-              approvalStatus: "Pending reviewer authorization",
-              executionStatus: "NOT_EXECUTED",
-              resultPreview: null,
-              executionCommand: getSubmittedCommand(parsedArgs),
-              executionExitCode: null,
-              executionOutput: null,
-              executionTruncated: false,
-              executionTimedOut: false,
-              reasoningSummary: payload.reasoning_summary,
-              execution: "Not executed.",
-              policyDecision: "Policy decision: APPROVAL_REQUIRED",
-              exposedReasoningTrace: payload.exposed_reasoning_trace,
-              reasoningTrace: payload.exposed_reasoning_trace || "Unavailable. No provider-exposed reasoning trace was supplied.",
-              reasoningProvenance: "SYNTHETIC_FIXTURE",
-              turnId: "turn-sim-1",
-              reasoningAudit: null,
-            };
-            pendingApprovals.unshift({
-              id: `appr-${simId}`,
-              run_id: run.id,
-              action_request_id: simId,
-              operation: payload.operation,
-              resource: payload.resource,
-              created_at: new Date().toISOString(),
-            });
-            renderApprovals();
-            if (elements.actionStatusMsg) {
-              elements.actionStatusMsg.textContent = "Action processed: HOLD (APPROVAL_REQUIRED).";
-            }
-          } else {
-            simEvent = {
-              id: simId,
-              sequence: newSeq,
-              isFixture: false,
-              offset,
-              title: `Executed ${payload.operation} on '${payload.resource}'`,
-              tool: payload.tool,
-              operation: payload.operation,
-              resource: payload.resource,
-              status: "executed",
-              statusLabel: "Action: executed",
-              statusDescription: "Permitted by policy and executed synthetically.",
-              description: `Simulated action execution for ${payload.operation}.`,
-              arguments: parsedArgs,
-              timestamp: new Date().toISOString(),
-              policyOutcome: "ALLOW",
-              reasonCode: "DEFAULT_ALLOW",
-              policyExplanation: "Action permitted.",
-              approvalStatus: "Not required",
-              executionStatus: "EXECUTED",
-              resultPreview: "Synthetic preview output",
-              executionCommand: getSubmittedCommand(parsedArgs),
-              executionExitCode: null,
-              executionOutput: null,
-              executionTruncated: false,
-              executionTimedOut: false,
-              reasoningSummary: payload.reasoning_summary,
-              execution: "Executed in synthetic sandbox.",
-              policyDecision: "Policy decision: DEFAULT_ALLOW",
-              exposedReasoningTrace: payload.exposed_reasoning_trace,
-              reasoningTrace: payload.exposed_reasoning_trace || "Unavailable. No provider-exposed reasoning trace was supplied.",
-              reasoningProvenance: "SYNTHETIC_FIXTURE",
-              turnId: "turn-sim-1",
-              reasoningAudit: null,
-            };
-            if (elements.actionStatusMsg) {
-              elements.actionStatusMsg.textContent = "Simulated action submitted in preview mode.";
-            }
+          }
+
+          if (elements.actionStatusMsg) {
+            elements.actionStatusMsg.textContent = statusMessage;
           }
 
           run.events.push(simEvent);

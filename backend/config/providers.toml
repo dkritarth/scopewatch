@@ -71,9 +71,13 @@ effort = "high"
 enabled = false
 
 # Demo profile via Nebius Token Factory (OpenAI-compatible). Needs NEBIUS_API_KEY.
-# The endpoint is documented by Token Factory; the last live verification was
-# 2026-10-01. On 2026-10-03 the supplied NEBIUS_API_KEY returned HTTP 401 for
-# every auth shape tried, so this profile is currently unverified (#101).
+# Verified live 2026-10-03 (#101): a Token Factory key authenticates, GET /v1/models
+# returns 200 with the full catalogue, and a 48-case held-out auditor run completed
+# (79.2% accuracy, FNR 8.33%, FHR 0.00%, failure 14.58%; docs/evaluation.md).
+# The earlier "unverified, HTTP 401" note was a wrong credential type, not a code
+# or endpoint fault: the key then in .env was a Nebius AI Cloud service-account key
+# (401 on Token Factory and AI Studio, 403 on AI Cloud = authenticated, no
+# permission). See docs/spikes/2026-10-nemotron-provider-verification.md section 4.
 [profiles.nebius-demo]
 name = "nebius-demo"
 model = "nvidia/Nemotron-3_5-Lightning"
@@ -83,7 +87,17 @@ timeout_s = 60.0
 max_retries = 3
 
 # The auditor requires a short JSON verdict, not hidden chain-of-thought.
-# Live verification on 2026-10-01 showed that disabling thinking prevents
-# reasoning tokens from exhausting the response budget before JSON is emitted.
+# Measured 2026-10-01 and re-measured 2026-10-03: with thinking on, the 256-token
+# cap is consumed before any JSON is emitted; with it off, the same prompt returns
+# valid JSON with 0 reasoning tokens. This is also the whole latency story here:
+# p50 619 ms on the held-out run.
+#
+# Known limit, and it is not a config problem: on Nebius, message.reasoning and
+# message.reasoning_content are both present and None, with the thinking written
+# into `content` instead. The gateway therefore records reasoning provenance as
+# UNAVAILABLE for this profile (ADR-0001 decision 5: text in `content` is not a
+# provider-exposed trace), and with no trace text the auditor is not attempted at
+# all -- so a nebius-demo run shows ALLOW where openrouter-dev shows HOLD. See
+# docs/evaluation.md, "Provider profiles: what each one exposes", and issue #214.
 [profiles.nebius-demo.auditor_body.chat_template_kwargs]
 enable_thinking = false
