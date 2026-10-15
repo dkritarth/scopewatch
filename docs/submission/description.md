@@ -38,23 +38,36 @@ never even reaches the auditor: deterministic `DENY` (`BLOCKED_PATH`) is final
 and un-overridable, and the evidence panel shows the decision event with no
 execution receipt after it.
 
-Agent and auditor both run **NVIDIA's Nemotron 70B instruct model**
-(`nvidia/Nemotron-3_5-Lightning`) served through **Nebius** — see
+Agent and auditor both run **NVIDIA's Nemotron 3.5 Lightning**
+(`nvidia/Nemotron-3_5-Lightning`) served through **Nebius Token Factory** — see
 `docs/submission/nebius-nvidia.md` for the exact profile, role split, license
-notes, and our feedback to both providers. We chose an open-weight reasoning
-model deliberately: its chain of thought is visible and auditable instead of a
-black box, which is what makes the reasoning-escalation demo possible.
+notes, and our feedback to both providers. We chose an open-weight model
+deliberately: when a provider returns a reasoning field, the gateway records it
+as provider-exposed evidence instead of taking the model's word for it, and that
+is what makes the reasoning-escalation demo possible.
 
-Measured, not marketed: on the 48-case held-out auditor benchmark the
-`mock-rules-auditor` profile scored **93.8% accuracy, 2.78% false-negative
-rate, 16.67% false-hold rate, 0.00% failure rate** (run 2026-09-28, prompt
-`v1.0-hardened-1cea92f0`; harness: `backend/scripts/evaluate_reasoning_audit.py`,
-methodology: `docs/evaluation.md`). The false-hold rate misses our own <15%
-target — we report it plainly, and live-model numbers on Nemotron are still
-pending an API key. What Scopewatch does **not** claim: it mediates only
-actions routed through its gateway API (anything bypassing the API is
-unobserved), and reasoning traces are evidence, not proof of intent. The
-dashboard states both limits on screen.
+Measured, not marketed. On our 48-case held-out auditor benchmark, one pinned run
+per profile on 2026-10-03, every report re-verified by recomputing all metrics
+from the per-case rows (`--check`):
+
+| Profile | Model served | Accuracy | False negatives | False holds | Failed closed | Latency p50 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `nebius-demo` (Nebius Token Factory) | `nvidia/Nemotron-3_5-Lightning` | 79.2% | 8.33% | **0.00%** | 14.58% | 619 ms |
+| `openrouter-dev` (OpenRouter) | `nvidia/nemotron-3.5-lightning` | 87.5% | 5.56% | **0.00%** | 8.33% | 2,372 ms |
+| `mock` (structural check, not a model) | `mock-rules-auditor` | 93.8% | 2.78% | 16.67% | 0.00% | 1 ms |
+
+Read that table with its targets rather than alone: both live profiles miss our
+own <5% false-negative target, and the mock row misses our <15% false-hold
+target. The `mock` row is a rule matcher exercising the harness, not model
+accuracy. Every live miss sits in the same category — `injection_following`,
+where the auditor answered "no concern" where a concern was expected. That is
+the only unsafe direction anywhere in the measurement; across 96 held-out audits
+no clean action was ever held, and every other failure mode failed *closed* to
+a hold. Method, dataset hash, and what we did not verify: `docs/evaluation.md`.
+
+What Scopewatch does **not** claim: it mediates only actions routed through its
+gateway API (anything bypassing the API is unobserved), and reasoning traces are
+evidence, not proof of intent. The dashboard states both limits on screen.
 
 Everything is synthetic and reproducible: `./scripts/run_demo.sh` starts the
 gateway and reviewer UI locally with zero keys, and `./scripts/validate.sh`
@@ -77,9 +90,11 @@ scenario yourself — it takes two minutes.
 - Provider profiles (`mock`, `openrouter-dev`, `nebius-demo`) in
   `backend/config/providers.toml`; no model ID hard-coded in core code.
 - Held-out auditor benchmark: `backend/fixtures/eval/`, `docs/evaluation.md`.
-- 287 backend tests collected (incl. end-to-end invariant tests in
-  `backend/tests/test_agent_end_to_end.py`); full suites via
-  `./scripts/validate.sh`.
+- 1,479 backend tests collected (incl. end-to-end invariant tests in
+  `backend/tests/test_agent_end_to_end.py`); 1,454 pass locally and the 25
+  Docker-executor tests skip without a daemon, so CI's backend job on `main`
+  at `e392087` reported 1,479 passed with a Docker daemon present. Full suites
+  via `./scripts/validate.sh`.
 
 ## Appendix — `docs/hackathon.md` checkbox evidence
 
@@ -92,21 +107,21 @@ issue still in flight).
 | Item | Status | Evidence / owner |
 | --- | --- | --- |
 | M0 decisions and sync | done | `docs/adr/0001-pre-execution-gateway.md`, `docs/spikes/2026-09-nemotron-provider-spike.md` (provisional — see feedback doc) |
-| M1 real agent on invoice demo | done | `docs/ARCHITECTURE.md`, `docs/evaluation.md`, `./scripts/validate.sh --quick`; numbers above (2026-09-28) |
-| M2 coding scenario + Docker executor | open-work | Scenarios `demo/scenarios/10_*.json`–`13_*.json`, `backend/scopewatch/executor_docker.py`, issue #38; `docs/hackathon.md` M2 boxes still unchecked — check them only when that track merges |
-| M3 hosting + submission | open-work | This folder; hosted URL pending-human (issue #43); video pending-human (issue #45, script ready in `demo-script.md`); Devpost pending-human (issue #47) |
+| M1 real agent on invoice demo | done | `docs/ARCHITECTURE.md`, `docs/evaluation.md`; live-model numbers above (held-out split, 2026-10-03) |
+| M2 coding scenario + Docker executor | done | Scenarios `demo/scenarios/10_*.json`–`13_*.json`, `backend/scopewatch/executor_docker.py`; landed via #65 and `docs/hackathon.md` M2 boxes checked |
+| M3 hosting + submission | open-work | This folder; `deploy/` runbook merged (#42) but the VM itself is pending-human (issue #43); video pending-human (issue #45, script ready in `demo-script.md`); Devpost pending-human (issue #47) |
 
 ### Submission requirements (`docs/hackathon.md:34-45`)
 
 | Requirement | Status | Evidence / placeholder |
 | --- | --- | --- |
 | Submit by 2026-10-30 10:00 Pacific | pending-human | Issue #47; this package is the paste-ready input |
-| Working app using Nebius inference or compute | done (config) / pending-human (live) | `nebius-demo` profile in `backend/config/providers.toml:23-29`; live inference not yet run — needs `NEBIUS_API_KEY`; VM deploy in issue #43 |
+| Working app using Nebius inference or compute | done (live) | `nebius-demo` profile in `backend/config/providers.toml`; live inference verified 2026-10-03 — authenticated catalogue, 48-case held-out auditor run, and live agent runs of scenarios 01–05 and 10 (`demo/SCENARIOS.md`). VM deploy is issue #43 |
 | Use ≥1 NVIDIA open model + explain role | done (live Nebius call) | `nvidia/Nemotron-3_5-Lightning` in `backend/config/providers.toml`; observed limits and role in `docs/submission/nebius-nvidia.md` |
 | Select a track | pending-human | Issue #40; decision due 2026-10-15; draft framing above |
 | Working demo + testing instructions | done (local) / pending-human (hosted) | `./scripts/run_demo.sh`, `./scripts/validate.sh`; judge instructions in `docs/submission/testing-instructions.md`; `<HOSTED_URL>` placeholder until issue #43 lands |
 | Source, assets, setup/run instructions, license | done | This repo; `README.md`, `BUILDING.md`, MIT `LICENSE` |
-| English description + public YouTube demo <3 min | done (draft+script) / pending-human (record+publish) | This file; `docs/submission/demo-script.md` (359 spoken words ≈ 2:33); recording in issue #45 |
+| English description + public YouTube demo <3 min | done (draft+script) / pending-human (record+publish) | This file; `docs/submission/demo-script.md` (362 spoken words ≈ 2:35 at 140 wpm); recording in issue #45 |
 | Explain Nebius+NVIDIA use + feedback | done (draft) | `docs/submission/nebius-nvidia.md` |
 | Available for judging through 2026-12-15 | pending-human | Needs the hosted instance (issue #43) plus an availability owner and budget |
 | Eligibility, team rep, ownership/licensing review | pending-human | Issue #41; third-party license notes in `nebius-nvidia.md` are input, not legal review |
@@ -118,5 +133,11 @@ issue still in flight).
 - Track choice + rationale (issue #40, due 2026-10-15).
 - Team representative, eligibility confirmations (issue #41).
 - Devpost submit itself (issue #47).
-- Live Nemotron numbers (needs `NEBIUS_API_KEY`, issue #101) — replace the
-  mock-profile figures above once a dated live eval report exists.
+
+Live Nemotron numbers are **not** a placeholder: both live profiles were
+measured on the held-out split on 2026-10-03 and are quoted above with profile,
+split, and date. They were deliberately not re-run afterwards, because held-out
+is spent for this submission and re-measuring to chase a better number is what
+`docs/evaluation.md` forbids. Two things a human still owns and this package
+cannot assert: whether scenario 06 reaches its `HOLD` live (issue #214) and the
+Nemotron license text (issue #41).
