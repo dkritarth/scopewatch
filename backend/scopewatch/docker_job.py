@@ -88,7 +88,7 @@ RUN_COMMAND_OUTPUT_LIMIT = 64 * 1024
 # Container output caps. These must stay equal to the gateway config values in
 # ``backend/scopewatch/config.py``; they are restated here because the runner
 # cannot import gateway config, and the cross-test pins them together.
-MAX_READ_BYTES = 256 * 1024  # 256 KiB
+MAX_READ_BYTES = 64 * 1024  # 64 KiB
 MAX_WRITE_BYTES = 64 * 1024  # 64 KiB
 
 
@@ -260,7 +260,7 @@ def helper_code() -> str:
         "                return\n"
         "            content = resolved.read_text(encoding='utf-8', errors='replace')\n"
         "            preview = content[:500] if len(content) > 500 else content\n"
-        "            print(json.dumps({'status': 'EXECUTED', 'result': {'operation': 'read_text', 'resource': resource, 'byte_count': size, 'preview': preview, 'truncated': len(content) > 500}, 'error_code': None}))\n"
+        "            print(json.dumps({'status': 'EXECUTED', 'result': {'operation': 'read_text', 'resource': resource, 'byte_count': size, 'content': content, 'preview': preview, 'truncated': False}, 'error_code': None}))\n"
         "            return\n"
         "        elif op == 'write_text':\n"
         "            content = args.get('content', '')\n"
