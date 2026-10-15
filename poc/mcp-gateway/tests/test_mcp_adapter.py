@@ -245,8 +245,10 @@ def test_write_then_read_roundtrip_through_gateway(gateway_env) -> None:
     assert written["result"]["bytes_written"] == len("synthetic hello".encode())
     read_back = env["adapter"].call_tool("read_text", {"path": "outputs/hello.txt"})
     assert "synthetic hello" in read_back["result"]["preview"]
-    # The write really went through the gateway executor, not the adapter.
-    assert (env["workspace"] / "outputs" / "hello.txt").read_text() == "synthetic hello"
+    # The write really went through the gateway executor and landed in the run's
+    # own isolated workspace (#117), not the shared fixture tree.
+    run_workspace = env["workspace"] / ".runs" / env["run_id"]
+    assert (run_workspace / "outputs" / "hello.txt").read_text() == "synthetic hello"
 
 
 # --------------------------------------------------------------------------
@@ -523,7 +525,8 @@ def test_reasoning_summary_recorded_as_agent_authored(gateway_env) -> None:
         f"/api/v1/runs/{env['run_id']}/actions/{result['action_id']}"
     )
     action = resp.json()["action_request"]
-    assert action["reasoning_provenance"] == "AGENT_AUTHORED_SUMMARY"
+    assert action["reasoning_provenance"] == "CALLER_ASSERTED_SUMMARY"
+    assert action["caller_claimed_provenance"] == "AGENT_AUTHORED_SUMMARY"
     assert action["reasoning_summary"] == "synthetic agent-authored summary"
     assert action["exposed_reasoning_trace"] is None
 

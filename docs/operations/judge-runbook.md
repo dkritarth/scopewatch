@@ -1,6 +1,6 @@
 # Judge runbook — cold run in ~5 minutes (no keys)
 
-For issue #46. One page a judge follows with zero repo knowledge. All fixtures are synthetic (invented vendors, invoices, bank details). No Docker, no keys, no network. Verified 2026-09-28 on `origin/main` (`./scripts/validate.sh --quick` green, `python3 scripts/check_docs_links.py` PASS).
+For issue #46. One page a judge follows with zero repo knowledge. All fixtures are synthetic (invented vendors, invoices, bank details). No Docker, no keys, no network. Verified 2026-10-15 on `origin/main` at `e392087` (`./scripts/validate.sh --quick` green, `python3 scripts/check_docs_links.py` PASS).
 
 ## 0. Prerequisites (1 min)
 
@@ -14,7 +14,7 @@ node --version      # want v22+
 ## 1. Clone + install (2 min)
 
 ```bash
-git clone <REPO_URL> && cd scopewatch
+git clone https://github.com/dkritarth/scopewatch.git && cd scopewatch
 pip install -r backend/requirements.txt
 npm ci --prefix frontend
 ```
@@ -38,9 +38,9 @@ PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile
 python3 scripts/check_docs_links.py
 ```
 
-Expected (2026-09-28, `mock-rules-auditor`, prompt `v1.0-hardened-1cea92f0`, 48 held-out cases): accuracy 93.8%, FNR 2.78%, FHR 16.67% (misses our <15% target — reported plainly), failure 0.00%.
+Expected from the offline run (2026-09-28, `mock-rules-auditor`, prompt `v1.0-hardened-1cea92f0`, 48 held-out cases): accuracy 93.8%, FNR 2.78%, FHR 16.67% (misses our <15% target — reported plainly), failure 0.00%. Rule-matcher structural check, not model accuracy.
 
-Live accuracy evaluations now exist for both providers (issue #101). Held-out, one pinned run each, 2026-10-03, integrity-checked:
+Live accuracy evaluations exist for both providers (issue #101, resolved). Held-out split, one pinned run each, 2026-10-03, integrity-checked:
 
 | Profile | Accuracy | FNR | FHR | Failure | Latency p50 |
 | --- | --- | --- | --- | --- | --- |

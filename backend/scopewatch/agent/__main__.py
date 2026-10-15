@@ -157,6 +157,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         ),
     )
     parser.add_argument(
+        "--in-process",
+        action="store_true",
+        default=False,
+        help="Run gateway in-process instead of connecting to an external gateway",
+    )
+    parser.add_argument(
+        "--demo-token",
+        type=str,
+        default=os.environ.get("DEMO_TOKEN"),
+        help="Shared demo token for token-guarded gateway endpoints (default: $DEMO_TOKEN)",
+    )
+    parser.add_argument(
         "--db-path",
         type=str,
         default=None,
@@ -175,21 +187,37 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 2. Setup gateway client (connect to running server, or fallback to in-process app)
     base_url = args.base_url.rstrip("/")
     client: httpx.Client
-    try:
-        probe = httpx.get(f"{base_url}/api/v1/health", timeout=2.0)
-        if probe.status_code == 200:
-            client = httpx.Client(base_url=base_url, timeout=60.0)
-        else:
-            raise RuntimeError(f"Gateway returned status {probe.status_code}")
-    except Exception:
-        # Gateway server not running on network, spin up in-process app
+    client_headers: dict[str, str] = {}
+    if args.demo_token:
+        client_headers["X-Demo-Token"] = args.demo_token
+
+    if args.in_process:
         from fastapi.testclient import TestClient
         from scopewatch.app import create_app
         kwargs: dict[str, Any] = {}
         if args.db_path:
             kwargs["db_path"] = Path(args.db_path)
         app = create_app(**kwargs)
-        client = TestClient(app, base_url="http://gateway.local")
+        client = TestClient(app, base_url="http://gateway.local", headers=client_headers)
+    else:
+        try:
+            probe = httpx.get(f"{base_url}/api/v1/health", timeout=2.0)
+            if probe.status_code == 200:
+                client = httpx.Client(base_url=base_url, timeout=60.0, headers=client_headers)
+            else:
+                print(
+                    f"Error: Gateway at {base_url} is unreachable or unhealthy (HTTP {probe.status_code}). "
+                    "Use --in-process to run an in-process local gateway.",
+                    file=sys.stderr,
+                )
+                return 1
+        except Exception as exc:
+            print(
+                f"Error: Gateway at {base_url} is unreachable ({exc}). "
+                "Use --in-process to run an in-process local gateway.",
+                file=sys.stderr,
+            )
+            return 1
 
     # 3. Create run on gateway
     task_scope = dict(scenario.get("task_scope", {}))
@@ -204,7 +232,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "prompt_version": PROMPT_VERSION,
     }
 
-    resp = client.post("/api/v1/runs", json=run_payload)
+    run_headers = {"X-Demo-Token": args.demo_token} if args.demo_token else None
+    resp = client.post("/api/v1/runs", json=run_payload, headers=run_headers)
     if resp.status_code != 201:
         print(f"Failed to create run (HTTP {resp.status_code}): {resp.text}", file=sys.stderr)
         return 1
@@ -212,7 +241,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     run_data = resp.json()
     run_id = run_data["id"]
 
-    dispatcher = GatewayDispatcher(base_url=base_url, http_client=client)
+    dispatcher = GatewayDispatcher(base_url=base_url, http_client=client, demo_token=args.demo_token)
     try:
         # 4. Resolve provider
         if args.profile:

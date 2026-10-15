@@ -15,6 +15,7 @@ MODE="scripted"
 PROFILE=""
 AUTO_APPROVE=0
 CODING=0
+SEED_ONLY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,6 +35,15 @@ Options:
                           Any non-mock profile makes live model calls.
   --coding                Run the coding sequence 10-13 (issue #38) with the
                           synthetic coding-workspace fixture instead of 01-06.
+                          Those scenarios submit run_command actions, which
+                          only execute on the Docker executor: this selects
+                          SCOPEWATCH_EXECUTOR=docker when a Docker daemon is
+                          reachable, and says so loudly when it is not
+                          (without it, every run_command is denied
+                          deterministically before execution).
+  --seed-only             Seed the scenarios and exit without starting the
+                          gateway (to inspect the evidence database, and to
+                          let tests exercise the executor preflight).
   --auto-approve          Auto-approve HOLD actions while seeding.
   --db-path PATH          SQLite database to seed and serve (default:
                           runtime-data/scopewatch.db inside the repository).
@@ -57,6 +67,10 @@ EOF
       ;;
     --coding)
       CODING=1
+      shift
+      ;;
+    --seed-only)
+      SEED_ONLY=1
       shift
       ;;
     --mode)
@@ -106,6 +120,10 @@ else
   exit 1
 fi
 
+# The gateway package lives in backend/; both the seeding subprocess and the
+# server below need it on the import path.
+export PYTHONPATH="${REPO_ROOT}/backend:${PYTHONPATH:-}"
+
 # The coding sequence (issue #38) runs against an isolated runtime workspace
 # seeded from the synthetic demo/coding-workspace fixture, never the fixture
 # directory itself, so the agent's fix cannot dirty the repository.
@@ -115,6 +133,47 @@ if [[ "${CODING}" -eq 1 ]]; then
   fi
   if [[ "${DB_PATH_SET}" -eq 0 ]]; then
     DB_PATH="${REPO_ROOT}/runtime-data/scopewatch-coding.db"
+  fi
+fi
+
+# Executor preflight for the coding sequence (issue #204).
+#
+# Scenarios 10 and 13 submit run_command actions. The deterministic policy
+# engine refuses those for every backend except Docker
+# (policy.py RULE_RUN_COMMAND_REQUIRES_DOCKER), so with the default local
+# backend a judge sees `DENY [UNSUPPORTED_OPERATION]` twice and the coding
+# track looks broken even though the gateway behaved correctly. Silent DENYs
+# are the failure mode this preflight removes: either the Docker executor is
+# selected, or the reason is stated before seeding starts.
+#
+# An explicit SCOPEWATCH_EXECUTOR always wins: the operator may be pointing at
+# a remote runner on purpose.
+if [[ "${CODING}" -eq 1 ]]; then
+  if [[ -z "${SCOPEWATCH_EXECUTOR:-}" ]]; then
+    if "${PYTHON}" -c 'import sys
+from scopewatch.executor_docker import is_docker_available
+sys.exit(0 if is_docker_available() else 1)'; then
+      export SCOPEWATCH_EXECUTOR=docker
+      echo ""
+      echo "Executor: docker (Docker daemon detected; run_command scenarios execute)."
+      echo "  If a coding run_command reports 'No module named pytest', the executor"
+      echo "  image has no test runner: build backend/executor/Dockerfile and set"
+      echo "  SCOPEWATCH_EXECUTOR_IMAGE (see docs/operations/docker-executor.md)."
+    else
+      echo "" >&2
+      echo "WARNING: --coding needs the Docker executor, and no Docker daemon was" >&2
+      echo "detected (SCOPEWATCH_EXECUTOR is unset). Scenarios 10 and 13 submit" >&2
+      echo "run_command actions, which the deterministic policy denies for every" >&2
+      echo "non-Docker backend, so the dashboard will show:" >&2
+      echo "  DENY [UNSUPPORTED_OPERATION] for each run_command" >&2
+      echo "That is the policy failing closed, not a broken gateway. To see the" >&2
+      echo "coding commands execute: install Docker (and start the daemon), or run" >&2
+      echo "a remote executor-runner and set SCOPEWATCH_EXECUTOR=remote." >&2
+      echo "" >&2
+    fi
+  else
+    echo ""
+    echo "Executor: ${SCOPEWATCH_EXECUTOR} (from the environment)."
   fi
 fi
 
@@ -172,6 +231,18 @@ fi
 
 "${PYTHON}" "${REPO_ROOT}/scripts/seed_demo.py" "${SEED_ARGS[@]}"
 
+# --seed-only: stop here so the evidence database can be inspected (or the
+# executor preflight exercised) without binding a port.
+if [[ "${SEED_ONLY}" -eq 1 ]]; then
+  echo ""
+  echo "Seeding complete (--seed-only); gateway not started."
+  echo "  Evidence DB:  ${DB_PATH}"
+  echo "  Workspace:    ${WORKSPACE_ROOT}"
+  echo "  Executor:     $("${PYTHON}" -c 'from scopewatch.executor import get_executor_backend; print(get_executor_backend())')"
+  echo "  Run workspaces: ${SCOPEWATCH_RUN_WORKSPACES_DIR}"
+  exit 0
+fi
+
 # 2. Start server
 echo ""
 echo "[2/2] Starting Scopewatch gateway server on http://${HOST}:${PORT}..."
@@ -187,7 +258,6 @@ echo ""
 
 export SCOPEWATCH_DB_PATH="${DB_PATH}"
 export SCOPEWATCH_WORKSPACE_ROOT="${WORKSPACE_ROOT}"
-export PYTHONPATH="${REPO_ROOT}/backend:${PYTHONPATH:-}"
 
 echo "Run workspaces: ${SCOPEWATCH_RUN_WORKSPACES_DIR} (one directory per run)"
 echo ""
