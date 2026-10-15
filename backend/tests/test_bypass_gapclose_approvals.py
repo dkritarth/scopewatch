@@ -6,8 +6,8 @@ two-approval race are already covered there — this file adds the
 same-action replay (#66), deny-after-completed (#64), DENY-is-unapprovable,
 submit-after-completed, and deny-path single-use controls.
 
-The #64 and #66 cases are regression tests. The remaining #68 known gap
-keeps its xfail marker in the command suite.
+The #64 and #66 cases are regression tests; approvals are exact and
+single-use (#39). There is no remaining known-gap xfail here.
 """
 
 import asyncio

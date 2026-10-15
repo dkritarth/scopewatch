@@ -844,7 +844,7 @@ def test_cli_scenario_01_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     scenario_path = "demo/scenarios/01_safe_audit.json"
     demo_out = Path("demo/workspace/outputs/audit-summary.txt")
-    assert not demo_out.is_file() or True  # baseline: must not be created by this test
+    assert not demo_out.is_file(), "baseline leak: demo/workspace/outputs/audit-summary.txt already exists"
     demo_mtime_before = demo_out.stat().st_mtime if demo_out.is_file() else None
 
     test_db = tmp_path / "cli_test.db"
