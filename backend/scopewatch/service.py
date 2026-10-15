@@ -97,6 +97,36 @@ def _audit_error_code(exc: BaseException) -> str:
     return AuditErrorCode.AUDIT_ERROR.value
 
 
+# Values that explicitly disable the reasoning audit. Everything else, known or
+# not, leaves the audit enabled, so a typo in a hosted .env cannot silently
+# remove the gateway's headline control (issue #192).
+_REASONING_AUDIT_OFF_VALUES = frozenset({"off", "false", "0"})
+_REASONING_AUDIT_ON_VALUES = frozenset({"on", "true", "1", "yes"})
+
+
+def reasoning_audit_enabled_from_env(raw: Optional[str]) -> bool:
+    """Resolve the reasoning-audit switch from a raw environment value.
+
+    An explicit off value (case-insensitive, stripped) disables the audit.
+    Any recognised on value, and any unrecognised value (with a logged
+    warning), keeps it enabled. The audit is a control, so an ambiguous or
+    misspelled setting must fail closed rather than turn it off.
+    """
+    if raw is None:
+        return True
+    normalized = raw.strip().lower()
+    if normalized in _REASONING_AUDIT_OFF_VALUES:
+        return False
+    if normalized not in _REASONING_AUDIT_ON_VALUES:
+        logger.warning(
+            "Unrecognised SCOPEWATCH_REASONING_AUDIT value %r; reasoning audit "
+            "stays ENABLED. Use one of %s to disable it.",
+            raw,
+            sorted(_REASONING_AUDIT_OFF_VALUES),
+        )
+    return True
+
+
 def _approval_policy_evidence(
     decision: Optional[PolicyDecision],
     reason: Optional[str] = None,
@@ -799,10 +829,11 @@ capture_token: Optional[str] = None,
             # freshly read "current" version.
             evaluated_policy_version = decision.policy_version
 
-            # Feature flag check
-            reasoning_audit_enabled = os.environ.get(
-                "SCOPEWATCH_REASONING_AUDIT", "on"
-            ).lower() in ("on", "true", "1")
+            # Feature flag check (issue #192): only an explicit off value
+            # disables the audit. Unrecognised values stay on and warn.
+            reasoning_audit_enabled = reasoning_audit_enabled_from_env(
+                os.environ.get("SCOPEWATCH_REASONING_AUDIT")
+            )
 
             trace_text = (action.exposed_reasoning_trace or "").strip() or (
                 action.reasoning_summary or ""
@@ -901,15 +932,20 @@ capture_token: Optional[str] = None,
                 action.reasoning_audit_id = audit_record.id
                 decision.reasoning_audit_id = audit_record.id
 
-                if audit_record.verdict == ReasoningAuditVerdict.FAILED.value:
-                    audit_event_type = EventType.REASONING_AUDIT_FAILED
-                    audit_event_summary = (
-                        f"Reasoning audit failed for turn '{effective_turn_id}': {audit_record.explanation}"
-                    )
-                else:
+                if audit_record.verdict in (
+                    ReasoningAuditVerdict.NO_CONCERN.value,
+                    ReasoningAuditVerdict.CONCERN.value,
+                ):
                     audit_event_type = EventType.REASONING_AUDIT_COMPLETED
                     audit_event_summary = (
                         f"Reasoning audit completed for turn '{effective_turn_id}': {audit_record.verdict}."
+                    )
+                else:
+                    # FAILED and any unrecognised cached verdict are both audit
+                    # failures and fail closed (#192).
+                    audit_event_type = EventType.REASONING_AUDIT_FAILED
+                    audit_event_summary = (
+                        f"Reasoning audit failed for turn '{effective_turn_id}': {audit_record.explanation}"
                     )
 
                 audit_event_details = {
@@ -959,6 +995,25 @@ capture_token: Optional[str] = None,
                             outcome=PolicyOutcome.HOLD,
                             reason_code=ReasonCode.REASONING_AUDIT_FAILED,
                             explanation=f"Reasoning audit failed closed: {audit_record.explanation}",
+                            matched_rule="RULE_REASONING_AUDIT_FAILED",
+                            decided_at=datetime.now(timezone.utc).isoformat(),
+                            deterministic=False,
+                            reasoning_audit_id=audit_record.id,
+                            policy_version=evaluated_policy_version,
+                        )
+                    else:
+                        # Unrecognised verdict: fail closed rather than
+                        # silently leaving ALLOW in place (#192). The raw
+                        # verdict string is not echoed into evidence.
+                        decision = PolicyDecision(
+                            id=str(uuid.uuid4()),
+                            action_request_id=action.id,
+                            outcome=PolicyOutcome.HOLD,
+                            reason_code=ReasonCode.REASONING_AUDIT_FAILED,
+                            explanation=(
+                                "Reasoning audit returned an unrecognised verdict; "
+                                "failing closed."
+                            ),
                             matched_rule="RULE_REASONING_AUDIT_FAILED",
                             decided_at=datetime.now(timezone.utc).isoformat(),
                             deterministic=False,
