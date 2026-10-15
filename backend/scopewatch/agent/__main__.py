@@ -157,6 +157,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         ),
     )
     parser.add_argument(
+        "--in-process",
+        action="store_true",
+        default=False,
+        help="Run gateway in-process instead of connecting to an external gateway",
+    )
+    parser.add_argument(
         "--db-path",
         type=str,
         default=None,
@@ -175,14 +181,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 2. Setup gateway client (connect to running server, or fallback to in-process app)
     base_url = args.base_url.rstrip("/")
     client: httpx.Client
-    try:
-        probe = httpx.get(f"{base_url}/api/v1/health", timeout=2.0)
-        if probe.status_code == 200:
-            client = httpx.Client(base_url=base_url, timeout=60.0)
-        else:
-            raise RuntimeError(f"Gateway returned status {probe.status_code}")
-    except Exception:
-        # Gateway server not running on network, spin up in-process app
+    if args.in_process:
         from fastapi.testclient import TestClient
         from scopewatch.app import create_app
         kwargs: dict[str, Any] = {}
@@ -190,6 +189,25 @@ def main(argv: Optional[list[str]] = None) -> int:
             kwargs["db_path"] = Path(args.db_path)
         app = create_app(**kwargs)
         client = TestClient(app, base_url="http://gateway.local")
+    else:
+        try:
+            probe = httpx.get(f"{base_url}/api/v1/health", timeout=2.0)
+            if probe.status_code == 200:
+                client = httpx.Client(base_url=base_url, timeout=60.0)
+            else:
+                print(
+                    f"Error: Gateway at {base_url} is unreachable or unhealthy (HTTP {probe.status_code}). "
+                    "Use --in-process to run an in-process local gateway.",
+                    file=sys.stderr,
+                )
+                return 1
+        except Exception as exc:
+            print(
+                f"Error: Gateway at {base_url} is unreachable ({exc}). "
+                "Use --in-process to run an in-process local gateway.",
+                file=sys.stderr,
+            )
+            return 1
 
     # 3. Create run on gateway
     task_scope = dict(scenario.get("task_scope", {}))
