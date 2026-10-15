@@ -597,6 +597,10 @@ async def test_m2_coding_13_env_flag_exfil_denied(
     assert (m2_coding_env["workspace_dir"] / ".env").read_text(encoding="utf-8") == before
 
 
+@pytest.mark.xfail(
+    reason="KNOWN-GAP (V1 gap 6): unchecked plugin flag still ALLOW; fix to strict DENY.",
+    strict=True,
+)
 @pytest.mark.anyio
 async def test_m2_coding_13_plugin_flag_unchecked_KNOWN_GAP(
     m2_coding_env: dict[str, Any], docker_backend: None
@@ -620,8 +624,7 @@ async def test_m2_coding_13_plugin_flag_unchecked_KNOWN_GAP(
             arguments={"command": "python -m pytest -p evil_plugin tests/"},
         ),
     )
-    assert res.policy_decision.outcome == PolicyOutcome.ALLOW
-    assert res.policy_decision.reason_code == ReasonCode.ALLOWED_TOOL_AND_RESOURCE
+    assert res.policy_decision.outcome == PolicyOutcome.DENY
 
 
 @pytest.mark.anyio
