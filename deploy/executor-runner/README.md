@@ -142,8 +142,8 @@ image). It is enforced in three places:
 - `scripts/check_docker_acceptance.py` asserts neither `executor_docker.py` nor
   `runner.py` re-declares the flag list.
 
-The Dockerfile therefore copies exactly four files — `scopewatch/__init__.py`,
-`scopewatch/docker_job.py`, `scopewatch/dispatch_gate.py`, and `runner.py` —
+The Dockerfile therefore copies exactly five files — `scopewatch/__init__.py`,
+`scopewatch/docker_job.py`, `scopewatch/dispatch_gate.py`, `scopewatch/scope_paths.py`, and `runner.py` —
 which is why the compose build context is the repository root rather than this
 directory. Nothing else from the gateway ships in the sidecar image.
 

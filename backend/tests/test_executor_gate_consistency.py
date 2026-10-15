@@ -58,8 +58,10 @@ from scopewatch.executor_remote import (
     RemoteExecutor,
     sign_dispatch_payload,
 )
-from scopewatch.models import ApprovalStatus, ExecutionStatus, PolicyOutcome, ReasonCode
-from scopewatch.schemas import ActionRequest, ApprovalRequest, PolicyDecision
+from scopewatch.models import ApprovalStatus, ExecutionStatus, PolicyOutcome, ReasonCode, RunStatus
+from scopewatch.repository import ScopewatchRepository
+from scopewatch.schemas import ActionRequest, ApprovalRequest, PolicyDecision, Run, TaskScope
+from scopewatch.db import get_connection, init_db
 
 RUNNER_PATH = (
     Path(__file__).resolve().parents[2] / "deploy" / "executor-runner" / "runner.py"
@@ -322,7 +324,10 @@ _DISPATCH_RUN_WORKSPACE = "run-consistency"
 
 
 def _dispatch_body(
-    outcome: str, operation: str = "read_text", resource: str = "docs/a.txt"
+    outcome: str,
+    operation: str = "read_text",
+    resource: str = "docs/a.txt",
+    task_scope: dict | None = None,
 ) -> dict:
     action = {
         "id": "a",
@@ -336,8 +341,16 @@ def _dispatch_body(
         "issued_at": time.time(),
         "dispatch_token": "single-use-token",
         "run_workspace": _DISPATCH_RUN_WORKSPACE,
+        "task_scope": {
+            "allowed_paths": list((task_scope or {}).get("allowed_paths") or []),
+            "blocked_paths": list((task_scope or {}).get("blocked_paths") or []),
+            "allowed_commands": [
+                list(prefix)
+                for prefix in (task_scope or {}).get("allowed_commands") or []
+            ],
+        },
         "action_digest": runner_mod.canonical_action_digest(
-            action, decision, _DISPATCH_RUN_WORKSPACE
+            action, decision, _DISPATCH_RUN_WORKSPACE, task_scope
         ),
         "action": action,
         "policy_decision": decision,
@@ -520,3 +533,153 @@ def test_runner_rejects_captured_signed_dispatch_after_ttl(
     )
     assert status == 403
     assert payload == {"error": "dispatch expired"}
+
+
+# ---------------------------------------------------------------------------
+# Gate 5: Backend consistency on symlink escapes, missing store, and terminal runs (#184).
+# ---------------------------------------------------------------------------
+
+
+def test_symlink_to_blocked_path_refused_on_every_backend_and_runner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Symlink pointing to a blocked path must be refused everywhere (#184).
+
+    Local, Docker, Remote gateway side, and runner sidecar must all refuse
+    execution when a resource symlink resolves into a blocked path.
+    """
+    _remote_env(monkeypatch)
+    ws = tmp_path / "host_ws"
+    ws.mkdir()
+    secrets = ws / "secrets"
+    secrets.mkdir()
+    (secrets / "key.txt").write_text("classified")
+    src = ws / "src"
+    src.mkdir()
+    (src / "link.txt").symlink_to(secrets / "key.txt")
+
+    scope = TaskScope(task_description="Probe scope", allowed_paths=["src"], blocked_paths=["secrets"], created_at=_now())
+    action = _action("read_text", "src/link.txt")
+    decision = _decision(action.id, PolicyOutcome.ALLOW)
+
+    # 1. Local backend
+    receipt_local = execute_action(action, ws, policy_decision=decision, task_scope=scope)
+    assert receipt_local.status == ExecutionStatus.FAILED
+    assert receipt_local.error_code == "EXECUTION_FAILED"
+
+    # 2. Docker backend
+    receipt_docker = DockerExecutor().execute(action, ws, policy_decision=decision, task_scope=scope)
+    assert receipt_docker.status == ExecutionStatus.FAILED
+    assert receipt_docker.error_code == "EXECUTION_FAILED"
+
+    # 3. Remote gateway side (fails closed before dispatch)
+    receipt_remote = RemoteExecutor(transport=httpx.MockTransport(_ok_handler)).execute(
+        action, ws, policy_decision=decision, task_scope=scope
+    )
+    assert receipt_remote.status == ExecutionStatus.FAILED
+    assert receipt_remote.error_code == "EXECUTION_FAILED"
+
+    # 4. Runner sidecar
+    runner_ws = tmp_path / _DISPATCH_RUN_WORKSPACE
+    (runner_ws / "secrets").mkdir(parents=True, exist_ok=True)
+    (runner_ws / "secrets" / "key.txt").write_text("classified")
+    (runner_ws / "src").mkdir(parents=True, exist_ok=True)
+    (runner_ws / "src" / "link.txt").symlink_to(runner_ws / "secrets" / "key.txt")
+
+    _runner_env(monkeypatch, tmp_path)
+    body = _dispatch_body(
+        "ALLOW",
+        "read_text",
+        "src/link.txt",
+        task_scope={"allowed_paths": ["src"], "blocked_paths": ["secrets"], "allowed_commands": []},
+    )
+    status, payload = runner_mod.handle_execute(
+        body,
+        config=runner_mod.RunnerConfig(),
+        token_store=runner_mod.DispatchTokenStore(),
+    )
+    assert 400 <= status < 500
+    assert "error" in payload
+
+
+def test_missing_store_fails_closed_on_every_gateway_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A missing or broken store handle fails closed on every backend (#184)."""
+    _remote_env(monkeypatch)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "docs").mkdir()
+    (ws / "docs" / "file_a.txt").write_text("data")
+    missing_db = tmp_path / "missing_nonexistent.db"
+
+    action = _action("read_text", "docs/file_a.txt")
+    decision = _decision(action.id, PolicyOutcome.ALLOW)
+
+    # Local backend
+    with pytest.raises(ExecutionSecurityError):
+        execute_action(action, ws, policy_decision=decision, db_path=missing_db)
+
+    # Docker backend
+    with pytest.raises(ExecutionSecurityError):
+        DockerExecutor().execute(action, ws, policy_decision=decision, db_path=missing_db)
+
+    # Remote backend
+    with pytest.raises(ExecutionSecurityError):
+        RemoteExecutor(transport=httpx.MockTransport(_ok_handler)).execute(
+            action, ws, policy_decision=decision, db_path=missing_db
+        )
+
+
+def test_terminal_run_refused_on_every_gateway_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Actions on a completed or failed run cannot be executed (#184, #187)."""
+    _remote_env(monkeypatch)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "docs").mkdir()
+    (ws / "docs" / "file_a.txt").write_text("data")
+    db_path = tmp_path / "runs.db"
+
+    init_db(db_path)
+    conn = get_connection(db_path)
+    run_id = "run-terminal-184"
+    run = Run(
+        id=run_id,
+        name="Completed run",
+        task_scope=TaskScope(
+            task_description="Terminal probe",
+            allowed_paths=["."],
+            blocked_paths=[],
+            created_at=_now(),
+        ),
+        status=RunStatus.COMPLETED,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    try:
+        ScopewatchRepository.create_run(conn, run)
+    finally:
+        conn.close()
+
+    action = _action("read_text", "docs/file_a.txt")
+    action.run_id = run_id
+    decision = _decision(action.id, PolicyOutcome.ALLOW)
+
+    # Local backend
+    with pytest.raises(ExecutionSecurityError) as exc_local:
+        execute_action(action, ws, policy_decision=decision, db_path=db_path)
+    assert exc_local.value.code in ("RUN_TERMINAL", "RUN_NOT_ACTIVE")
+
+    # Docker backend
+    with pytest.raises(ExecutionSecurityError) as exc_docker:
+        DockerExecutor().execute(action, ws, policy_decision=decision, db_path=db_path)
+    assert exc_docker.value.code in ("RUN_TERMINAL", "RUN_NOT_ACTIVE")
+
+    # Remote backend
+    with pytest.raises(ExecutionSecurityError) as exc_remote:
+        RemoteExecutor(transport=httpx.MockTransport(_ok_handler)).execute(
+            action, ws, policy_decision=decision, db_path=db_path
+        )
+    assert exc_remote.value.code in ("RUN_TERMINAL", "RUN_NOT_ACTIVE")
