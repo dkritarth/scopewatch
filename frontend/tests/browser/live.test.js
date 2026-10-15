@@ -141,7 +141,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     );
     assert.match(
       evidenceText,
-      /Caller-asserted summary (unverified)\. This is not a provider-exposed reasoning trace\./
+      /Caller-asserted summary \(unverified\)\. This is not a provider-exposed reasoning trace\./
     );
 
     // 5. Test blocked action simulation (blocked_path)
