@@ -7,8 +7,12 @@ import {
   POLICY_DECISION_EVENT_TYPES,
   PROVENANCE_LABELS,
   REVIEWER_ACCESS_COPY,
+  actionRequestStore,
   approvalConfirmStep,
+  approvalStore,
+  auditStore,
   authFailureHint,
+  clearStores,
   buildStaticSimulationEvent,
   resolveSubmissionTarget,
   getHoldIcon,
@@ -926,4 +930,124 @@ test("live mode never takes the static simulation path (#209)", () => {
   // When live mode is OFF, takes static path
   const resStatic = resolveSubmissionTarget(fixtureRun, [fixtureRun], false);
   assert.equal(resStatic.mode, "static");
+});
+
+// ---------------------------------------------------------------------------
+// Issue #207: Scoping stores by run and action ID (no turn/cross-run leaks)
+// ---------------------------------------------------------------------------
+
+test("two actions in one turn share no audit or approval (#207)", () => {
+  clearStores();
+  const runId = "run-turn-test";
+  const turnId = "turn-1";
+
+  // Action 1: write with injection trace -> held for concern
+  const act1Hold = transformApiEvent({
+    id: "ev-hold-1",
+    run_id: runId,
+    turn_id: turnId,
+    action_request_id: "act-1",
+    event_type: "POLICY_HELD",
+    details: {
+      operation: "write_text",
+      resource: "outputs/report.txt",
+      reason_code: "REASONING_SCOPE_CONCERN",
+    },
+    reasoning_audit: {
+      verdict: "CONCERN",
+      concern_type: "PROMPT_INJECTION",
+      explanation: "Attacker payload detected in reasoning trace",
+      flagged_excerpts: ["exfiltrate"],
+    },
+  });
+  assert.equal(act1Hold.status, "pending-approval");
+  assert.equal(act1Hold.statusLabel, "HOLD (reasoning concern)");
+  assert.equal(act1Hold.approvalStatus, "Pending reviewer authorization");
+  assert.equal(act1Hold.reasoningAudit?.verdict, "CONCERN");
+
+  // Action 2: allowed read in SAME turn with no reasoning or audit
+  const act2Allow = transformApiEvent({
+    id: "ev-allow-2",
+    run_id: runId,
+    turn_id: turnId,
+    action_request_id: "act-2",
+    event_type: "POLICY_ALLOWED",
+    details: {
+      operation: "read_text",
+      resource: "vendor-a.txt",
+    },
+  });
+  // Must NOT leak action 1's concern or pending approval!
+  assert.equal(act2Allow.status, "executed");
+  assert.equal(act2Allow.statusLabel, "Action: executed");
+  assert.equal(act2Allow.approvalStatus, null);
+  assert.equal(act2Allow.reasoningAudit, null);
+  assert.notEqual(act2Allow.reasonCode, "REASONING_SCOPE_CONCERN");
+
+  // Action 3: deterministic policy deny in SAME turn
+  const act3Deny = transformApiEvent({
+    id: "ev-deny-3",
+    run_id: runId,
+    turn_id: turnId,
+    action_request_id: "act-3",
+    event_type: "POLICY_DENIED",
+    details: {
+      operation: "read_text",
+      resource: "invoices/private/salaries.txt",
+      reason_code: "POLICY_PATH_BLOCKED",
+    },
+  });
+  // Must NOT leak action 1's approval status!
+  assert.equal(act3Deny.status, "blocked");
+  assert.equal(act3Deny.statusLabel, "Policy: blocked");
+  assert.equal(act3Deny.approvalStatus, null);
+  assert.equal(act3Deny.reasoningAudit, null);
+});
+
+test("the same turn ID in two runs shows no leak (#207)", () => {
+  clearStores();
+  const turnId = "turn-inject-01";
+
+  // Run 1: has action with held approval and concern
+  const run1Held = transformApiEvent({
+    id: "ev-run1-hold",
+    run_id: "run-seeded-1",
+    turn_id: turnId,
+    action_request_id: "act-seeded-1",
+    event_type: "POLICY_HELD",
+    details: {
+      operation: "delete_path",
+      resource: "outputs/archive.txt",
+      reason_code: "APPROVAL_REQUIRED",
+    },
+    reasoning_audit: {
+      verdict: "CONCERN",
+      explanation: "Suspicious delete instruction",
+    },
+  });
+  assert.equal(run1Held.approvalStatus, "Pending reviewer authorization");
+  assert.equal(run1Held.reasoningAudit?.verdict, "CONCERN");
+
+  // Run 2: has action with the same turn ID and action ID, but in run-seeded-2
+  const run2Exec = transformApiEvent({
+    id: "ev-run2-exec",
+    run_id: "run-seeded-2",
+    turn_id: turnId,
+    action_request_id: "act-seeded-1",
+    event_type: "POLICY_ALLOWED",
+    details: {
+      operation: "read_text",
+      resource: "invoices/approved/inv1.txt",
+    },
+  });
+  // Must NOT see run 1's approval or audit
+  assert.equal(run2Exec.approvalStatus, null);
+  assert.equal(run2Exec.reasoningAudit, null);
+  assert.notEqual(run2Exec.reasonCode, "REASONING_SCOPE_CONCERN");
+
+  // Calling clearStores() resets all stores completely
+  clearStores();
+  assert.equal(auditStore.size, 0);
+  assert.equal(actionRequestStore.size, 0);
+  assert.equal(approvalStore.size, 0);
 });
