@@ -37,7 +37,7 @@ echo "=================================================================="
 echo ""
 
 # 1. Compile backend sources
-echo "[1/7] Compiling backend, PoC, and deploy Python sources..."
+echo "[1/8] Compiling backend, PoC, and deploy Python sources..."
 "${PYTHON}" -m compileall -q "${REPO_ROOT}/backend/scopewatch" "${REPO_ROOT}/backend/tests" "${REPO_ROOT}/scripts" \
   "${REPO_ROOT}/poc/cot-auditing/src" "${REPO_ROOT}/poc/cot-auditing/scripts" "${REPO_ROOT}/deploy"
 echo "  ✓ Python compilation clean"
@@ -50,13 +50,13 @@ echo "  ✓ Docker build context excludes secrets and keeps every COPY source"
 
 # 2. Run backend pytest suite
 echo ""
-echo "[2/7] Running backend pytest suite..."
+echo "[2/8] Running backend pytest suite..."
 PYTHONPATH="${REPO_ROOT}/backend" "${PYTHON}" -m pytest "${REPO_ROOT}/backend/tests" -q
 echo "  ✓ All backend unit and integration tests passed"
 
 # 3. Run PoC pytest suite
 echo ""
-echo "[3/7] Running reasoning-audit PoC pytest suite..."
+echo "[3/8] Running reasoning-audit PoC pytest suite..."
 "${PYTHON}" -m pytest "${REPO_ROOT}/poc/cot-auditing" -q
 echo "  ✓ All PoC tests passed"
 
@@ -66,29 +66,29 @@ echo "  ✓ All PoC tests passed"
 # compose does not publish). Neither was executed by any CI job before #107,
 # so the envelope assertion #107 depends on now runs on every PR.
 echo ""
-echo "[4/7] Running hosted-demo deploy tests..."
+echo "[4/8] Running hosted-demo deploy tests..."
 "${PYTHON}" -m pytest "${REPO_ROOT}/deploy" -q
 echo "  ✓ All deploy tests passed"
 
 # 5. Run frontend unit tests
 echo ""
-echo "[5/7] Running frontend unit tests..."
+echo "[5/8] Running frontend unit tests..."
 npm test --prefix "${REPO_ROOT}/frontend"
 echo "  ✓ All frontend unit tests passed"
 
 # 6. Run browser Playwright tests
 echo ""
 if [[ "${QUICK}" -eq 1 ]]; then
-  echo "[6/7] Skipping browser Playwright tests (--quick). Browser behaviour NOT verified."
+  echo "[6/8] Skipping browser Playwright tests (--quick). Browser behaviour NOT verified."
 else
-  echo "[6/7] Running browser Playwright integration tests..."
+  echo "[6/8] Running browser Playwright integration tests..."
   npm run test:browser --prefix "${REPO_ROOT}/frontend"
   echo "  ✓ All browser integration tests passed"
 fi
 
 # 7. Clean-room scenario seed & security verification
 echo ""
-echo "[7/7] Running clean-room demo scenario verification..."
+echo "[7/8] Running clean-room demo scenario verification..."
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/scopewatch-validate-XXXXXX")"
 cleanup() {
   rm -rf "${TMP_DIR}"
@@ -162,6 +162,12 @@ fi
 echo "  ✓ Clean-room workspace isolation verified"
 echo "  ✓ Run outputs confined to per-run workspaces; fixture tree untouched"
 echo "  ✓ Security boundary verified (no host escapes, no unauthorized file mutations)"
+
+# 8. Docs link & claim checker (issue #217)
+echo ""
+echo "[8/8] Running docs link and claim checker..."
+"${PYTHON}" "${REPO_ROOT}/scripts/check_docs_links.py"
+echo "  ✓ Docs links, model IDs, URLs, claims, and secrets all clean"
 
 echo ""
 echo "=================================================================="

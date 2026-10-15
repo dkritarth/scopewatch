@@ -68,6 +68,16 @@ BANNED_CLAIMS = [
     "always prevents",
 ]
 
+# Banned stale-claim patterns (issue #217): these must not appear in docs.
+# Checked across docs/submission, docs/hackathon.md, docs/operations, backend/config.
+STALE_CLAIM_PATTERNS = [
+    (r"70B", "stale Nemotron 70B reference"),
+    (r"Llama 3\.1", "stale Llama 3.1 license reference"),
+    (r"\b287\b", "stale 287 test count (now 1,479)"),
+    (r"no [`']deploy/`", "stale 'no deploy/ directory' claim"),
+    (r"<REPO_URL>", "placeholder repo URL (repo is public at https://github.com/dkritarth/scopewatch)"),
+]
+
 # Secret patterns (synthetic only in repo; real keys come from env/.env, gitignored).
 # NOTE: env-value patterns use [ ]* (same line only) so empty assignments
 # like `NEBIUS_API_KEY=\nOPENROUTER_API_KEY=` never match across lines.
@@ -262,6 +272,17 @@ def check_banned_claims(root: pathlib.Path, rel: str, errors: list[str]) -> None
                 break
 
 
+def check_stale_claims(root: pathlib.Path, rel: str, errors: list[str]) -> None:
+    """Check for stale claim patterns that must not appear in docs (issue #217)."""
+    path = root / rel
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    for pattern, label in STALE_CLAIM_PATTERNS:
+        if re.search(pattern, text):
+            errors.append(f"{rel}: stale claim pattern found: {label} (pattern: {pattern})")
+
+
 def check_secrets_in_text(rel: str, text: str, errors: list[str]) -> None:
     for pattern, label in SECRET_PATTERNS:
         for m in re.finditer(pattern, text):
@@ -357,6 +378,7 @@ def main() -> int:
         check_localhost_urls(root, rel, errors)
         check_model_ids(root, rel, allowed, errors)
         check_banned_claims(root, rel, errors)
+        check_stale_claims(root, rel, errors)
         check_secrets_owned(root, rel, errors)
 
     # README + BUILDING + judge-runbook must document the same env names as .env.example.
