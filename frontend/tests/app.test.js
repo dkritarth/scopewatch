@@ -14,6 +14,7 @@ import {
   authFailureHint,
   clearStores,
   buildStaticSimulationEvent,
+  formatApprovalCardData,
   resolveSubmissionTarget,
   getHoldIcon,
   getHoldKind,
@@ -1050,4 +1051,42 @@ test("the same turn ID in two runs shows no leak (#207)", () => {
   assert.equal(auditStore.size, 0);
   assert.equal(actionRequestStore.size, 0);
   assert.equal(approvalStore.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #208: Approval card data formatting (reason, args, run, expiry)
+// ---------------------------------------------------------------------------
+
+test("formatApprovalCardData displays reason, arguments preview, run, and expiry (#208)", () => {
+  const dummyRun = {
+    id: "run-approval-test",
+    name: "Invoice Processing (Live)",
+    events: [
+      {
+        id: "ev-hold-1",
+        action_request_id: "act-del-1",
+        reasonCode: "REASONING_SCOPE_CONCERN",
+        statusLabel: "HOLD (reasoning concern)",
+        arguments: { path: "outputs/secret.txt", content: "forbidden payload" },
+        expires_at: "2026-10-15T12:00:00Z",
+      },
+    ],
+  };
+
+  const appr = {
+    id: "appr-1",
+    run_id: "run-approval-test",
+    action_request_id: "act-del-1",
+    operation: "write_text",
+    resource: "outputs/secret.txt",
+    requested_at: "2026-10-15T11:55:00Z",
+    expires_at: "2026-10-15T12:00:00Z",
+  };
+
+  const data = formatApprovalCardData(appr, [dummyRun], dummyRun);
+  assert.equal(data.runName, "Invoice Processing (Live)");
+  assert.equal(data.holdReason, "Reasoning scope concern");
+  assert.match(data.argsPreview, /forbidden payload/);
+  assert.equal(data.expiryText, "12:00:00");
+  assert.equal(data.timelineEvent?.id, "ev-hold-1");
 });
