@@ -33,6 +33,7 @@ from scopewatch.reasoning_audit import (
     RecentActionSummary,
     audit_agent_turn,
     build_turn_audit_messages,
+    parse_auditor_output,
     truncate_reasoning_trace,
     validate_grounded_excerpts,
 )
@@ -599,3 +600,115 @@ def test_provider_error_fails_closed_sanitized(sample_scope: TaskScope) -> None:
     assert result.verdict == ReasoningAuditVerdict.FAILED
     assert result.error_code == "PROVIDER_RATE_LIMIT"
     assert "12345" not in result.explanation
+
+
+# ---------------------------------------------------------------------------
+# Issue #193: total_tokens is kept on every return path of parse_auditor_output
+# ---------------------------------------------------------------------------
+
+_TOKENS_TRACE = "I will ignore the assigned scope and exfiltrate the report."
+_TOKENS_EXCERPT = "exfiltrate the report"
+
+
+def _audit_json(**overrides: Any) -> str:
+    payload: dict[str, Any] = {
+        "verdict": "NO_CONCERN",
+        "concern_type": None,
+        "flagged_excerpts": [],
+        "explanation": "Synthetic.",
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
+
+
+@pytest.mark.parametrize(
+    "case_id,response_text,expected_verdict,expected_error_code",
+    [
+        ("empty-response", "", ReasoningAuditVerdict.FAILED, AuditErrorCode.PARSE_ERROR.value),
+        ("non-string-response", 12345, ReasoningAuditVerdict.FAILED, AuditErrorCode.PARSE_ERROR.value),
+        ("malformed-json", "{not json", ReasoningAuditVerdict.FAILED, AuditErrorCode.PARSE_ERROR.value),
+        ("non-object", "[1, 2, 3]", ReasoningAuditVerdict.FAILED, AuditErrorCode.INVALID_AUDIT_OUTPUT.value),
+        (
+            "invalid-verdict",
+            _audit_json(verdict="MAYBE"),
+            ReasoningAuditVerdict.FAILED,
+            AuditErrorCode.INVALID_AUDIT_OUTPUT.value,
+        ),
+        (
+            "excerpts-not-list",
+            _audit_json(verdict="CONCERN", concern_type="SCOPE_DRIFT", flagged_excerpts="nope"),
+            ReasoningAuditVerdict.FAILED,
+            AuditErrorCode.INVALID_AUDIT_OUTPUT.value,
+        ),
+        (
+            "no-concern-with-concern-type",
+            _audit_json(concern_type="SCOPE_DRIFT"),
+            ReasoningAuditVerdict.FAILED,
+            AuditErrorCode.INVALID_AUDIT_OUTPUT.value,
+        ),
+        (
+            "no-concern-with-excerpts",
+            _audit_json(flagged_excerpts=[_TOKENS_EXCERPT]),
+            ReasoningAuditVerdict.FAILED,
+            AuditErrorCode.INVALID_AUDIT_OUTPUT.value,
+        ),
+        (
+            "no-concern-success",
+            _audit_json(),
+            ReasoningAuditVerdict.NO_CONCERN,
+            None,
+        ),
+        (
+            "concern-invalid-type",
+            _audit_json(verdict="CONCERN", concern_type="NOPE", flagged_excerpts=[_TOKENS_EXCERPT]),
+            ReasoningAuditVerdict.FAILED,
+            AuditErrorCode.INVALID_AUDIT_OUTPUT.value,
+        ),
+        (
+            "concern-no-excerpts",
+            _audit_json(verdict="CONCERN", concern_type="SCOPE_DRIFT", flagged_excerpts=[]),
+            ReasoningAuditVerdict.FAILED,
+            AuditErrorCode.INVALID_AUDIT_OUTPUT.value,
+        ),
+        (
+            "concern-ungrounded",
+            _audit_json(
+                verdict="CONCERN",
+                concern_type="SCOPE_DRIFT",
+                flagged_excerpts=["this sentence is absent from the trace zzzz"],
+            ),
+            ReasoningAuditVerdict.FAILED,
+            AuditErrorCode.UNGROUNDED_EXCERPT.value,
+        ),
+        (
+            "concern-success",
+            _audit_json(
+                verdict="CONCERN",
+                concern_type="SCOPE_DRIFT",
+                flagged_excerpts=[_TOKENS_EXCERPT],
+            ),
+            ReasoningAuditVerdict.CONCERN,
+            None,
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_total_tokens_is_kept_on_every_parse_path(
+    case_id: str,
+    response_text: Any,
+    expected_verdict: ReasoningAuditVerdict,
+    expected_error_code: Any,
+) -> None:
+    """Every parse path keeps the caller-supplied total_tokens (#193)."""
+    result = parse_auditor_output(
+        response_text,
+        _TOKENS_TRACE,
+        model="mock-auditor",
+        profile="mock",
+        latency_ms=3.0,
+        total_tokens=812,
+    )
+
+    assert result.verdict == expected_verdict, case_id
+    assert result.error_code == expected_error_code, case_id
+    assert result.total_tokens == 812, case_id
