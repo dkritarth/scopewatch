@@ -27,7 +27,7 @@ npx --prefix frontend playwright install --with-deps chromium
 ./scripts/validate.sh            # full, incl. Playwright browser suite
 ./scripts/validate.sh --quick   # same except the browser suite (use while iterating)
 
-# 4. Docs consistency (links, model IDs, localhost allowlist, claims, secrets)
+# 4. Docs consistency — also run automatically by ./scripts/validate.sh (step 8)
 python3 scripts/check_docs_links.py
 
 # 5. Launch the integrated demonstration
@@ -89,10 +89,10 @@ break `cmp -s`.
 - **Docs link/claim checker (issue #46):**
   ```bash
   python3 scripts/check_docs_links.py
-  # PASS on main 2026-09-28: links, model IDs (providers.toml), localhost
-  # allowlist, claims, secrets clean — incl. read-only deploy/ check at
-  # origin/feature/42-vm-deploy (11 files, no secrets, no docker.sock mount).
-  # Checker never edits deploy/ (PR #79) or docs/submission/ (PR #72).
+  # PASS on main 2026-10-15 (e392087): links, model IDs (providers.toml),
+  # localhost allowlist, claims, secrets clean — incl. the read-only deploy/
+  # secret check (no secrets, no docker.sock mount). deploy/ is on main (PR
+  # #79, issue #42); the checker reads it in place and never edits it.
   ```
 
 - **Frontend unit tests:**
