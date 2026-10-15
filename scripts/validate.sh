@@ -60,6 +60,11 @@ echo "[3/7] Running reasoning-audit PoC pytest suite..."
 "${PYTHON}" -m pytest "${REPO_ROOT}/poc/cot-auditing" -q
 echo "  ✓ All PoC tests passed"
 
+echo ""
+echo "[3b/7] Running MCP gateway PoC pytest suite..."
+"${PYTHON}" -m pytest "${REPO_ROOT}/poc/mcp-gateway" -q
+echo "  ✓ All MCP gateway PoC tests passed"
+
 # 4. Run the hosted-demo deploy suite
 # Covers deploy/gate/gate.py (token enforcement, caps, budgets, refusal
 # envelope) and deploy/test_compose_layout.py (the runbook never curls a port
