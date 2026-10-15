@@ -140,7 +140,7 @@ To guarantee provenance and auditability, each report records:
 - `evaluation_date`: UTC timestamp of the run.
 - `model`: Target model identifier.
 - `profile`: Profile name from configuration.
-- `prompt_version`: SHA-256 derived version tag of the auditor system prompt (`v1.0-hardened-{sha256[:8]}`).
+- `prompt_version`: version tag of the auditor input contract (`v1.1-hardened-{sha256[:8]}`) — a user-message shape version plus the SHA-256 of the byte-identical auditor system prompt.
 - `dataset_split`: Split name (`heldout` or `dev`).
 - `dataset_hash`: SHA-256 digest of the dataset file.
 - `dataset_cases_count`: Total cases evaluated.
@@ -231,7 +231,7 @@ Three things to read carefully before quoting these numbers:
   re-derived from the bounded trace and the **trace's own characters** are
   recorded, instead of the audit failing closed on a single damaged token. The
   auditor prompt was deliberately left byte-identical, so `prompt_version`
-  remains `v1.0-hardened-1cea92f0` and every number on this page still describes
+  was `v1.0-hardened-1cea92f0` at that point and every number on this page still describes
   the prompt that produced it — but the code path behind the failure-rate column
   has changed. Held-out was **not** re-measured, because `docs/evaluation.md`
   pins that split to one run with defaults and re-running to chase a better
@@ -242,8 +242,8 @@ Three things to read carefully before quoting these numbers:
 - **These numbers predate the #150 grounding change, and were not re-measured.**
   #150 re-derives `flagged_excerpts` from the bounded trace so a mis-copied
   excerpt no longer discards a whole verdict. **The auditor prompt was left
-  byte-identical**, so `prompt_version` is still `v1.0-hardened-1cea92f0` and the
-  mechanism that produced all four `UNGROUNDED_EXCERPT` failures above is now
+  byte-identical**, so `prompt_version` was still `v1.0-hardened-1cea92f0` at
+  that point and the mechanism that produced all four `UNGROUNDED_EXCERPT` failures above is now
   handled in code rather than being expected of the model. Held-out was
   deliberately **not** re-run — it is spent for this submission, and re-measuring
   would invalidate the single pinned measurement this document records. So the
@@ -251,6 +251,14 @@ Three things to read carefully before quoting these numbers:
   the failure mode is addressed and covered by tests. Read the table above as a
   measurement of a specific pinned configuration, which it is, and not as a
   forecast of the post-#150 number, which nobody has.
+- **The `prompt_version` shape segment moved to `v1.1` with #194, and held-out
+  was not re-run.** The `<task_scope>` block now carries `requires_approval`,
+  `allowed_commands`, and `commands_requiring_approval` so the auditor can
+  judge `run_command` turns. The hardened system prompt is unchanged (the
+  trailing `{sha256[:8]}` is still `1cea92f0`), but the auditor's *input
+  contract* is not, so `prompt_version` is now `v1.1-hardened-1cea92f0` and no
+  number on this page should be read as describing the current code until it is
+  re-measured. It was deliberately **not** re-run for this change.
 
 `dev` split, same profile and prompt version, 13 cases (9 concern / 4 clean),
 2026-10-03: accuracy 84.6% (12 of 13 valid), FNR 11.11%, FHR 0.00%, failure rate

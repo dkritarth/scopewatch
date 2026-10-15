@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from typing import Any
 import httpx
 import pytest
@@ -21,6 +22,8 @@ from scopewatch.reasoning_audit import (
     DEFAULT_MAX_RECENT_ACTIONS,
     DEFAULT_MAX_TRACE_CHARS,
     TRUNCATION_MARKER,
+    AUDITOR_PROMPT_VERSION,
+    HARDENED_AUDITOR_SYSTEM_PROMPT,
     AuditConcernType,
     AuditErrorCode,
     AuditorChatResponse,
@@ -599,3 +602,74 @@ def test_provider_error_fails_closed_sanitized(sample_scope: TaskScope) -> None:
     assert result.verdict == ReasoningAuditVerdict.FAILED
     assert result.error_code == "PROVIDER_RATE_LIMIT"
     assert "12345" not in result.explanation
+
+
+# ---------------------------------------------------------------------------
+# Issue #194: the auditor scope block carries the command allowlists
+# ---------------------------------------------------------------------------
+
+def test_scope_block_includes_command_allowlists() -> None:
+    """The built prompt exposes the command allowlists to the auditor (#194)."""
+    scope = TaskScope(
+        task_description="Run the allowlisted tests and fix the auth boundary.",
+        allowed_paths=["src", "tests"],
+        blocked_paths=[".env"],
+        allowed_tools=["workspace"],
+        allowed_operations=["read_text", "write_text", "run_command"],
+        requires_approval=["delete_path"],
+        allowed_commands=[["python3", "-m", "pytest"]],
+        commands_requiring_approval=[["rm", "-rf"]],
+        allowed_network_destinations=[],
+        created_at="2026-10-15T00:00:00Z",
+    )
+
+    messages = build_turn_audit_messages(
+        scope=scope,
+        trace_text="I will run the allowlisted test command to confirm the fix.",
+        provenance="PROVIDER_EXPOSED_TRACE",
+        planned_actions=[],
+        recent_actions=[],
+    )
+    user_content = messages[1]["content"]
+
+    assert "<allowed_commands>" in user_content
+    assert '<allowed_commands>[["python3", "-m", "pytest"]]</allowed_commands>' in user_content
+    assert "<commands_requiring_approval>" in user_content
+    assert '<commands_requiring_approval>[["rm", "-rf"]]</commands_requiring_approval>' in user_content
+    assert '<requires_approval>["delete_path"]</requires_approval>' in user_content
+
+
+def test_scope_block_preserves_empty_command_lists() -> None:
+    """An empty command allowlist is shown explicitly, not omitted (#194)."""
+    scope = TaskScope(
+        task_description="Read the approved files.",
+        allowed_paths=["invoices/approved"],
+        blocked_paths=[],
+        allowed_tools=["workspace"],
+        allowed_operations=["read_text"],
+        allowed_network_destinations=[],
+        created_at="2026-10-15T00:00:00Z",
+    )
+
+    messages = build_turn_audit_messages(
+        scope=scope,
+        trace_text="Reading an approved invoice.",
+        provenance="PROVIDER_EXPOSED_TRACE",
+        planned_actions=[],
+        recent_actions=[],
+    )
+    user_content = messages[1]["content"]
+
+    assert '<allowed_commands>[]</allowed_commands>' in user_content
+    assert '<commands_requiring_approval>[]</commands_requiring_approval>' in user_content
+    assert '<requires_approval>[]</requires_approval>' in user_content
+
+
+def test_prompt_version_reflects_the_scope_shape() -> None:
+    """Adding scope fields bumps the prompt identity (#194)."""
+    assert AUDITOR_PROMPT_VERSION.startswith("v1.1-hardened-")
+    # The system prompt itself stays byte-identical; the shape version carries
+    # the input-contract change.
+    assert AUDITOR_PROMPT_VERSION.endswith(
+        hashlib.sha256(HARDENED_AUDITOR_SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:8]
+    )
