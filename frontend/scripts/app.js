@@ -1258,9 +1258,12 @@ export function createApprovalCard(appr) {
   const card = document.createElement("div");
   card.className = "approval-card";
   card.dataset.approvalId = appr.id;
+  card.setAttribute("role", "group");
 
   const title = document.createElement("p");
   title.className = "approval-card-title";
+  title.id = `approval-card-title-${appr.id}`;
+  card.setAttribute("aria-labelledby", title.id);
   card.append(title);
 
   const runEl = document.createElement("p");
@@ -1292,6 +1295,10 @@ export function createApprovalCard(appr) {
   reasonInput.type = "text";
   reasonInput.placeholder = "Reviewer note (optional)";
   reasonInput.className = "approval-reason-input";
+  reasonInput.setAttribute(
+    "aria-label",
+    `Reviewer note for ${appr.operation || "action"} on ${appr.resource || "resource"} (optional)`,
+  );
   card.append(reasonInput);
 
   // Double-confirm note: text signal for the armed state (no colour-only).
@@ -1314,11 +1321,13 @@ export function createApprovalCard(appr) {
   approveBtn.type = "button";
   approveBtn.className = "btn-approve";
   approveBtn.textContent = APPROVAL_CONFIRM_COPY.approve;
+  approveBtn.setAttribute("aria-label", `Approve ${appr.operation || "action"} on ${appr.resource || "resource"}`);
 
   const denyBtn = document.createElement("button");
   denyBtn.type = "button";
   denyBtn.className = "btn-deny";
   denyBtn.textContent = APPROVAL_CONFIRM_COPY.deny;
+  denyBtn.setAttribute("aria-label", `Deny ${appr.operation || "action"} on ${appr.resource || "resource"}`);
 
   let confirmState = "idle";
 
@@ -1332,6 +1341,16 @@ export function createApprovalCard(appr) {
     const armed = confirmState === "armed-approve" || confirmState === "armed-deny";
     confirmNote.hidden = !armed;
     if (armed) confirmNote.textContent = APPROVAL_CONFIRM_COPY.armedNote;
+    const op = appr.operation || "action";
+    const res = appr.resource || "resource";
+    approveBtn.setAttribute(
+      "aria-label",
+      `${confirmState === "armed-approve" ? "Confirm approve" : "Approve"} ${op} on ${res}`,
+    );
+    denyBtn.setAttribute(
+      "aria-label",
+      `${confirmState === "armed-deny" ? "Confirm deny" : "Deny"} ${op} on ${res}`,
+    );
   }
 
   async function resolveApproval(fire) {
@@ -1351,6 +1370,17 @@ export function createApprovalCard(appr) {
       pendingApprovals = pendingApprovals.filter((a) => a.id !== appr.id);
       renderApprovals();
       if (isLiveMode) await refreshApprovals();
+      const nextCard = elements.approvalsList?.querySelector(".approval-card");
+      if (nextCard) {
+        const focusTarget = nextCard.querySelector("button, input") || nextCard;
+        focusTarget.focus?.();
+      } else {
+        const heading = document.getElementById("approvals-heading");
+        if (heading) {
+          heading.setAttribute("tabindex", "-1");
+          heading.focus();
+        }
+      }
     } catch (err) {
       confirmState = "idle";
       approveBtn.disabled = false;
