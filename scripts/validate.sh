@@ -4,6 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Normalize non-standard TMPDIR to /tmp so pytest tmp_path mounts match docker volume checks
+if [[ "${TMPDIR:-}" == *antigravity* ]]; then
+  export TMPDIR=/tmp
+fi
+
 # --quick skips the Playwright browser suite (use while iterating or when Chromium is unavailable).
 QUICK=0
 for arg in "$@"; do
@@ -47,6 +52,11 @@ echo "  ✓ Python compilation clean"
 echo "     Checking Docker build context exclusions..."
 "${PYTHON}" "${REPO_ROOT}/scripts/check_dockerignore.py"
 echo "  ✓ Docker build context excludes secrets and keeps every COPY source"
+
+# 1c. Documentation consistency guard: links, model IDs, stale claims, and secrets (#217).
+echo "     Checking documentation links, model IDs, stale claims, and secrets..."
+"${PYTHON}" "${REPO_ROOT}/scripts/check_docs_links.py"
+echo "  ✓ Documentation links, model IDs, claims, and secrets verified"
 
 # 2. Run backend pytest suite
 echo ""

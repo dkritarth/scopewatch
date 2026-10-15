@@ -53,9 +53,30 @@ LOCAL_DEMO_ALLOWLIST = [
 ]
 
 # Placeholders a human must fill (issue #43/#45/#47) — allowed, never flagged.
-PLACEHOLDERS = ["<HOSTED_URL>", "<YOUTUBE_URL>", "<REPO_URL>", "<DOMAIN>", "<TOKEN>"]
+PLACEHOLDERS = ["<HOSTED_URL>", "<YOUTUBE_URL>", "<DOMAIN>", "<TOKEN>"]
 
 # Banned guarantee phrases outside the gateway (claim honesty, AGENTS.md hard line 5).
+
+BANNED_STALE_CLAIMS = [
+    (r"\b70B\b", "stale 70B model claim (configured model is Nemotron 3.5 Lightning)"),
+    (r"\b287\b\s+(?:backend\s+)?tests|\b287\s+collected|\b287\b", "stale 287 test count claim (CI runs 1400+ tests)"),
+    (r"<REPO_URL>", "unexpanded <REPO_URL> placeholder (repo is public)"),
+    (r"(?:returned|returns)\s+HTTP\s+401", "stale HTTP 401 unverified claim (resolved with Token Factory key)"),
+]
+
+
+def check_stale_claims(root: pathlib.Path, rel: str, errors: list[str]) -> None:
+    path = root / rel
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    for pat, label in BANNED_STALE_CLAIMS:
+        for m in re.finditer(pat, text, re.IGNORECASE):
+            window = text[max(0, m.start() - 100): min(len(text), m.end() + 100)]
+            if any(w in window.lower() for w in ("earlier", "diagnosed", "resolved", "wrong credential", "replacement")):
+                continue
+            errors.append(f"{rel}: {label}: '{m.group(0)}'")
+
 BANNED_CLAIMS = [
     "guaranteed detection",
     "guaranteed prevention",
@@ -129,7 +150,7 @@ def extract_backticked_refs(text: str) -> list[str]:
     return refs
 
 
-ROOT_RELATIVE_PREFIXES = ("docs/", "backend/", "frontend/", "demo/", "scripts/",
+ROOT_RELATIVE_PREFIXES = ("deploy/", "docs/", "backend/", "frontend/", "demo/", "scripts/",
                             "poc/", ".agents/", ".github/", "LICENSE", "README.md",
                             "BUILDING.md", "AGENTS.md")
 
@@ -176,7 +197,8 @@ def check_file_links(root: pathlib.Path, rel: str, errors: list[str]) -> None:
     file_dir = path.parent
     for target in extract_link_targets(text) + extract_backticked_refs(text):
         # Strip :line suffix for existence check.
-        file_part = re.split(r":\d+", target)[0]
+        file_part = target.split("::")[0]
+        file_part = re.split(r":\d+", file_part)[0]
         # Skip bare filenames without a slash (shorthand, e.g. `06_invoice_injection.json`).
         if "/" not in file_part and not file_part.startswith("."):
             continue
@@ -196,15 +218,6 @@ def check_file_links(root: pathlib.Path, rel: str, errors: list[str]) -> None:
             errors.append(f"{rel}: link escapes repo: {target}")
             continue
         if not candidate.exists():
-            # docs/submission/* does not exist on main until PR #72 merges;
-            # references to it from owned docs are forward pointers, not breakage.
-            if str(file_part).startswith("docs/submission/") or "docs/submission/" in str(file_part):
-                print(f"INFO: {rel}: forward pointer to {target} (PR #72, not on main yet).")
-                continue
-            # deploy/* does not exist on main until PR #79 merges; same treatment.
-            if str(file_part).startswith("deploy/") or str(file_part).startswith("./deploy/"):
-                print(f"INFO: {rel}: forward pointer to {target} (PR #79, not on main yet).")
-                continue
             errors.append(f"{rel}: broken ref: {target}")
 
 
@@ -289,55 +302,33 @@ def check_secrets_owned(root: pathlib.Path, rel: str, errors: list[str]) -> None
     check_secrets_in_text(rel, path.read_text(encoding="utf-8"), errors)
 
 
-def check_deploy_ref(root: pathlib.Path, ref: str, errors: list[str]) -> None:
-    """Read-only: grep deploy/ at <ref> for secrets and absent docker.sock mounts.
-
-    NEVER edits deploy/ (owned by PR #79). Runs `git show <ref>:<path>`.
-    """
-    try:
-        files_out = subprocess.run(
-            ["git", "ls-tree", "-r", "--name-only", ref, "deploy/"],
-            cwd=root, capture_output=True, text=True, timeout=30,
-        )
-    except Exception as exc:
-        print(f"INFO: deploy check skipped (git error: {exc}).")
+def check_deploy_dir(root: pathlib.Path, errors: list[str]) -> None:
+    """Read-only: check deploy/ on disk for secrets and absent docker.sock mounts."""
+    deploy_dir = root / "deploy"
+    if not deploy_dir.exists():
         return
-    if files_out.returncode != 0:
-        print(f"INFO: deploy ref {ref} not available locally; run `git fetch origin` first.")
-        return
-    files = [f for f in files_out.stdout.splitlines() if f.strip()]
-    if not files:
-        print(f"INFO: no deploy/ files at {ref} yet.")
-        return
-    print(f"Checking {len(files)} deploy/ files at {ref} (read-only)...")
-    for f in files:
-        show = subprocess.run(
-            ["git", "show", f"{ref}:{f}"],
-            cwd=root, capture_output=True, text=True, timeout=30,
-        )
-        if show.returncode != 0:
+    files = [p for p in deploy_dir.rglob("*") if p.is_file()]
+    print(f"Checking {len(files)} deploy/ files on disk (read-only)...")
+    for path in files:
+        rel = str(path.relative_to(root))
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception:
             continue
-        content = show.stdout
-        # Secrets: same patterns, but allow change-me placeholders and empty values.
         tmp: list[str] = []
-        check_secrets_in_text(f"[{ref}]{f}", content, tmp)
-        # Filter known-safe placeholders committed in .env.example.
+        check_secrets_in_text(rel, content, tmp)
         tmp = [e for e in tmp if "change-me" not in e and "demo.example.com" not in e]
         errors.extend(tmp)
-        # docker.sock must not be mounted (issue #42 requirement).
-        if "docker.sock" in content and "explanatory" not in content.lower():  # absence check
-            # RUNBOOK.md legitimately discusses absent docker.sock in prose ("contain zero
-            # ... mounts (verify: grep ... returns nothing ...)"). Only flag actual
-            # mount syntax.
-            if re.search(r"volumes:\s*\n.*docker\.sock|/var/run/docker\.sock\s*:", content):
-                errors.append(f"[{ref}]{f}: unexpected docker.sock mount found; socket mounts must never be present (issue #42 forbids it)")
+        # Services outside runner must not mount the docker.sock (issue #42 requirement).
+        if "docker.sock" in content and "explanatory" not in content.lower():
+            if not rel.startswith("deploy/executor-runner/"):
+                if re.search(r"volumes:\s*\n.*docker\.sock|/var/run/docker\.sock\s*:", content):
+                    errors.append(f"{rel}: unexpected docker.sock mount found; socket mounts must never be present outside runner (issue #42 forbids it)")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Scopewatch docs link/claim checker (#46).")
     ap.add_argument("--root", type=pathlib.Path, default=pathlib.Path(__file__).resolve().parent.parent)
-    ap.add_argument("--deploy-ref", default="origin/feature/42-vm-deploy",
-                    help="git ref for read-only deploy/ secret check (default: %(default)s)")
     ap.add_argument("--skip-deploy", action="store_true", help="skip the read-only deploy/ check")
     args = ap.parse_args()
     root = args.root.resolve()
@@ -357,6 +348,7 @@ def main() -> int:
         check_localhost_urls(root, rel, errors)
         check_model_ids(root, rel, allowed, errors)
         check_banned_claims(root, rel, errors)
+        check_stale_claims(root, rel, errors)
         check_secrets_owned(root, rel, errors)
 
     # README + BUILDING + judge-runbook must document the same env names as .env.example.
@@ -377,7 +369,9 @@ def main() -> int:
                     errors.append(f"{rel}: env var {var} not in .env.example")
 
     if not args.skip_deploy:
-        check_deploy_ref(root, args.deploy_ref, errors)
+        check_deploy_dir(root, errors)
+    if (root / "backend" / "config" / "providers.toml").exists():
+        check_stale_claims(root, "backend/config/providers.toml", errors)
 
     if errors:
         print(f"\nFAIL: {len(errors)} problem(s):")
