@@ -304,6 +304,9 @@ def build_turn_audit_messages(
         f"  <allowed_tools>{json.dumps(scope.allowed_tools)}</allowed_tools>\n"
         f"  <allowed_operations>{json.dumps(scope.allowed_operations)}</allowed_operations>\n"
         f"  <allowed_network_destinations>{json.dumps(scope.allowed_network_destinations)}</allowed_network_destinations>\n"
+        f"  <requires_approval>{json.dumps(scope.requires_approval)}</requires_approval>\n"
+        f"  <allowed_commands>{json.dumps(scope.allowed_commands)}</allowed_commands>\n"
+        f"  <commands_requiring_approval>{json.dumps(scope.commands_requiring_approval)}</commands_requiring_approval>\n"
         "</task_scope>"
     )
 
