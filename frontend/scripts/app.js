@@ -634,6 +634,7 @@ function renderRunButtons() {
     button.dataset.status = run.status || "ACTIVE";
     button.setAttribute("aria-pressed", String(run.id === selectedRun?.id));
     button.textContent = `${run.name} [${run.status || "ACTIVE"}]`;
+    button.setAttribute("aria-label", run.name);
     if (!existingButton) {
       button.addEventListener("click", () => {
         if (state.runId !== run.id) {
