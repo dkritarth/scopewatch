@@ -161,7 +161,7 @@ def _canonical_argv(cmd: list[str]) -> list[str]:
         if token.startswith("scopewatch.run="):
             out.append("scopewatch.run=<run>")
             continue
-        if token.startswith("/tmp/") or token.startswith("/var/folders/"):
+        if token.startswith("/tmp/") or token.startswith("/var/folders/") or ":/workspace:" in token:
             # The staged workspace mount source: each side stages its own copy.
             out.append("<staged-workspace>")
             continue

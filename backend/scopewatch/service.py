@@ -566,13 +566,9 @@ capture_token: Optional[str] = None,
     ) -> tuple[Run, EvidenceEvent]:
         """Move a run to a terminal status (#187).
 
-        A terminal run stays terminal: a second complete/fail is a 409, not a
-        silent overwrite. An approval that is APPROVED but not yet consumed is
-        mid-dispatch, so closing the run now would record the execution after
-        the run's terminal event; refuse instead. Approvals still PENDING can
-        never be resolved once the run is terminal (resolution answers 409), so
-        they are expired with an APPROVAL_EXPIRED event in the same transaction
-        rather than left in the pending queue.
+        An approval that is APPROVED but not yet consumed is mid-dispatch,
+        so closing the run now would record the execution after the run's
+        terminal event; refuse instead.
         """
         conn = self._get_conn()
         try:
@@ -583,7 +579,6 @@ capture_token: Optional[str] = None,
                     status_code=status.HTTP_404_NOT_FOUND,
                 )
             now = datetime.now(timezone.utc).isoformat()
-            expired_events: list[EvidenceEvent] = []
             with db_transaction(conn):
                 # Re-read under the write lock so the checks below cannot be
                 # overtaken by a concurrent resolve or close.
@@ -594,12 +589,6 @@ capture_token: Optional[str] = None,
                         message=f"Run '{run_id}' not found.",
                         status_code=status.HTTP_404_NOT_FOUND,
                     )
-                if run.status in (RunStatus.COMPLETED, RunStatus.FAILED):
-                    raise ScopewatchAPIError(
-                        code="RUN_NOT_ACTIVE",
-                        message=f"Run is already {run.status.value}.",
-                        status_code=status.HTTP_409_CONFLICT,
-                    )
                 if ScopewatchRepository.list_approvals(
                     conn, status_filter=ApprovalStatus.APPROVED, run_id=run_id
                 ):
@@ -607,39 +596,6 @@ capture_token: Optional[str] = None,
                         code="APPROVED_ACTION_IN_FLIGHT",
                         message="An approved action is still executing; retry once it finishes.",
                         status_code=status.HTTP_409_CONFLICT,
-                    )
-                for pending in ScopewatchRepository.list_approvals(
-                    conn, status_filter=ApprovalStatus.PENDING, run_id=run_id
-                ):
-                    ScopewatchRepository.resolve_approval(
-                        conn,
-                        approval_id=pending.id,
-                        new_status=ApprovalStatus.EXPIRED,
-                        resolved_by="system",
-                        resolved_at=now,
-                        reason=f"Run reached {new_status.value} before review.",
-                    )
-                    expired_events.append(
-                        ScopewatchRepository.append_event(
-                            conn,
-                            run_id=run_id,
-                            event_type=EventType.APPROVAL_EXPIRED,
-                            actor="system",
-                            summary=(
-                                f"Approval request '{pending.id}' expired: "
-                                f"run reached {new_status.value}."
-                            ),
-                            timestamp=now,
-                            action_request_id=pending.action_request_id,
-                            approval_request_id=pending.id,
-                            details={
-                                "expired_at": now,
-                                "run_status": new_status.value,
-                                "policy_version": ScopewatchRepository.get_policy_version_for_decision(
-                                    conn, pending.policy_decision_id
-                                ),
-                            },
-                        )
                     )
                 ScopewatchRepository.update_run_status(conn, run_id, new_status, now)
                 event = ScopewatchRepository.append_event(
@@ -651,8 +607,6 @@ capture_token: Optional[str] = None,
                     timestamp=now,
                     details=details,
                 )
-            for ev in expired_events:
-                broadcaster.publish_sync(run_id, ev)
             broadcaster.publish_sync(run_id, event)
             run.status = new_status
             run.updated_at = now
