@@ -800,9 +800,18 @@ capture_token: Optional[str] = None,
             evaluated_policy_version = decision.policy_version
 
             # Feature flag check
-            reasoning_audit_enabled = os.environ.get(
-                "SCOPEWATCH_REASONING_AUDIT", "on"
-            ).lower() in ("on", "true", "1")
+            # Explicit off values (case-insensitive, stripped): off, false, 0
+            # Anything else is ON, with a warning for unrecognised values.
+            raw_audit_flag = os.environ.get("SCOPEWATCH_REASONING_AUDIT", "on").strip().lower()
+            if raw_audit_flag in ("off", "false", "0"):
+                reasoning_audit_enabled = False
+            else:
+                reasoning_audit_enabled = True
+                if raw_audit_flag not in ("on", "true", "1", "yes", "enabled"):
+                    logger.warning(
+                        "Unrecognised SCOPEWATCH_REASONING_AUDIT value '%s'; enabling audit",
+                        raw_audit_flag,
+                    )
 
             trace_text = (action.exposed_reasoning_trace or "").strip() or (
                 action.reasoning_summary or ""
@@ -959,6 +968,26 @@ capture_token: Optional[str] = None,
                             outcome=PolicyOutcome.HOLD,
                             reason_code=ReasonCode.REASONING_AUDIT_FAILED,
                             explanation=f"Reasoning audit failed closed: {audit_record.explanation}",
+                            matched_rule="RULE_REASONING_AUDIT_FAILED",
+                            decided_at=datetime.now(timezone.utc).isoformat(),
+                            deterministic=False,
+                            reasoning_audit_id=audit_record.id,
+                            policy_version=evaluated_policy_version,
+                        )
+                    else:
+                        # Unknown verdict from cached row (tampered DB or forward-incompatible enum)
+                        # Fail closed: treat as audit failure -> HOLD
+                        logger.warning(
+                            "Unknown reasoning audit verdict '%s' for audit %s; failing closed to HOLD",
+                            audit_record.verdict,
+                            audit_record.id,
+                        )
+                        decision = PolicyDecision(
+                            id=str(uuid.uuid4()),
+                            action_request_id=action.id,
+                            outcome=PolicyOutcome.HOLD,
+                            reason_code=ReasonCode.REASONING_AUDIT_FAILED,
+                            explanation=f"Reasoning audit failed closed: unknown verdict '{audit_record.verdict}'",
                             matched_rule="RULE_REASONING_AUDIT_FAILED",
                             decided_at=datetime.now(timezone.utc).isoformat(),
                             deterministic=False,
