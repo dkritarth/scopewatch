@@ -465,9 +465,20 @@ const elements = typeof document !== "undefined" ? {
 } : {};
 
 let activeRuns = [...fixtureRuns];
+// Baseline timestamps per run, used to turn event timestamps into relative
+// durations instead of synthetic sequence numbers (#211).
+const timestampOffsetBaseline = new Map();
 let liveStreamHandle = null;
 let isLiveMode = false;
 let pendingApprovals = [];
+
+export function getPendingApprovals() {
+  return pendingApprovals;
+}
+
+export function setPendingApprovals(arr) {
+  pendingApprovals = Array.isArray(arr) ? arr : [];
+}
 
 export const auditStore = new Map();
 export const actionRequestStore = new Map();
@@ -622,7 +633,8 @@ function renderRunButtons() {
     button.dataset.runId = run.id;
     button.dataset.status = run.status || "ACTIVE";
     button.setAttribute("aria-pressed", String(run.id === selectedRun?.id));
-    button.textContent = run.name;
+    button.textContent = `${run.name} [${run.status || "ACTIVE"}]`;
+    button.setAttribute("aria-label", run.name);
     if (!existingButton) {
       button.addEventListener("click", () => {
         if (state.runId !== run.id) {
@@ -1103,7 +1115,310 @@ function renderTimeline() {
   elements.timeline.hidden = isEmpty;
 }
 
-function renderApprovals() {
+export function formatApprovalCardData(appr, runs = activeRuns, selectedRun = getSelectedRun()) {
+  const run = (appr.run_id && runs.find((r) => r.id === appr.run_id)) || selectedRun;
+  const runName = run?.name || appr.run_name || appr.run_id || "Live Run";
+
+  const timelineEvent = run?.events?.find(
+    (e) =>
+      (appr.action_request_id && (e.action_request_id === appr.action_request_id || e.id === appr.action_request_id)) ||
+      (appr.id && e.approvalId === appr.id),
+  );
+
+  const storeKey = appr.run_id && appr.action_request_id ? `${appr.run_id}:${appr.action_request_id}` : (appr.action_request_id || null);
+  const cachedReq = storeKey ? actionRequestStore.get(storeKey) : null;
+  const cachedAudit = storeKey ? auditStore.get(storeKey) : null;
+
+  let holdReason = "Policy hold";
+  if (appr.hold_reason) {
+    holdReason = appr.hold_reason;
+  } else if (
+    timelineEvent?.reasonCode === "REASONING_SCOPE_CONCERN" ||
+    timelineEvent?.statusLabel?.includes("concern") ||
+    cachedAudit?.verdict === "CONCERN"
+  ) {
+    holdReason = "Reasoning scope concern";
+  } else if (
+    timelineEvent?.reasonCode === "REASONING_AUDIT_FAILED" ||
+    timelineEvent?.statusLabel?.includes("audit failed")
+  ) {
+    holdReason = "Reasoning audit failed";
+  } else if (
+    timelineEvent?.reasonCode === "APPROVAL_REQUIRED" ||
+    timelineEvent?.statusLabel?.includes("policy") ||
+    appr.policy_version
+  ) {
+    holdReason = "Policy hold";
+  } else if (appr.reason || appr.resolution_reason) {
+    holdReason = appr.reason || appr.resolution_reason;
+  }
+
+  const rawArgs = appr.arguments || timelineEvent?.arguments || cachedReq?.arguments || null;
+  let argsPreview = "";
+  if (typeof rawArgs === "string" && rawArgs.trim()) {
+    argsPreview = rawArgs.trim();
+  } else if (rawArgs && typeof rawArgs === "object") {
+    if (typeof rawArgs.content === "string") {
+      argsPreview = `content: ${rawArgs.content}`;
+    } else if (typeof rawArgs.command === "string") {
+      argsPreview = `command: ${rawArgs.command}`;
+    } else if (Array.isArray(rawArgs.argv)) {
+      argsPreview = `argv: ${rawArgs.argv.join(" ")}`;
+    } else if (rawArgs.path) {
+      argsPreview = `path: ${rawArgs.path}`;
+    } else {
+      try {
+        argsPreview = JSON.stringify(rawArgs);
+      } catch {
+        argsPreview = String(rawArgs);
+      }
+    }
+  }
+  if (!argsPreview) {
+    argsPreview = "(no arguments)";
+  }
+  if (argsPreview.length > 120) {
+    argsPreview = `${argsPreview.slice(0, 117)}...`;
+  }
+
+  const rawExpiry = appr.expires_at || appr.expiry || (timelineEvent?.expires_at ?? null);
+  const expiryText = rawExpiry
+    ? (typeof rawExpiry === "string" && rawExpiry.includes("T") ? rawExpiry.slice(11, 19) : String(rawExpiry))
+    : "none specified";
+
+  return {
+    run,
+    runName,
+    timelineEvent,
+    holdReason,
+    argsPreview,
+    expiryText,
+  };
+}
+
+export function updateApprovalCard(card, appr) {
+  const data = formatApprovalCardData(appr);
+
+  const titleEl = card.querySelector(".approval-card-title");
+  if (titleEl) {
+    titleEl.textContent = `Approval required: ${appr.operation || (appr.id ? appr.id.slice(0, 8) : "")}`;
+  }
+
+  const runEl = card.querySelector(".approval-card-run");
+  if (runEl) {
+    runEl.textContent = `Run: ${data.runName}`;
+  }
+
+  const reasonEl = card.querySelector(".approval-card-reason");
+  if (reasonEl) {
+    reasonEl.textContent = `Reason: ${data.holdReason}`;
+  }
+
+  const argsEl = card.querySelector(".approval-card-args");
+  if (argsEl) {
+    argsEl.textContent = `Arguments: ${data.argsPreview}`;
+  }
+
+  const requestedTime = (appr.requested_at || appr.created_at || "").slice(11, 19);
+  const metaEl = card.querySelector(".approval-card-meta");
+  if (metaEl) {
+    metaEl.textContent = `Resource: ${appr.resource || (appr.action_request_id ? appr.action_request_id.slice(0, 8) : "unspecified")} • Requested: ${requestedTime || "recent"}`;
+  }
+
+  const expiryEl = card.querySelector(".approval-card-expiry");
+  if (expiryEl) {
+    expiryEl.textContent = `Expires: ${data.expiryText}`;
+  }
+
+  const linkEl = card.querySelector(".approval-card-link");
+  if (linkEl) {
+    if (data.timelineEvent) {
+      linkEl.hidden = false;
+      linkEl.textContent = `View event ${data.timelineEvent.id.slice(0, 8)} in timeline`;
+      linkEl.onclick = () => {
+        if (data.run && state.runId !== data.run.id) {
+          clearStores();
+          state.runId = data.run.id;
+          renderRunButtons();
+          renderScope();
+        }
+        state.eventId = data.timelineEvent.id;
+        renderTimeline();
+        renderEvidence();
+        const btn = elements.timeline?.querySelector(`button[data-event-id="${CSS.escape(data.timelineEvent.id)}"]`);
+        if (btn) btn.focus();
+      };
+    } else {
+      linkEl.hidden = true;
+    }
+  }
+}
+
+export function createApprovalCard(appr) {
+  const card = document.createElement("div");
+  card.className = "approval-card";
+  card.dataset.approvalId = appr.id;
+  card.setAttribute("role", "group");
+
+  const title = document.createElement("p");
+  title.className = "approval-card-title";
+  title.id = `approval-card-title-${appr.id}`;
+  card.setAttribute("aria-labelledby", title.id);
+  card.append(title);
+
+  const runEl = document.createElement("p");
+  runEl.className = "approval-card-run";
+  card.append(runEl);
+
+  const reasonEl = document.createElement("p");
+  reasonEl.className = "approval-card-reason";
+  card.append(reasonEl);
+
+  const argsEl = document.createElement("p");
+  argsEl.className = "approval-card-args";
+  card.append(argsEl);
+
+  const meta = document.createElement("p");
+  meta.className = "approval-card-meta";
+  card.append(meta);
+
+  const expiryEl = document.createElement("p");
+  expiryEl.className = "approval-card-expiry";
+  card.append(expiryEl);
+
+  const linkEl = document.createElement("button");
+  linkEl.type = "button";
+  linkEl.className = "approval-card-link";
+  card.append(linkEl);
+
+  const reasonInput = document.createElement("input");
+  reasonInput.type = "text";
+  reasonInput.placeholder = "Reviewer note (optional)";
+  reasonInput.className = "approval-reason-input";
+  reasonInput.setAttribute(
+    "aria-label",
+    `Reviewer note for ${appr.operation || "action"} on ${appr.resource || "resource"} (optional)`,
+  );
+  card.append(reasonInput);
+
+  // Double-confirm note: text signal for the armed state (no colour-only).
+  const confirmNote = document.createElement("p");
+  confirmNote.className = "approval-confirm-note";
+  confirmNote.setAttribute("role", "status");
+  confirmNote.hidden = true;
+  card.append(confirmNote);
+
+  const errorNote = document.createElement("p");
+  errorNote.className = "approval-error-note";
+  errorNote.setAttribute("role", "alert");
+  errorNote.hidden = true;
+  card.append(errorNote);
+
+  const actions = document.createElement("div");
+  actions.className = "approval-actions";
+
+  const approveBtn = document.createElement("button");
+  approveBtn.type = "button";
+  approveBtn.className = "btn-approve";
+  approveBtn.textContent = APPROVAL_CONFIRM_COPY.approve;
+  approveBtn.setAttribute("aria-label", `Approve ${appr.operation || "action"} on ${appr.resource || "resource"}`);
+
+  const denyBtn = document.createElement("button");
+  denyBtn.type = "button";
+  denyBtn.className = "btn-deny";
+  denyBtn.textContent = APPROVAL_CONFIRM_COPY.deny;
+  denyBtn.setAttribute("aria-label", `Deny ${appr.operation || "action"} on ${appr.resource || "resource"}`);
+
+  let confirmState = "idle";
+
+  function syncConfirmUi() {
+    approveBtn.textContent =
+      confirmState === "armed-approve" ? APPROVAL_CONFIRM_COPY.confirmApprove : APPROVAL_CONFIRM_COPY.approve;
+    denyBtn.textContent =
+      confirmState === "armed-deny" ? APPROVAL_CONFIRM_COPY.confirmDeny : APPROVAL_CONFIRM_COPY.deny;
+    approveBtn.classList.toggle("armed", confirmState === "armed-approve");
+    denyBtn.classList.toggle("armed", confirmState === "armed-deny");
+    const armed = confirmState === "armed-approve" || confirmState === "armed-deny";
+    confirmNote.hidden = !armed;
+    if (armed) confirmNote.textContent = APPROVAL_CONFIRM_COPY.armedNote;
+    const op = appr.operation || "action";
+    const res = appr.resource || "resource";
+    approveBtn.setAttribute(
+      "aria-label",
+      `${confirmState === "armed-approve" ? "Confirm approve" : "Approve"} ${op} on ${res}`,
+    );
+    denyBtn.setAttribute(
+      "aria-label",
+      `${confirmState === "armed-deny" ? "Confirm deny" : "Deny"} ${op} on ${res}`,
+    );
+  }
+
+  async function resolveApproval(fire) {
+    confirmState = "pending";
+    approveBtn.disabled = true;
+    denyBtn.disabled = true;
+    syncConfirmUi();
+    try {
+      if (isLiveMode) {
+        const note = reasonInput.value || (fire === "approve" ? "Approved in reviewer UI" : "Denied in reviewer UI");
+        if (fire === "approve") {
+          await approveAction(appr.id, note);
+        } else {
+          await denyAction(appr.id, note);
+        }
+      }
+      pendingApprovals = pendingApprovals.filter((a) => a.id !== appr.id);
+      renderApprovals();
+      if (isLiveMode) await refreshApprovals();
+      const nextCard = elements.approvalsList?.querySelector(".approval-card");
+      if (nextCard) {
+        const focusTarget = nextCard.querySelector("button, input") || nextCard;
+        focusTarget.focus?.();
+      } else {
+        const heading = document.getElementById("approvals-heading");
+        if (heading) {
+          heading.setAttribute("tabindex", "-1");
+          heading.focus();
+        }
+      }
+    } catch (err) {
+      confirmState = "idle";
+      approveBtn.disabled = false;
+      denyBtn.disabled = false;
+      syncConfirmUi();
+      errorNote.hidden = false;
+      errorNote.textContent = `Resolution failed: ${err.message}. No change was applied; try again.${authFailureHint(err)}`;
+    }
+  }
+
+  approveBtn.addEventListener("click", () => {
+    const step = approvalConfirmStep(confirmState, "approve");
+    confirmState = step.next;
+    if (step.fire) {
+      resolveApproval(step.fire);
+    } else {
+      syncConfirmUi();
+    }
+  });
+
+  denyBtn.addEventListener("click", () => {
+    const step = approvalConfirmStep(confirmState, "deny");
+    confirmState = step.next;
+    if (step.fire) {
+      resolveApproval(step.fire);
+    } else {
+      syncConfirmUi();
+    }
+  });
+
+  actions.append(approveBtn, denyBtn);
+  card.append(actions);
+
+  updateApprovalCard(card, appr);
+  return card;
+}
+
+export function renderApprovals() {
   if (!elements.approvalsList || !elements.pendingApprovalsCount) return;
   elements.pendingApprovalsCount.textContent = String(pendingApprovals.length);
 
@@ -1117,128 +1432,55 @@ function renderApprovals() {
     return;
   }
 
-  elements.approvalsList.replaceChildren(
-    ...pendingApprovals.map((appr) => {
-      const card = document.createElement("div");
-      card.className = "approval-card";
-      card.dataset.approvalId = appr.id;
+  const emptyMsg = elements.approvalsList.querySelector("#no-approvals-msg");
+  if (emptyMsg) emptyMsg.remove();
 
-      const title = document.createElement("p");
-      title.className = "approval-card-title";
-      title.textContent = `Approval required: ${appr.operation || (appr.id ? appr.id.slice(0, 8) : "")}`;
+  // Existing DOM cards keyed by approval ID for in-place updates (#208)
+  const existingCards = new Map();
+  for (const card of elements.approvalsList.querySelectorAll(".approval-card")) {
+    if (card.dataset?.approvalId) {
+      existingCards.set(card.dataset.approvalId, card);
+    }
+  }
 
-      const requestedTime = (appr.requested_at || appr.created_at || "").slice(11, 19);
-      const meta = document.createElement("p");
-      meta.className = "approval-card-meta";
-      meta.textContent = `Resource: ${appr.resource || (appr.action_request_id ? appr.action_request_id.slice(0, 8) : "unspecified")} • Requested: ${requestedTime || "recent"}`;
+  const activeIds = new Set(pendingApprovals.map((a) => a.id));
+  for (const [id, card] of existingCards) {
+    if (!activeIds.has(id)) {
+      card.remove();
+      existingCards.delete(id);
+    }
+  }
 
-      const reasonInput = document.createElement("input");
-      reasonInput.type = "text";
-      reasonInput.placeholder = "Reviewer note (optional)";
-      reasonInput.className = "approval-reason-input";
-
-      // Double-confirm note: text signal for the armed state (no colour-only).
-      const confirmNote = document.createElement("p");
-      confirmNote.className = "approval-confirm-note";
-      confirmNote.setAttribute("role", "status");
-      confirmNote.hidden = true;
-
-      const errorNote = document.createElement("p");
-      errorNote.className = "approval-error-note";
-      errorNote.setAttribute("role", "alert");
-      errorNote.hidden = true;
-
-      const actions = document.createElement("div");
-      actions.className = "approval-actions";
-
-      const approveBtn = document.createElement("button");
-      approveBtn.type = "button";
-      approveBtn.className = "btn-approve";
-      approveBtn.textContent = APPROVAL_CONFIRM_COPY.approve;
-
-      const denyBtn = document.createElement("button");
-      denyBtn.type = "button";
-      denyBtn.className = "btn-deny";
-      denyBtn.textContent = APPROVAL_CONFIRM_COPY.deny;
-
-      let confirmState = "idle";
-
-      function syncConfirmUi() {
-        approveBtn.textContent =
-          confirmState === "armed-approve" ? APPROVAL_CONFIRM_COPY.confirmApprove : APPROVAL_CONFIRM_COPY.approve;
-        denyBtn.textContent =
-          confirmState === "armed-deny" ? APPROVAL_CONFIRM_COPY.confirmDeny : APPROVAL_CONFIRM_COPY.deny;
-        approveBtn.classList.toggle("armed", confirmState === "armed-approve");
-        denyBtn.classList.toggle("armed", confirmState === "armed-deny");
-        const armed = confirmState === "armed-approve" || confirmState === "armed-deny";
-        confirmNote.hidden = !armed;
-        if (armed) confirmNote.textContent = APPROVAL_CONFIRM_COPY.armedNote;
-      }
-
-      async function resolveApproval(fire) {
-        confirmState = "pending";
-        approveBtn.disabled = true;
-        denyBtn.disabled = true;
-        syncConfirmUi();
-        try {
-          if (isLiveMode) {
-            const note = reasonInput.value || (fire === "approve" ? "Approved in reviewer UI" : "Denied in reviewer UI");
-            if (fire === "approve") {
-              await approveAction(appr.id, note);
-            } else {
-              await denyAction(appr.id, note);
-            }
-          }
-          pendingApprovals = pendingApprovals.filter((a) => a.id !== appr.id);
-          renderApprovals();
-          if (isLiveMode) await refreshApprovals();
-        } catch (err) {
-          confirmState = "idle";
-          approveBtn.disabled = false;
-          denyBtn.disabled = false;
-          syncConfirmUi();
-          errorNote.hidden = false;
-          errorNote.textContent = `Resolution failed: ${err.message}. No change was applied; try again.${authFailureHint(err)}`;
-        }
-      }
-
-      approveBtn.addEventListener("click", () => {
-        const step = approvalConfirmStep(confirmState, "approve");
-        confirmState = step.next;
-        if (step.fire) {
-          resolveApproval(step.fire);
-        } else {
-          syncConfirmUi();
-        }
-      });
-
-      denyBtn.addEventListener("click", () => {
-        const step = approvalConfirmStep(confirmState, "deny");
-        confirmState = step.next;
-        if (step.fire) {
-          resolveApproval(step.fire);
-        } else {
-          syncConfirmUi();
-        }
-      });
-
-      actions.append(approveBtn, denyBtn);
-      card.append(title, meta, reasonInput, confirmNote, errorNote, actions);
-      return card;
-    }),
-  );
+  // Update in-place so armed state and typed notes survive (#208)
+  for (const appr of pendingApprovals) {
+    let card = existingCards.get(appr.id);
+    if (card) {
+      updateApprovalCard(card, appr);
+    } else {
+      card = createApprovalCard(appr);
+      elements.approvalsList.append(card);
+    }
+  }
 }
 
-async function refreshApprovals() {
+export async function refreshApprovals() {
   if (!isLiveMode) return;
+  const run = getSelectedRun();
+  // With a fixture run selected, never show live approvals (#208)
+  if (!run?.isLive) {
+    pendingApprovals = [];
+    renderApprovals();
+    if (elements.approvalsStatus) {
+      renderPanelStatus(elements.approvalsStatus, panelStatus({ count: 0 }, { emptyText: "No pending approvals." }));
+    }
+    return;
+  }
   if (elements.approvalsStatus) {
     renderPanelStatus(elements.approvalsStatus, panelStatus({ loading: true }, { loadingText: "Loading approvals…" }));
   }
   if (elements.approvalsRetry) elements.approvalsRetry.hidden = true;
   try {
-    const run = getSelectedRun();
-    const runId = run?.isLive ? run.id : null;
-    const fetched = await withRetry(() => getApprovals("PENDING", runId), { retries: 2, baseDelayMs: 300 });
+    const fetched = await withRetry(() => getApprovals("PENDING", run.id), { retries: 2, baseDelayMs: 300 });
     if (Array.isArray(fetched)) {
       pendingApprovals = fetched;
       renderApprovals();
@@ -1497,7 +1739,19 @@ export function transformApiEvent(ev, context = null) {
     }
   }
 
-  const offset = `+00:${String(ev.sequence ?? 0).padStart(2, "0")}`;
+  const timestampRaw = ev.timestamp ?? ev.created_at ?? ev.occurred_at ?? null;
+  let offset = `+00:${String(ev.sequence ?? 0).padStart(2, "0")}`;
+  if (timestampRaw) {
+    const parsed = new Date(timestampRaw);
+    if (!Number.isNaN(parsed.getTime())) {
+      const runKey = ev.run_id || ev.runId || ev.action_request_id || ev.turn_id || "_default";
+      if (!timestampOffsetBaseline.has(runKey)) {
+        timestampOffsetBaseline.set(runKey, parsed.getTime());
+      }
+      const diffSec = Math.max(0, Math.round((parsed.getTime() - timestampOffsetBaseline.get(runKey)) / 1000));
+      offset = `+${String(Math.floor(diffSec / 60)).padStart(2, "0")}:${String(diffSec % 60).padStart(2, "0")}`;
+    }
+  }
   const title = ev.summary || (d.operation ? `${d.operation} on ${d.resource}` : `${type}`);
 
   // Approval tracking & join across turn / action events (#134)
@@ -1813,6 +2067,9 @@ export function buildStaticSimulationEvent(
         operation: `${payload.operation} (Simulated in browser — no gateway)`,
         resource: payload.resource,
         created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 300000).toISOString(),
+        hold_reason: "Reasoning scope concern",
+        arguments: parsedArgs,
       },
       statusMessage:
         "Simulated in browser — no gateway or auditor: HOLD (REASONING_SCOPE_CONCERN).",
@@ -1867,6 +2124,9 @@ export function buildStaticSimulationEvent(
         operation: `${payload.operation} (Simulated in browser — no gateway)`,
         resource: payload.resource,
         created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 300000).toISOString(),
+        hold_reason: "Policy hold",
+        arguments: parsedArgs,
       },
       statusMessage:
         "Simulated in browser — no gateway or auditor: HOLD (APPROVAL_REQUIRED).",
@@ -2026,8 +2286,16 @@ if (typeof document !== "undefined") {
             if (!existing) {
               const enriched = {
                 ...result.approval_request,
+                run_id: targetRun.id,
                 operation: result.approval_request.operation || payload.operation,
                 resource: result.approval_request.resource || payload.resource,
+                arguments: payload.arguments || parsedArgs,
+                hold_reason:
+                  reason === "REASONING_SCOPE_CONCERN"
+                    ? "Reasoning scope concern"
+                    : reason === "REASONING_AUDIT_FAILED"
+                      ? "Reasoning audit failed"
+                      : "Policy hold",
               };
               pendingApprovals.unshift(enriched);
               renderApprovals();
@@ -2174,6 +2442,10 @@ async function bootstrap() {
   if (health && health.status === "ok") {
     isLiveMode = true;
     updateGatewayStatus("Live gateway connected", "connected");
+    const bannerMode = document.getElementById("synthetic-banner-mode");
+    if (bannerMode) {
+      bannerMode.textContent = "Connected to a live gateway; mutations require a reviewer token.";
+    }
     // Demo mode means the gate requires the reviewer token for every mutating
     // call (#115), so offer the credential panel up front instead of letting a
     // judge discover it through a 401.
@@ -2227,7 +2499,23 @@ async function bootstrap() {
       }
       const formattedLiveRuns = buildLiveRuns(backendRuns, eventsByRun);
 
-      activeRuns = [...fixtureRuns, ...formattedLiveRuns];
+      // Keep synthetic fixtures available as a fallback, but show live runs first
+      // and open on a live run with a pending approval when one exists.
+      activeRuns = [...formattedLiveRuns, ...fixtureRuns];
+      const preferredLiveRun =
+        formattedLiveRuns.find((run) =>
+          (Array.isArray(run.events) && run.events.length > 0) &&
+          (
+            run.status === "WAITING_FOR_APPROVAL" ||
+            run.events.some((ev) => ev.status === "pending-approval")
+          )
+        ) ||
+        formattedLiveRuns.find((run) => Array.isArray(run.events) && run.events.length > 0) ||
+        null;
+      if (preferredLiveRun) {
+        state.runId = preferredLiveRun.id;
+        state.eventId = preferredLiveRun.events?.[0]?.id || null;
+      }
       // Keep selection valid when new runs arrive; prefer the first live run
       // with held events so the M1 escalation headline is one click away.
       renderRunButtons();
@@ -2276,6 +2564,13 @@ if (typeof window !== "undefined") {
   window.__scopewatch = {
     safeTransformApiEvent,
     refreshRuns,
+    refreshApprovals,
+    renderApprovals,
+    getPendingApprovals,
+    setPendingApprovals,
+    formatApprovalCardData,
+    createApprovalCard,
+    updateApprovalCard,
     approvalConfirmStep,
     panelStatus,
     getSseBannerCopy,
