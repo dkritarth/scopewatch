@@ -251,7 +251,10 @@ export function groupEventsByTurn(events) {
  * Exported so tests assert every seeded scenario run stays reachable.
  */
 export function formatLiveRun(backendRun, rawEvents = []) {
-  const transformedEvents = (rawEvents || []).map((e) => transformApiEvent(e));
+  const runId = backendRun?.id;
+  const transformedEvents = (rawEvents || []).map((e) =>
+    transformApiEvent(e, { runId }),
+  );
   const scope = backendRun?.task_scope;
   return {
     id: backendRun.id,
@@ -466,9 +469,18 @@ let liveStreamHandle = null;
 let isLiveMode = false;
 let pendingApprovals = [];
 
-const auditStore = new Map();
-const actionRequestStore = new Map();
+export const auditStore = new Map();
+export const actionRequestStore = new Map();
 export const approvalStore = new Map();
+
+/**
+ * Reset module-level stores across runs to prevent evidence leaking (#207).
+ */
+export function clearStores() {
+  actionRequestStore.clear();
+  auditStore.clear();
+  approvalStore.clear();
+}
 
 const state = {
   runId: fixtureRuns[0]?.id,
@@ -613,6 +625,9 @@ function renderRunButtons() {
     button.textContent = run.name;
     if (!existingButton) {
       button.addEventListener("click", () => {
+        if (state.runId !== run.id) {
+          clearStores();
+        }
         state.runId = run.id;
         state.eventId = run.events[0]?.id;
         if (isLiveMode && run.isLive) {
@@ -1039,6 +1054,9 @@ function timelineButton(event, run) {
   content.append(title, meta);
   button.append(time, content, status);
   button.addEventListener("click", () => {
+    if (state.runId !== run.id) {
+      clearStores();
+    }
     state.runId = run.id;
     state.eventId = event.id;
     if (elements.timeline) {
@@ -1316,8 +1334,27 @@ export function transformApiEvent(ev, context = null) {
   const type = ev.event_type || ev.type || "UNKNOWN";
   const d = ev.details || ev.payload || {};
   const actionReq = ev.action_request || context?.actionRequest || d.action_request || {};
-  const actionReqId = ev.action_request_id || d.action_request_id || (type === "ACTION_REQUESTED" ? ev.id : null);
+  const actionReqId =
+    ev.action_request_id ||
+    d.action_request_id ||
+    (type === "ACTION_REQUESTED" ? ev.id : null) ||
+    actionReq.id ||
+    actionReq.action_request_id ||
+    context?.actionRequestId ||
+    null;
+  const runId =
+    ev.run_id ??
+    ev.runId ??
+    d.run_id ??
+    d.runId ??
+    context?.runId ??
+    context?.run_id ??
+    null;
   const turnId = ev.turn_id ?? d.turn_id ?? actionReq.turn_id ?? null;
+
+  // Key stores strictly by run_id + action_request_id (#207).
+  // Never key by or fall back to turn_id, which leaks across actions/runs.
+  const storeKey = actionReqId ? (runId ? `${runId}:${actionReqId}` : actionReqId) : null;
 
   if (type === "ACTION_REQUESTED" || actionReq.tool) {
     const storedReq = {
@@ -1330,11 +1367,10 @@ export function transformApiEvent(ev, context = null) {
       reasoning_provenance: d.reasoning_provenance || actionReq.reasoning_provenance,
       turn_id: turnId,
     };
-    if (actionReqId) actionRequestStore.set(actionReqId, storedReq);
-    if (turnId) actionRequestStore.set(turnId, storedReq);
+    if (storeKey) actionRequestStore.set(storeKey, storedReq);
   }
 
-  const cachedReq = (actionReqId && actionRequestStore.get(actionReqId)) || (turnId && actionRequestStore.get(turnId)) || {};
+  const cachedReq = (storeKey && actionRequestStore.get(storeKey)) || {};
 
   const exposedReasoningTrace =
     d.exposed_reasoning_trace ??
@@ -1381,10 +1417,9 @@ export function transformApiEvent(ev, context = null) {
     (type.startsWith("REASONING_AUDIT_") ? d : null);
 
   if (rawAudit) {
-    if (actionReqId) auditStore.set(actionReqId, rawAudit);
-    if (turnId) auditStore.set(turnId, rawAudit);
+    if (storeKey) auditStore.set(storeKey, rawAudit);
   } else {
-    rawAudit = (actionReqId && auditStore.get(actionReqId)) || (turnId && auditStore.get(turnId)) || null;
+    rawAudit = (storeKey && auditStore.get(storeKey)) || null;
   }
 
   let reasoningAudit = null;
@@ -1503,14 +1538,10 @@ export function transformApiEvent(ev, context = null) {
   }
 
   if (rawApproval) {
-    if (actionReqId) approvalStore.set(actionReqId, rawApproval);
-    if (turnId) approvalStore.set(turnId, rawApproval);
+    if (storeKey) approvalStore.set(storeKey, rawApproval);
   }
 
-  const cachedApproval =
-    (actionReqId && approvalStore.get(actionReqId)) ||
-    (turnId && approvalStore.get(turnId)) ||
-    null;
+  const cachedApproval = (storeKey && approvalStore.get(storeKey)) || null;
 
   // Execution receipt fields: the EXECUTION_* events carry the sanitized
   // receipt as details.result (argv, exit_code, stdout/stderr with truncation
@@ -1641,7 +1672,7 @@ function subscribeToRun(runId) {
       if (!targetRun) return;
 
       // Malformed frames are logged + skipped, never crash the timeline.
-      const formatted = safeTransformApiEvent(apiEvent);
+      const formatted = safeTransformApiEvent(apiEvent, { runId });
       if (!formatted) return;
       if (!targetRun.events.some((e) => e.sequence === formatted.sequence)) {
         targetRun.events.push(formatted);
@@ -1935,6 +1966,7 @@ if (typeof document !== "undefined") {
       if (target.mode === "live") {
         const targetRun = target.run;
         if (state.runId !== targetRun.id) {
+          clearStores();
           state.runId = targetRun.id;
           renderRunButtons();
           renderScope();
@@ -1951,6 +1983,7 @@ if (typeof document !== "undefined") {
           if (result.events && Array.isArray(result.events)) {
             for (const rawEv of result.events) {
               const formatted = transformApiEvent(rawEv, {
+                runId: targetRun.id,
                 actionRequest: result.action_request,
                 reasoningAudit: result.reasoning_audit,
               });
