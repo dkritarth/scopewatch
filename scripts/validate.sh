@@ -4,11 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Normalize non-standard TMPDIR to /tmp so pytest tmp_path mounts match docker volume checks
-if [[ "${TMPDIR:-}" == *antigravity* ]]; then
-  export TMPDIR=/tmp
-fi
-
 # --quick skips the Playwright browser suite (use while iterating or when Chromium is unavailable).
 QUICK=0
 for arg in "$@"; do

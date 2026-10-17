@@ -57,12 +57,17 @@ PLACEHOLDERS = ["<HOSTED_URL>", "<YOUTUBE_URL>", "<DOMAIN>", "<TOKEN>"]
 
 # Banned guarantee phrases outside the gateway (claim honesty, AGENTS.md hard line 5).
 
+# Stale claims the submission docs once made (issue #217). The third field
+# marks patterns whose honest historical explanation may stay: a match is
+# skipped only when one of HISTORY_WORDS sits within 100 characters.
 BANNED_STALE_CLAIMS = [
-    (r"\b70B\b", "stale 70B model claim (configured model is Nemotron 3.5 Lightning)"),
-    (r"\b287\b\s+(?:backend\s+)?tests|\b287\s+collected|\b287\b", "stale 287 test count claim (CI runs 1400+ tests)"),
-    (r"<REPO_URL>", "unexpanded <REPO_URL> placeholder (repo is public)"),
-    (r"(?:returned|returns)\s+HTTP\s+401", "stale HTTP 401 unverified claim (resolved with Token Factory key)"),
+    (r"\b70B\b", "stale 70B model claim (configured model is Nemotron 3.5 Lightning)", False),
+    (r"\b287\s+(?:backend\s+)?(?:tests?|passed|collected)\b", "stale 287 test count claim", False),
+    (r"<REPO_URL>", "unexpanded <REPO_URL> placeholder (repo is public)", False),
+    (r"no [`']deploy/`", "stale 'no deploy/ directory' claim (ported from #253)", False),
+    (r"(?:returned|returns)\s+HTTP\s+401", "stale HTTP 401 unverified claim (resolved with Token Factory key)", True),
 ]
+HISTORY_WORDS = ("earlier", "diagnosed", "resolved", "wrong credential", "replacement")
 
 
 def check_stale_claims(root: pathlib.Path, rel: str, errors: list[str]) -> None:
@@ -70,12 +75,14 @@ def check_stale_claims(root: pathlib.Path, rel: str, errors: list[str]) -> None:
     if not path.exists():
         return
     text = path.read_text(encoding="utf-8")
-    for pat, label in BANNED_STALE_CLAIMS:
+    for pat, label, history_ok in BANNED_STALE_CLAIMS:
         for m in re.finditer(pat, text, re.IGNORECASE):
-            window = text[max(0, m.start() - 100): min(len(text), m.end() + 100)]
-            if any(w in window.lower() for w in ("earlier", "diagnosed", "resolved", "wrong credential", "replacement")):
-                continue
+            if history_ok:
+                window = text[max(0, m.start() - 100): m.end() + 100].lower()
+                if any(w in window for w in HISTORY_WORDS):
+                    continue
             errors.append(f"{rel}: {label}: '{m.group(0)}'")
+
 
 BANNED_CLAIMS = [
     "guaranteed detection",
