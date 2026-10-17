@@ -164,16 +164,21 @@ async def seed_scenarios(
 
         name = data.get("name", scenario_file.stem)
         task_scope_data = data.get("task_scope", {})
-        task_scope = TaskScope(
-            task_description=task_scope_data.get("task_description", "Synthetic demo run"),
-            allowed_paths=task_scope_data.get("allowed_paths", []),
-            blocked_paths=task_scope_data.get("blocked_paths", []),
-            allowed_tools=task_scope_data.get("allowed_tools", []),
-            allowed_operations=task_scope_data.get("allowed_operations", []),
-            allowed_network_destinations=task_scope_data.get("allowed_network_destinations", []),
-            requires_approval=task_scope_data.get("requires_approval", []),
-            created_at=task_scope_data.get("created_at", datetime.now(timezone.utc).isoformat()),
-        )
+        # Pass the scenario's whole scope through instead of restating each
+        # field: the previous field-by-field list omitted `allowed_commands`
+        # and `commands_requiring_approval`, so every seeded coding scenario
+        # carried an EMPTY command allowlist and denied its own
+        # `python -m pytest` with COMMAND_NOT_ALLOWED even on the Docker
+        # executor (issue #204). Keys the schema does not know are dropped
+        # rather than rejected, so a scenario file may carry documentation.
+        scope_fields = {
+            key: task_scope_data[key]
+            for key in TaskScope.model_fields
+            if key in task_scope_data
+        }
+        scope_fields.setdefault("task_description", "Synthetic demo run")
+        scope_fields.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+        task_scope = TaskScope(**scope_fields)
 
         run, _ = service.create_run(name=name, task_scope=task_scope, prompt_version=PROMPT_VERSION)
         print(f"\n[RUN] Created run '{run.name}' (id: {run.id})")

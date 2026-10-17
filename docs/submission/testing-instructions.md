@@ -46,6 +46,12 @@ Variants a judge can try:
 PYTHONPATH=backend python3 -m scopewatch.agent --scenario demo/scenarios/06_invoice_injection.json --profile mock
 ```
 
+`--coding` includes `run_command` actions, which the deterministic policy only
+permits on the Docker executor. With a reachable Docker daemon the launcher
+selects `SCOPEWATCH_EXECUTOR=docker` itself; without one it prints a warning
+before seeding and every `run_command` is refused by policy (never executed).
+The invoice scenarios (01–06) need no Docker at all.
+
 ## Option C — Full verification (no keys, ~10 minutes)
 
 ```bash

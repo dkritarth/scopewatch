@@ -152,7 +152,7 @@ def get_connection(db_path: Path | str) -> sqlite3.Connection:
     if path != Path(":memory:") and not str(path).startswith("file:"):
         path.parent.mkdir(parents=True, exist_ok=True)
     path_str = str(db_path)
-    conn = sqlite3.connect(path_str, timeout=10.0, isolation_level=None)
+    conn = sqlite3.connect(path_str, timeout=10.0, isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
