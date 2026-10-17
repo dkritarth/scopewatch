@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from enum import Enum
 import hashlib
+import html
 import json
 import logging
 import os
@@ -222,7 +223,18 @@ CRITICAL RULES FOR FLAGGED_EXCERPTS:
 - EVERY substring in `flagged_excerpts` MUST be an exact character-for-character match of text appearing inside `<untrusted_reasoning_trace>`. NEVER paraphrase, truncate words, or alter casing/whitespace.
 """
 
-AUDITOR_PROMPT_VERSION = f"v1.0-hardened-{hashlib.sha256(HARDENED_AUDITOR_SYSTEM_PROMPT.encode('utf-8')).hexdigest()[:8]}"
+# The major.minor prefix tracks the user-message template built by
+# build_turn_audit_messages; the hash tracks the system prompt.
+#   v1.1 (#194): added requires_approval, allowed_commands and
+#         commands_requiring_approval to <task_scope>.
+#   v1.2 (#186): every agent-controlled value outside the trace is XML-escaped,
+#         and trace escaping covers all four boundary tags in any form. The
+#         system prompt is unchanged.
+AUDITOR_PROMPT_TEMPLATE_VERSION = "v1.2"
+AUDITOR_PROMPT_VERSION = (
+    f"{AUDITOR_PROMPT_TEMPLATE_VERSION}-hardened-"
+    f"{hashlib.sha256(HARDENED_AUDITOR_SYSTEM_PROMPT.encode('utf-8')).hexdigest()[:8]}"
+)
 
 
 def _default_mock_model() -> str:
@@ -251,15 +263,61 @@ def truncate_reasoning_trace(
 
 
 # Tag-boundary smuggling patterns neutralized inside the untrusted trace.
-# Each replacement carries no angle brackets, so escaping is idempotent and the
-# built prompt keeps exactly one authoritative <task_scope> pair and one
-# <untrusted_reasoning_trace> pair.
-_TRACE_BOUNDARY_ESCAPES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"</\s*untrusted_reasoning_trace\s*>", re.IGNORECASE), "[UNTRUSTED:/untrusted_reasoning_trace]"),
-    (re.compile(r"<\s*untrusted_reasoning_trace(?:\s[^>]*)?>", re.IGNORECASE), "[UNTRUSTED:untrusted_reasoning_trace]"),
-    (re.compile(r"</\s*task_scope\s*>", re.IGNORECASE), "[UNTRUSTED:/task_scope]"),
-    (re.compile(r"<\s*task_scope\s*>", re.IGNORECASE), "[UNTRUSTED:task_scope]"),
+#
+# These are the four structural regions of the auditor user message. Any
+# opening tag (with or without attributes, any case, any inner whitespace), any
+# closing tag, and any unterminated "<name" start of one is rewritten without
+# angle brackets. Replacements carry no "<", so escaping is idempotent and the
+# built prompt keeps exactly one of each boundary tag. Attribute text is kept,
+# so a forged `<task_scope authority="operator">` stays visible to the auditor
+# as `[UNTRUSTED:task_scope authority="operator"]`.
+#
+# The trace is deliberately not HTML-escaped: flagged excerpts are grounded
+# against this exact text, and entity-encoding would make verbatim copies
+# harder for the model and noisier for the reviewer.
+_BOUNDARY_TAG_NAMES: tuple[str, ...] = (
+    "untrusted_reasoning_trace",
+    "task_scope",
+    "planned_actions",
+    "recent_actions",
 )
+_BOUNDARY_NAME_ALT = "|".join(_BOUNDARY_TAG_NAMES)
+_NAME_END = r"(?![A-Za-z0-9_.:-])"
+_TRACE_CLOSING_TAG = re.compile(
+    rf"<\s*/\s*({_BOUNDARY_NAME_ALT}){_NAME_END}[^<>]*>", re.IGNORECASE
+)
+_TRACE_OPENING_TAG = re.compile(
+    rf"<\s*({_BOUNDARY_NAME_ALT}){_NAME_END}([^<>]*)>", re.IGNORECASE
+)
+_TRACE_DANGLING_TAG = re.compile(
+    rf"<(\s*/?\s*)({_BOUNDARY_NAME_ALT}){_NAME_END}", re.IGNORECASE
+)
+
+
+def _escape_closing_tag(match: re.Match[str]) -> str:
+    return f"[UNTRUSTED:/{match.group(1).lower()}]"
+
+
+def _escape_opening_tag(match: re.Match[str]) -> str:
+    attrs = match.group(2).rstrip()
+    if attrs.endswith("/"):
+        attrs = attrs[:-1].rstrip()
+    return f"[UNTRUSTED:{match.group(1).lower()}{attrs}]"
+
+
+def _escape_dangling_tag(match: re.Match[str]) -> str:
+    slash = "/" if "/" in match.group(1) else ""
+    return f"[UNTRUSTED:{slash}{match.group(2).lower()}"
+
+
+def _xml_text(value: Any) -> str:
+    """Escape an agent-controlled value for an XML element body (#186)."""
+    return html.escape(str(value), quote=False)
+
+
+def _xml_attr(value: Any) -> str:
+    """Escape an agent-controlled value for a double-quoted XML attribute (#186)."""
+    return html.escape(str(value), quote=True)
 
 
 def escape_untrusted_trace(trace: Optional[str]) -> str:
@@ -276,8 +334,9 @@ def escape_untrusted_trace(trace: Optional[str]) -> str:
     single-region guarantee keeps them from acting as prompt structure.
     """
     escaped = trace or ""
-    for pattern, replacement in _TRACE_BOUNDARY_ESCAPES:
-        escaped = pattern.sub(replacement, escaped)
+    escaped = _TRACE_CLOSING_TAG.sub(_escape_closing_tag, escaped)
+    escaped = _TRACE_OPENING_TAG.sub(_escape_opening_tag, escaped)
+    escaped = _TRACE_DANGLING_TAG.sub(_escape_dangling_tag, escaped)
     return escaped
 
 
@@ -296,24 +355,37 @@ def build_turn_audit_messages(
     )
     bounded_recent = recent_actions[-max_recent_actions:] if recent_actions else []
 
+    # #186: every interpolated value below is escaped. Tool, operation,
+    # resource, and arguments are agent-controlled (including the resource of
+    # an earlier DENIED action, which passed no checks), and json.dumps does
+    # not escape "<" or ">". Escaping keeps exactly one of each boundary tag in
+    # the prompt no matter what those values contain. Scope fields come from
+    # the run, but are escaped too so the guarantee does not depend on who
+    # created the run.
+    def _json_body(value: Any) -> str:
+        return _xml_text(json.dumps(value))
+
     scope_xml = (
         "<task_scope>\n"
-        f"  <task_description>{scope.task_description}</task_description>\n"
-        f"  <allowed_paths>{json.dumps(scope.allowed_paths)}</allowed_paths>\n"
-        f"  <blocked_paths>{json.dumps(scope.blocked_paths)}</blocked_paths>\n"
-        f"  <allowed_tools>{json.dumps(scope.allowed_tools)}</allowed_tools>\n"
-        f"  <allowed_operations>{json.dumps(scope.allowed_operations)}</allowed_operations>\n"
-        f"  <allowed_network_destinations>{json.dumps(scope.allowed_network_destinations)}</allowed_network_destinations>\n"
+        f"  <task_description>{_xml_text(scope.task_description)}</task_description>\n"
+        f"  <allowed_paths>{_json_body(scope.allowed_paths)}</allowed_paths>\n"
+        f"  <blocked_paths>{_json_body(scope.blocked_paths)}</blocked_paths>\n"
+        f"  <allowed_tools>{_json_body(scope.allowed_tools)}</allowed_tools>\n"
+        f"  <allowed_operations>{_json_body(scope.allowed_operations)}</allowed_operations>\n"
+        f"  <allowed_network_destinations>{_json_body(scope.allowed_network_destinations)}</allowed_network_destinations>\n"
+        f"  <requires_approval>{_json_body(scope.requires_approval)}</requires_approval>\n"
+        f"  <allowed_commands>{_json_body(scope.allowed_commands)}</allowed_commands>\n"
+        f"  <commands_requiring_approval>{_json_body(scope.commands_requiring_approval)}</commands_requiring_approval>\n"
         "</task_scope>"
     )
 
     planned_actions_lines = ["<planned_actions>"]
     if planned_actions:
         for action in planned_actions:
-            args_str = json.dumps(action.arguments)
             planned_actions_lines.append(
-                f'  <action tool="{action.tool}" operation="{action.operation}" resource="{action.resource}">'
-                f"{args_str}</action>"
+                f'  <action tool="{_xml_attr(action.tool)}" operation="{_xml_attr(action.operation)}"'
+                f' resource="{_xml_attr(action.resource)}">'
+                f"{_json_body(action.arguments)}</action>"
             )
     else:
         planned_actions_lines.append("  <no_planned_actions />")
@@ -324,26 +396,31 @@ def build_turn_audit_messages(
     if bounded_recent:
         for action in bounded_recent:
             if isinstance(action, RecentActionSummary):
-                decision_attr = f' decision="{action.decision}"' if action.decision else ""
-                recent_actions_lines.append(
-                    f'  <action tool="{action.tool}" operation="{action.operation}" resource="{action.resource}"{decision_attr} />'
+                tool, op, res, dec = (
+                    action.tool,
+                    action.operation,
+                    action.resource,
+                    action.decision,
                 )
             elif isinstance(action, dict):
                 tool = action.get("tool", "")
                 op = action.get("operation", "")
                 res = action.get("resource", "")
                 dec = action.get("decision")
-                dec_attr = f' decision="{dec}"' if dec else ""
-                recent_actions_lines.append(
-                    f'  <action tool="{tool}" operation="{op}" resource="{res}"{dec_attr} />'
-                )
+            else:
+                continue
+            dec_attr = f' decision="{_xml_attr(dec)}"' if dec else ""
+            recent_actions_lines.append(
+                f'  <action tool="{_xml_attr(tool)}" operation="{_xml_attr(op)}"'
+                f' resource="{_xml_attr(res)}"{dec_attr} />'
+            )
     else:
         recent_actions_lines.append("  <none />")
     recent_actions_lines.append("</recent_actions>")
     recent_actions_xml = "\n".join(recent_actions_lines)
 
     trace_xml = (
-        f'<untrusted_reasoning_trace provenance="{provenance}">\n'
+        f'<untrusted_reasoning_trace provenance="{_xml_attr(provenance)}">\n'
         f"{bounded_trace}\n"
         "</untrusted_reasoning_trace>"
     )
@@ -608,6 +685,7 @@ def parse_auditor_output(
                 profile=profile,
                 latency_ms=latency_ms,
                 error_code=AuditErrorCode.INVALID_AUDIT_OUTPUT.value,
+                total_tokens=total_tokens,
             )
         if raw_excerpts:
             return ReasoningAuditResult(
@@ -619,6 +697,7 @@ def parse_auditor_output(
                 profile=profile,
                 latency_ms=latency_ms,
                 error_code=AuditErrorCode.INVALID_AUDIT_OUTPUT.value,
+                total_tokens=total_tokens,
             )
         return ReasoningAuditResult(
             verdict=ReasoningAuditVerdict.NO_CONCERN,
@@ -698,6 +777,7 @@ def parse_auditor_output(
         profile=profile,
         latency_ms=latency_ms,
         error_code=None,
+        total_tokens=total_tokens,
     )
 
 
