@@ -615,6 +615,7 @@ def parse_auditor_output(
                 profile=profile,
                 latency_ms=latency_ms,
                 error_code=AuditErrorCode.INVALID_AUDIT_OUTPUT.value,
+                total_tokens=total_tokens,
             )
         if raw_excerpts:
             return ReasoningAuditResult(
@@ -626,6 +627,7 @@ def parse_auditor_output(
                 profile=profile,
                 latency_ms=latency_ms,
                 error_code=AuditErrorCode.INVALID_AUDIT_OUTPUT.value,
+                total_tokens=total_tokens,
             )
         return ReasoningAuditResult(
             verdict=ReasoningAuditVerdict.NO_CONCERN,
@@ -705,6 +707,7 @@ def parse_auditor_output(
         profile=profile,
         latency_ms=latency_ms,
         error_code=None,
+        total_tokens=total_tokens,
     )
 
 
