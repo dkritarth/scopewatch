@@ -636,7 +636,11 @@ def test_task_scope_includes_command_and_approval_fields() -> None:
 
 
 def test_prompt_version_reflects_scope_template_change() -> None:
-    """Issue #194 changed the auditor user message, so the version moved off v1.0."""
+    """Issue #194 changed the auditor user message, so the version moved off v1.0.
+
+    Issue #186 (XML-escaping agent-controlled values) moved it again, to v1.2.
+    """
     from scopewatch.reasoning_audit import AUDITOR_PROMPT_VERSION
 
-    assert AUDITOR_PROMPT_VERSION.startswith("v1.1-hardened-")
+    assert not AUDITOR_PROMPT_VERSION.startswith(("v1.0-", "v1.1-"))
+    assert AUDITOR_PROMPT_VERSION.startswith("v1.2-hardened-")
