@@ -457,6 +457,8 @@ def execute_action(
             policy_decision=policy_decision,
             approval_request=approval_request,
             run_workspace=run_workspace,
+            db_path=db_path,
+            task_scope=task_scope,
         )
     return _execute_local(
         action,
