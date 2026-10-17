@@ -841,6 +841,45 @@ h1 {
   word-break: break-all;
 }
 
+.approval-card-run,
+.approval-card-reason,
+.approval-card-expiry {
+  font-size: 0.78rem;
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.approval-card-args {
+  font-size: 0.76rem;
+  font-family: var(--font-mono);
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  padding: 4px 8px;
+  margin: 0;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.approval-card-link {
+  font-size: 0.76rem;
+  color: var(--accent);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-align: left;
+  display: inline-block;
+}
+.approval-card-link:hover,
+.approval-card-link:focus {
+  color: var(--accent-hover, #60a5fa);
+}
+
 .approval-reason-input {
   width: 100%;
   border: 1px solid var(--border-subtle);
@@ -1150,6 +1189,46 @@ select:focus,
   background-color: var(--status-attempted-dot);
 }
 
+.status-allowed .event-status {
+  background: var(--status-executed-bg);
+  border: 1px solid var(--status-executed-border);
+  color: var(--status-executed-text);
+}
+.status-allowed .event-status::before {
+  background-color: var(--status-executed-dot);
+}
+
+.status-held .event-status,
+.status-pending-approval .event-status {
+  background: var(--status-pending-bg);
+  border: 1px solid var(--status-pending-border);
+  color: var(--status-pending-text);
+}
+.status-held .event-status::before,
+.status-pending-approval .event-status::before {
+  background-color: var(--status-pending-dot);
+}
+
+.status-denied .event-status,
+.status-blocked .event-status {
+  background: var(--status-blocked-bg);
+  border: 1px solid var(--status-blocked-border);
+  color: var(--status-blocked-text);
+}
+.status-denied .event-status::before,
+.status-blocked .event-status::before {
+  background-color: var(--status-blocked-dot);
+}
+
+.status-approved .event-status {
+  background: var(--status-executed-bg);
+  border: 1px solid var(--status-executed-border);
+  color: var(--status-executed-text);
+}
+.status-approved .event-status::before {
+  background-color: var(--status-executed-dot);
+}
+
 .status-executed .event-status {
   background: var(--status-executed-bg);
   border: 1px solid var(--status-executed-border);
@@ -1159,22 +1238,13 @@ select:focus,
   background-color: var(--status-executed-dot);
 }
 
-.status-blocked .event-status {
+.status-failed .event-status {
   background: var(--status-blocked-bg);
   border: 1px solid var(--status-blocked-border);
   color: var(--status-blocked-text);
 }
-.status-blocked .event-status::before {
+.status-failed .event-status::before {
   background-color: var(--status-blocked-dot);
-}
-
-.status-pending-approval .event-status {
-  background: var(--status-pending-bg);
-  border: 1px solid var(--status-pending-border);
-  color: var(--status-pending-text);
-}
-.status-pending-approval .event-status::before {
-  background-color: var(--status-pending-dot);
 }
 
 /* Empty State */
