@@ -50,6 +50,40 @@ Successful `write_text`/`run_command` results sync back to the **run's**
 workspace; reads, listings, and simulated deletes do not. Copy-back never
 touches the shared fixture or a sibling run's directory.
 
+### Blocked paths are not staged (#183)
+
+`stage_workspace_copy(workspace, blocked_paths)` leaves every entry under a
+`task_scope.blocked_paths` prefix out of the copy, judged by its name in the
+workspace and, for symlinks, by the target it resolves to (a link that cannot
+be resolved is left out too). After copying it checks that no blocked path
+exists in the copy; if one does, or the blocked list is malformed, or it
+blocks the workspace root, staging fails and the dispatch returns
+`FAILED`/`EXECUTION_FAILED` ("Workspace staging failed").
+
+`sync_copy_back(copy, workspace, blocked_paths)` refuses any entry under a
+blocked prefix and any directory whose resolved host destination is blocked
+or outside the run workspace, so a container cannot write `.env` or write
+through a host-side link. Refused paths are dropped, the rest of the
+container's writes still land, and the receipt lists the refused paths under
+`copy_back_refused`.
+
+The Docker backend takes `blocked_paths` from the scope passed to the
+executor, else the run's stored scope. The runner sidecar takes it from the
+signed dispatch's `task_scope`; a dispatch without `task_scope` stages the
+whole run workspace, and a malformed one is refused with HTTP 400.
+
+**What `run_command` can still reach.** The policy checks `run_command` argv
+text only; it cannot see what the executed code opens. With this change the
+container's copy contains no blocked path, but it still contains **every
+other file in the run workspace, including files outside `allowed_paths`**
+(for scenario 10, for example `PARAPHRASED_INJECTION_FIXTURE.md`). Code run
+by an allowlisted command can read those files and print them into the
+receipt, and can write to any non-blocked path, which copy-back syncs to the
+run workspace. Hard links are copied as regular files, so a hard link to a
+blocked file under another name would be staged; the gateway gives agents no
+way to create one. Nothing outside the staged copy and the container image
+is reachable (no network, no host mounts; see the hardening flags above).
+
 ## Image pin
 
 `DOCKER_IMAGE` in `docker_job.py` is a digest-pinned

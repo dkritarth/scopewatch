@@ -110,7 +110,9 @@ from scopewatch.docker_job import (  # noqa: E402
     best_effort_remove,
     build_docker_command,
     clamp_run_command_timeout,
+    StagingScopeError,
     make_world_accessible,
+    normalize_blocked_paths,
     prepare_docker_job,
     replace_link,
     stage_workspace_copy,
@@ -344,6 +346,31 @@ class RunnerConfig:
 TOKEN_STORE = DispatchTokenStore()
 
 
+def _dispatch_blocked_paths(body: dict[str, Any]) -> tuple[list[str], Optional[str]]:
+    """Return ``(blocked_paths, error)`` from the signed dispatch (issue #183).
+
+    ``task_scope`` is optional: a dispatch without it stages the whole run
+    workspace, as before. When present it must be a mapping whose
+    ``blocked_paths`` (if any) is a list of strings; anything else is an error
+    so a malformed scope cannot silently exclude nothing.
+    """
+    scope = body.get("task_scope")
+    if scope is None:
+        return [], None
+    if not isinstance(scope, dict):
+        return [], "malformed task_scope"
+    raw = scope.get("blocked_paths")
+    if raw is None:
+        return [], None
+    if not isinstance(raw, list):
+        return [], "malformed task_scope.blocked_paths"
+    try:
+        normalize_blocked_paths(raw)
+    except StagingScopeError:
+        return [], "malformed task_scope.blocked_paths"
+    return list(raw), None
+
+
 def handle_execute(
     body: dict[str, Any],
     config: RunnerConfig,
@@ -452,11 +479,21 @@ def handle_execute(
         arguments = {"argv": argv, "timeout_s": timeout}
         run_timeout_s = timeout
 
+    # Issue #183: the signed dispatch's task_scope.blocked_paths stay out of
+    # the staged copy and out of copy-back. The scope is covered by the
+    # dispatch HMAC. A dispatch without one stages as before; a malformed one
+    # is refused before anything is staged.
+    blocked_paths, scope_error = _dispatch_blocked_paths(body)
+    if scope_error is not None:
+        return 400, {"error": scope_error}
+
     staging_root: Optional[Path] = None
     container_name = f"scopewatch-runner-{uuid.uuid4().hex[:12]}"
     try:
         try:
-            staging_root, workspace_copy = stage_workspace_copy(workspace)
+            staging_root, workspace_copy = stage_workspace_copy(
+                workspace, blocked_paths
+            )
         except OSError:
             return 500, {"error": "workspace staging failed"}
         # Same job builder as the gateway (issue #106): the JSON the container
@@ -504,9 +541,11 @@ def handle_execute(
             return 502, {"error": "Docker helper returned malformed output"}
         if status == "EXECUTED" and operation in ("write_text", "run_command"):
             try:
-                sync_copy_back(workspace_copy, workspace)
+                refused = sync_copy_back(workspace_copy, workspace, blocked_paths)
             except Exception:
                 return 200, {"status": "FAILED", "result": {"error": "Docker execution failed."}, "error_code": "EXECUTION_FAILED"}
+            if refused:
+                result = {**result, "copy_back_refused": refused}
         return 200, {"status": status, "result": result, "error_code": error_code}
     finally:
         if staging_root is not None:

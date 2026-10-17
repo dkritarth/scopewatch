@@ -243,6 +243,22 @@ class DockerExecutor:
         if not is_docker_available():
             return _failed("EXECUTION_FAILED", "Docker daemon unavailable; failing closed.")
 
+        # The scope that governs this dispatch: the one passed in, else the
+        # run's stored scope. run_command without any verifiable scope fails
+        # closed (issue #68); other operations stage with whatever scope is
+        # known, because the policy already checked their single resource.
+        dispatch_scope = task_scope
+        if dispatch_scope is None and db_path is not None:
+            dispatch_scope = _load_scope_from_store(action, db_path)
+            if dispatch_scope is None and action.operation == "run_command":
+                return _failed(
+                    "EXECUTION_FAILED",
+                    "run_command scope unavailable; failing closed.",
+                )
+        # Issue #183: blocked paths never enter the container's copy and are
+        # never copied back out of it.
+        blocked_paths = list(dispatch_scope.blocked_paths) if dispatch_scope else []
+
         workspace_copy: Optional[Path] = None
         staging_root: Optional[Path] = None
         container_name = f"scopewatch-{uuid.uuid4().hex[:12]}"
@@ -250,9 +266,28 @@ class DockerExecutor:
             resolved_workspace = workspace_root.resolve()
             if not resolved_workspace.exists():
                 return _failed("EXECUTION_FAILED", "Workspace root not found.")
+            # run_command (issues #68, #183): revalidate against the run's own
+            # workspace immediately before staging as well as against the
+            # staged copy below. Staging now drops links whose target is
+            # blocked, so a link swapped onto a blocked file is absent from
+            # the copy and only this pass still sees it and reports the
+            # policy reason (BLOCKED_PATH) rather than dispatching a command
+            # whose argument has silently vanished.
+            if action.operation == "run_command" and dispatch_scope is not None:
+                from scopewatch.policy import revalidate_run_command_in_workspace
+
+                denial = revalidate_run_command_in_workspace(
+                    action, dispatch_scope, resolved_workspace
+                )
+                if denial is not None:
+                    reason_code, _explanation, _matched_rule = denial
+                    return _failed(
+                        reason_code.value,
+                        "run_command dispatch refused: path revalidation failed.",
+                    )
             try:
                 staging_root, workspace_copy = _stage_workspace_copy(
-                    resolved_workspace
+                    resolved_workspace, blocked_paths
                 )
             except OSError:
                 return _failed("EXECUTION_FAILED", "Workspace staging failed.")
@@ -270,14 +305,7 @@ class DockerExecutor:
             # here; a blocked or escaping target refuses dispatch before
             # any container is invoked.
             if action.operation == "run_command":
-                scope_for_revalidation = task_scope
-                if scope_for_revalidation is None and db_path is not None:
-                    scope_for_revalidation = _load_scope_from_store(action, db_path)
-                    if scope_for_revalidation is None:
-                        return _failed(
-                            "EXECUTION_FAILED",
-                            "run_command scope unavailable; failing closed.",
-                        )
+                scope_for_revalidation = dispatch_scope
                 if scope_for_revalidation is not None:
                     from scopewatch.policy import revalidate_run_command_in_workspace
 
@@ -362,9 +390,16 @@ class DockerExecutor:
                 "run_command",
             ):
                 try:
-                    _sync_copy_back(workspace_copy, resolved_workspace)
+                    refused = _sync_copy_back(
+                        workspace_copy, resolved_workspace, blocked_paths
+                    )
                 except Exception:
                     return _failed("EXECUTION_FAILED", "Docker execution failed.")
+                if refused:
+                    # Evidence, not silence: the container wrote to paths the
+                    # scope blocks (or through a host link out of scope), and
+                    # those writes were dropped (#183).
+                    result = {**result, "copy_back_refused": refused}
             return ExecutionReceipt(
                 id=receipt_id,
                 action_request_id=action.id,
