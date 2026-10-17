@@ -183,10 +183,30 @@ curl -s http://127.0.0.1:8091/healthz     # {"status": "ok"}
 ```
 
 With the #42 bundle: merge `compose.executor-runner.yaml` into
-`deploy/compose.yaml` (same `internal` network), set both runner secrets in
-the deploy `.env` (gitignored), and set the gateway's
-`SCOPEWATCH_EXECUTOR=remote`,
+`deploy/compose.yaml`, set both runner secrets in the deploy `.env`
+(gitignored), and set the gateway's `SCOPEWATCH_EXECUTOR=remote`,
 `EXECUTOR_RUNNER_URL=http://executor-runner:8091`.
+
+```bash
+docker compose \
+  -f deploy/compose.yaml \
+  -f deploy/executor-runner/compose.executor-runner.yaml \
+  up -d --build
+```
+
+The two files meet on their own network, not on the gateway's: the fragment
+declares `executor-runner` as `internal: true` (no route off the host, because
+this container holds the Docker socket) and `deploy/compose.yaml` attaches its
+gateway to that same network. Do **not** mark the shared `internal` network
+`internal: true` — the gateway needs it routable for provider calls, and doing
+that once made every live audit fail closed to `HOLD` (issue #202).
+
+`SCOPEWATCH_EXECUTOR` is an operator choice in the deploy `.env`
+(`deploy/compose.yaml` defaults it to `local` and no longer pins it, because
+`environment:` overrides `env_file:` — the pin made `SCOPEWATCH_EXECUTOR=remote`
+in `.env` a no-op). `EXECUTOR_RUNNER_URL` defaults to
+`http://executor-runner:8091`, so a `.env` that sets only
+`SCOPEWATCH_EXECUTOR=remote` plus the two secrets is enough.
 
 **The shared path is mandatory** (issue #117). The gateway materialises one
 workspace directory per run under its `SCOPEWATCH_RUN_WORKSPACES_DIR` and
@@ -229,10 +249,13 @@ provide.
   has been used. Someone who obtains both secrets can forge dispatches; rotate
   both values in the gateway and runner, then restart them.
 - **Network scope.** The runner binds loopback by default and the compose
-  fragment publishes no host ports on an `internal: true` network, so only
-  containers on that network (the gateway) can reach it. Do not add
-  `ports:`, do not attach it to a public network, and do not put it behind
-  the public reverse proxy. A rootless daemon socket
+  fragment publishes no host ports on an `internal: true` network
+  (`executor-runner`), so only containers on that network (the gateway) can
+  reach it, and the runner itself has no egress. Do not add `ports:`, do not
+  attach it to a public network, and do not put it behind the public reverse
+  proxy. Equally: do not mark the gateway's shared `internal` network
+  `internal: true` from this fragment — that is how the gateway lost its
+  provider egress (#202). A rootless daemon socket
   (`/run/user/1000/docker.sock`) reduces host impact further and is a
   drop-in replacement for the mount source.
 - **What this does not prove.** The sidecar moves Docker access off the
