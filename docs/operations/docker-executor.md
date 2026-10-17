@@ -63,7 +63,10 @@ blocks the workspace root, staging fails and the dispatch returns
 `sync_copy_back(copy, workspace, blocked_paths)` refuses any entry under a
 blocked prefix and any directory whose resolved host destination is blocked
 or outside the run workspace, so a container cannot write `.env` or write
-through a host-side link. Refused paths are dropped, the rest of the
+through a host-side link. It also refuses to replace a directory that holds a
+blocked path (such as `config/` above blocked `config/.env`) with a link or a
+file, because applying that type change would delete the blocked path on the
+host. Refused paths are dropped, the rest of the
 container's writes still land, and the receipt lists the refused paths under
 `copy_back_refused`.
 

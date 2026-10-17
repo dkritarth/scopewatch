@@ -476,11 +476,20 @@ def sync_copy_back(
             # replicate the link itself and never descend into it (the walk
             # already refuses to follow, so no pruning is needed).
             if src_entry.is_symlink():
+                if _contains_blocked((*rel_parts, name), blocked):
+                    # Replacing this host directory with a link would rmtree
+                    # the blocked paths below it (#183 review).
+                    refused.add("/".join((*rel_parts, name)))
+                    continue
                 replace_link(src_entry, dest_dir / name)
             else:
                 (dest_dir / name).mkdir(parents=True, exist_ok=True)
         for name in filenames:
-            if _is_blocked((*rel_parts, name), blocked):
+            if _is_blocked((*rel_parts, name), blocked) or _contains_blocked(
+                (*rel_parts, name), blocked
+            ):
+                # A file or link where the host has an ancestor of a blocked
+                # path would replace (rmtree) that directory: refuse it.
                 refused.add("/".join((*rel_parts, name)))
                 continue
             src_entry = staged_dir / name
@@ -600,6 +609,17 @@ def normalize_blocked_paths(blocked_paths: Any) -> tuple[tuple[str, ...], ...]:
 def _is_blocked(parts: tuple[str, ...], blocked: tuple[tuple[str, ...], ...]) -> bool:
     """True when ``parts`` is a blocked prefix or below one."""
     return any(parts[: len(prefix)] == prefix for prefix in blocked)
+
+
+def _contains_blocked(parts: tuple[str, ...], blocked: tuple[tuple[str, ...], ...]) -> bool:
+    """True when ``parts`` is a strict ancestor of some blocked prefix.
+
+    Copy-back must never replace such a directory with a link or a file:
+    removing it would delete the blocked paths below it on the host.
+    """
+    return any(
+        len(prefix) > len(parts) and prefix[: len(parts)] == parts for prefix in blocked
+    )
 
 
 def _relative_parts(path: Path, root: Path) -> Optional[tuple[str, ...]]:

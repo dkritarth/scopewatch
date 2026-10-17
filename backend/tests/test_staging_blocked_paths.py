@@ -282,6 +282,35 @@ def test_copy_back_does_not_write_through_a_host_link_outside_the_workspace(
     assert "escape" in refused
 
 
+@pytest.mark.parametrize("replacement", ["symlink", "file"])
+def test_copy_back_cannot_delete_a_blocked_path_by_replacing_its_ancestor(
+    tmp_path: Path, replacement: str
+) -> None:
+    """Second-pass review (#183): the container replaces ``config/`` (which
+    holds blocked ``config/.env``) with a link or a file. Copy-back used to
+    rmtree the host ``config/`` to apply the type change, deleting the
+    blocked file; it must refuse instead and report the refusal."""
+    ws = tmp_path / "ws"
+    (ws / "config").mkdir(parents=True)
+    (ws / "config" / ".env").write_text(f"API_KEY={SECRET_MARKER}\n")
+    (ws / "config" / "app.toml").write_text("ok")
+    staging_root, staged = docker_job.stage_workspace_copy(ws, ["config/.env"])
+    try:
+        shutil.rmtree(staged / "config")
+        if replacement == "symlink":
+            (staged / "config").symlink_to("elsewhere")
+        else:
+            (staged / "config").write_text("replaced")
+
+        refused = docker_job.sync_copy_back(staged, ws, ["config/.env"])
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+    assert (ws / "config" / ".env").read_text() == f"API_KEY={SECRET_MARKER}\n"
+    assert (ws / "config" / "app.toml").read_text() == "ok"
+    assert refused == ["config"]
+
+
 # ---------------------------------------------------------------------------
 # End to end through the gateway DockerExecutor (Docker faked)
 # ---------------------------------------------------------------------------
@@ -421,7 +450,14 @@ def _runner_body(runner_mod, run_workspace: str, task_scope: object, key: str) -
         "issued_at": time.time(),
         "dispatch_token": f"token-{uuid.uuid4().hex}",
         "run_workspace": run_workspace,
-        "action_digest": runner_mod.canonical_action_digest(action, decision, run_workspace),
+        # Since #184 the digest binds the signed scope too. A non-mapping
+        # scope cannot be digested; the runner refuses it before digesting.
+        "action_digest": runner_mod.canonical_action_digest(
+            action,
+            decision,
+            run_workspace,
+            task_scope if isinstance(task_scope, dict) else None,
+        ),
         "action": action,
         "policy_decision": decision,
         "approval": None,
@@ -477,7 +513,16 @@ def test_runner_staging_excludes_blocked_paths_from_signed_scope(
 
 @pytest.mark.parametrize(
     "bad_scope",
-    [{"blocked_paths": ".env"}, {"blocked_paths": [1]}, "not-a-mapping", ["x"]],
+    [
+        {"blocked_paths": ".env"},
+        {"blocked_paths": [1]},
+        "not-a-mapping",
+        ["x"],
+        # #184 fields, digested since that merge: also shape-checked.
+        {"allowed_paths": "src"},
+        {"allowed_commands": "cat"},
+        {"allowed_commands": [["cat", 1]]},
+    ],
 )
 def test_runner_refuses_malformed_signed_scope(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad_scope: object
