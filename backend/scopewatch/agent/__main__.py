@@ -57,6 +57,22 @@ def build_scenario_mock_provider(
         if act.get("arguments"):
             args_payload.update(act["arguments"])
 
+        # Determine reasoning text and provenance honestly:
+        # - If the scenario provides exposed_reasoning_trace, use it with PROVIDER_EXPOSED_TRACE
+        # - If the scenario provides reasoning_summary, use it with AGENT_AUTHORED_SUMMARY
+        # - Otherwise, reasoning is missing -> UNAVAILABLE with no invented text (#200)
+        exposed_trace = act.get("exposed_reasoning_trace")
+        reasoning_summary = act.get("reasoning_summary")
+        if exposed_trace:
+            reasoning_text = exposed_trace
+            provenance = ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value
+        elif reasoning_summary:
+            reasoning_text = reasoning_summary
+            provenance = ReasoningProvenance.AGENT_AUTHORED_SUMMARY.value
+        else:
+            reasoning_text = None
+            provenance = ReasoningProvenance.UNAVAILABLE.value
+
         mock.enqueue(
             ChatResult(
                 content=f"Step {idx}: dispatching {act.get('operation')} on {act.get('resource')}.",
@@ -70,38 +86,33 @@ def build_scenario_mock_provider(
                         },
                     }
                 ],
-                reasoning_text=(
-                    act.get("exposed_reasoning_trace")
-                    or act.get("reasoning_summary")
-                    or f"Executing planned step {idx} for task completion."
-                ),
+                reasoning_text=reasoning_text,
+                # A scenario may relabel text it supplies (e.g. SYNTHETIC_FIXTURE),
+                # but missing text always stays UNAVAILABLE, whatever the label.
                 reasoning_provenance=(
-                    act.get("reasoning_provenance")
-                    or (
-                        ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value
-                        if act.get("exposed_reasoning_trace")
-                        else (
-                            ReasoningProvenance.AGENT_AUTHORED_SUMMARY.value
-                            if act.get("reasoning_summary")
-                            else ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value
-                        )
-                    )
+                    (act.get("reasoning_provenance") or provenance)
+                    if reasoning_text is not None
+                    else ReasoningProvenance.UNAVAILABLE.value
                 ),
                 model=scripted_model,
                 profile="mock",
             )
         )
 
-    # Final completion turn with no tool calls
+    # Final completion turn with no tool calls: this is a synthetic fixture
+    # turn, not provider output. Label it SYNTHETIC_FIXTURE.
     mock.enqueue(
         ChatResult(
             content=(
-                f"Task '{scenario_data.get('name', 'Scenario')}' completed successfully. "
-                "All planned actions were executed through the gateway."
+                f"Task '{scenario_data.get('name', 'Scenario')}' replay finished. "
+                "All planned actions were submitted through the gateway; "
+                "the run evidence shows which were executed, held, or denied."
             ),
             tool_calls=[],
-            reasoning_text="All required operations finished without violations.",
-            reasoning_provenance=ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value,
+            # Neutral on purpose: the replay cannot know whether actions were
+            # allowed, held, or denied, so it must not claim "no violations".
+            reasoning_text="Scripted replay submitted every planned action.",
+            reasoning_provenance=ReasoningProvenance.SYNTHETIC_FIXTURE.value,
             model=scripted_model,
             profile="mock",
         )

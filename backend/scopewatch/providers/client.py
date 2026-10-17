@@ -6,7 +6,7 @@ import os
 import time
 from typing import Any, NamedTuple, Optional
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from scopewatch.budget_store import is_mock_profile, record_completion
 from scopewatch.providers.errors import ProviderError, ProviderErrorCode
@@ -66,6 +66,38 @@ class ReasoningExtraction(NamedTuple):
     text: Optional[str]
     provenance: str
     detail_type: Optional[str] = None
+
+
+def _normalize_content(content: Any) -> Optional[str]:
+    """Normalize content from provider response to a string.
+
+    Handles:
+    - None or missing content -> None
+    - String content -> as-is
+    - List of content parts (OpenAI-compatible) -> joins text parts
+    - Any other type -> None (callers reject other types first)
+    """
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                # OpenAI-style: {"type": "text", "text": "..."}
+                text = part.get("text")
+                if isinstance(text, str):
+                    texts.append(text)
+        return "\n".join(texts) if texts else None
+    return None
+
+
+def _ensure_dict(value: Any, default: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Ensure value is a dict, returning default if not."""
+    if isinstance(value, dict):
+        return value
+    return default if default is not None else {}
 
 
 def _detail_text(detail: dict[str, Any], *keys: str) -> Optional[str]:
@@ -444,23 +476,46 @@ class ProviderClient:
                 f"Provider '{self.profile.name}' returned invalid message format.",
             )
 
-        content = message.get("content")
-        tool_calls = message.get("tool_calls") or []
-        extraction = extract_reasoning(message)
-        usage = data.get("usage") or {}
-        model = data.get("model") or self.profile.model
-
-        return ChatResult(
-            content=content,
-            tool_calls=tool_calls,
-            reasoning_text=extraction.text,
-            reasoning_provenance=extraction.provenance,
-            reasoning_detail_type=extraction.detail_type,
-            usage=usage,
-            latency_ms=latency_ms,
-            model=model,
-            profile=self.profile.name,
+        malformed = ProviderError(
+            ProviderErrorCode.MALFORMED_RESPONSE,
+            f"Provider '{self.profile.name}' returned response with unexpected shape.",
         )
+
+        # Content: text, null, or OpenAI-style list of parts (joined). Anything
+        # else is malformed rather than silently dropped.
+        raw_content = message.get("content")
+        if raw_content is not None and not isinstance(raw_content, (str, list)):
+            raise malformed
+        content = _normalize_content(raw_content)
+
+        # Tool calls: a non-list is malformed. Coercing it to [] would drop the
+        # agent's action and let the run finish as if it had nothing to do.
+        raw_tool_calls = message.get("tool_calls")
+        if raw_tool_calls is not None and not isinstance(raw_tool_calls, list):
+            raise malformed
+        tool_calls = raw_tool_calls or []
+
+        # Usage is accounting metadata only; an unexpected shape is ignored.
+        usage = _ensure_dict(data.get("usage"))
+        model = data.get("model") or self.profile.model
+        extraction = extract_reasoning(message)
+
+        try:
+            return ChatResult(
+                content=content,
+                tool_calls=tool_calls,
+                reasoning_text=extraction.text,
+                reasoning_provenance=extraction.provenance,
+                reasoning_detail_type=extraction.detail_type,
+                usage=usage,
+                latency_ms=latency_ms,
+                model=model,
+                profile=self.profile.name,
+            )
+        except ValidationError:
+            # `from None`: the ValidationError text embeds provider output
+            # (input_value=...), and a chained cause would surface in tracebacks.
+            raise malformed from None
 
 
 class MockProviderClient:

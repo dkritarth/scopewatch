@@ -102,7 +102,7 @@ export const EXECUTION_OUTPUT_DISPLAY_LIMIT = 2000;
  * non-colour signal; the icon glyph is redundant reinforcement, never alone.
  */
 export function getHoldKind(event) {
-  if (!event || event.status !== "pending-approval") return null;
+  if (!event || (event.status !== "pending-approval" && event.status !== "held")) return null;
   if (event.reasonCode === "REASONING_SCOPE_CONCERN") return "concern";
   if (event.reasonCode === "REASONING_AUDIT_FAILED") return "failed";
   return "policy";
@@ -116,6 +116,21 @@ export const HOLD_ICONS = {
 
 export function getHoldIcon(kind) {
   return HOLD_ICONS[kind] || "";
+}
+
+export const STATUS_GLYPHS = {
+  attempted: "○",
+  allowed: "✓",
+  held: "⏸",
+  denied: "✕",
+  approved: "★",
+  executed: "▶",
+  failed: "⚠",
+};
+
+export function getStatusGlyph(status, holdKind = null) {
+  if (holdKind) return getHoldIcon(holdKind);
+  return STATUS_GLYPHS[status] || "";
 }
 
 /**
@@ -255,6 +270,7 @@ export function formatLiveRun(backendRun, rawEvents = []) {
   const transformedEvents = (rawEvents || []).map((e) =>
     transformApiEvent(e, { runId }),
   );
+  reconcileRunActionStates(transformedEvents);
   const scope = backendRun?.task_scope;
   return {
     id: backendRun.id,
@@ -465,6 +481,9 @@ const elements = typeof document !== "undefined" ? {
 } : {};
 
 let activeRuns = [...fixtureRuns];
+// Baseline timestamps per run, used to turn event timestamps into relative
+// durations instead of synthetic sequence numbers (#211).
+const timestampOffsetBaseline = new Map();
 let liveStreamHandle = null;
 let isLiveMode = false;
 let pendingApprovals = [];
@@ -630,7 +649,8 @@ function renderRunButtons() {
     button.dataset.runId = run.id;
     button.dataset.status = run.status || "ACTIVE";
     button.setAttribute("aria-pressed", String(run.id === selectedRun?.id));
-    button.textContent = run.name;
+    button.textContent = `${run.name} [${run.status || "ACTIVE"}]`;
+    button.setAttribute("aria-label", run.name);
     if (!existingButton) {
       button.addEventListener("click", () => {
         if (state.runId !== run.id) {
@@ -1048,11 +1068,11 @@ function timelineButton(event, run) {
     );
   }
   // Icon glyph reinforces the text label; text remains the primary signal
-  // so meaning never depends on colour alone (#30).
+  // so meaning never depends on colour alone (#30, #206).
   const icon = document.createElement("span");
   icon.className = "hold-icon";
   icon.setAttribute("aria-hidden", "true");
-  icon.textContent = holdKind ? getHoldIcon(holdKind) : "";
+  icon.textContent = getStatusGlyph(event.status, holdKind);
   status.append(icon);
   const label = document.createElement("span");
   label.className = "hold-label";
@@ -1080,6 +1100,7 @@ function timelineButton(event, run) {
 function renderTimeline() {
   const run = getSelectedRun();
   if (!run || !elements.timeline || !elements.timelineCount) return;
+  reconcileRunActionStates(run.events);
   const visibleEvents = filterEvents(run.events, state.filters);
   state.eventId = reconcileSelection(activeRuns, state.runId, state.eventId, visibleEvents);
   const visibleById = new Map(visibleEvents.map((e) => [e.id, e]));
@@ -1254,9 +1275,12 @@ export function createApprovalCard(appr) {
   const card = document.createElement("div");
   card.className = "approval-card";
   card.dataset.approvalId = appr.id;
+  card.setAttribute("role", "group");
 
   const title = document.createElement("p");
   title.className = "approval-card-title";
+  title.id = `approval-card-title-${appr.id}`;
+  card.setAttribute("aria-labelledby", title.id);
   card.append(title);
 
   const runEl = document.createElement("p");
@@ -1288,6 +1312,10 @@ export function createApprovalCard(appr) {
   reasonInput.type = "text";
   reasonInput.placeholder = "Reviewer note (optional)";
   reasonInput.className = "approval-reason-input";
+  reasonInput.setAttribute(
+    "aria-label",
+    `Reviewer note for ${appr.operation || "action"} on ${appr.resource || "resource"} (optional)`,
+  );
   card.append(reasonInput);
 
   // Double-confirm note: text signal for the armed state (no colour-only).
@@ -1310,11 +1338,13 @@ export function createApprovalCard(appr) {
   approveBtn.type = "button";
   approveBtn.className = "btn-approve";
   approveBtn.textContent = APPROVAL_CONFIRM_COPY.approve;
+  approveBtn.setAttribute("aria-label", `Approve ${appr.operation || "action"} on ${appr.resource || "resource"}`);
 
   const denyBtn = document.createElement("button");
   denyBtn.type = "button";
   denyBtn.className = "btn-deny";
   denyBtn.textContent = APPROVAL_CONFIRM_COPY.deny;
+  denyBtn.setAttribute("aria-label", `Deny ${appr.operation || "action"} on ${appr.resource || "resource"}`);
 
   let confirmState = "idle";
 
@@ -1328,6 +1358,16 @@ export function createApprovalCard(appr) {
     const armed = confirmState === "armed-approve" || confirmState === "armed-deny";
     confirmNote.hidden = !armed;
     if (armed) confirmNote.textContent = APPROVAL_CONFIRM_COPY.armedNote;
+    const op = appr.operation || "action";
+    const res = appr.resource || "resource";
+    approveBtn.setAttribute(
+      "aria-label",
+      `${confirmState === "armed-approve" ? "Confirm approve" : "Approve"} ${op} on ${res}`,
+    );
+    denyBtn.setAttribute(
+      "aria-label",
+      `${confirmState === "armed-deny" ? "Confirm deny" : "Deny"} ${op} on ${res}`,
+    );
   }
 
   async function resolveApproval(fire) {
@@ -1347,6 +1387,17 @@ export function createApprovalCard(appr) {
       pendingApprovals = pendingApprovals.filter((a) => a.id !== appr.id);
       renderApprovals();
       if (isLiveMode) await refreshApprovals();
+      const nextCard = elements.approvalsList?.querySelector(".approval-card");
+      if (nextCard) {
+        const focusTarget = nextCard.querySelector("button, input") || nextCard;
+        focusTarget.focus?.();
+      } else {
+        const heading = document.getElementById("approvals-heading");
+        if (heading) {
+          heading.setAttribute("tabindex", "-1");
+          heading.focus();
+        }
+      }
     } catch (err) {
       confirmState = "idle";
       approveBtn.disabled = false;
@@ -1678,34 +1729,76 @@ export function transformApiEvent(ev, context = null) {
   let statusLabel = "Action: attempted";
   let statusDescription = "Action call submitted to gateway.";
 
-  if (type === "POLICY_ALLOWED" || type === "EXECUTION_SUCCEEDED") {
+  if (type === "POLICY_ALLOWED") {
+    status = "allowed";
+    statusLabel = "Policy: allowed";
+    statusDescription = "Permitted by policy; awaiting execution.";
+  } else if (type === "POLICY_DENIED") {
+    status = "denied";
+    statusLabel = "Policy: denied";
+    statusDescription = `Prevented by deterministic policy: ${reasonCode || "DENIED"}.`;
+  } else if (type === "APPROVAL_DENIED") {
+    status = "denied";
+    statusLabel = "Reviewer: denied";
+    statusDescription = "Denied by reviewer authorization.";
+  } else if (type === "APPROVAL_GRANTED") {
+    status = "approved";
+    statusLabel = "Reviewer: approved";
+    statusDescription = "Approved by human reviewer authorization.";
+  } else if (type === "APPROVAL_EXPIRED") {
+    status = "failed";
+    statusLabel = "Reviewer: expired";
+    statusDescription = "Approval request expired before review.";
+  } else if (type === "EXECUTION_SUCCEEDED" || type === "RUN_COMPLETED") {
     status = "executed";
     statusLabel = "Action: executed";
     statusDescription = "Permitted by policy and executed synthetically.";
-  } else if (type === "POLICY_DENIED" || type === "APPROVAL_DENIED") {
-    status = "blocked";
-    statusLabel = "Policy: blocked";
-    statusDescription = `Prevented by deterministic policy: ${reasonCode || "DENIED"}.`;
+  } else if (type === "EXECUTION_FAILED" || type === "SYSTEM_ERROR" || d.status === "FAILED") {
+    status = "failed";
+    statusLabel = "Execution: failed";
+    statusDescription = "Execution failed in gateway or environment.";
   } else if (
     type === "POLICY_HELD" ||
     type === "POLICY_HELD_FOR_APPROVAL" ||
     type === "APPROVAL_REQUESTED" ||
-    d.outcome === "HOLD"
+    type === "REASONING_AUDIT_FAILED" ||
+    d.outcome === "HOLD" ||
+    (type === "REASONING_AUDIT_COMPLETED" && (d.verdict === "CONCERN" || reasoningAudit?.verdict === "CONCERN"))
   ) {
-    status = "pending-approval";
-    if (reasonCode === "REASONING_SCOPE_CONCERN") {
+    status = "held";
+    if (reasonCode === "REASONING_SCOPE_CONCERN" || (type === "REASONING_AUDIT_COMPLETED" && (d.verdict === "CONCERN" || reasoningAudit?.verdict === "CONCERN"))) {
       statusLabel = "HOLD (reasoning concern)";
       statusDescription = "Held for approval: reasoning audit identified a scope concern.";
-    } else if (reasonCode === "REASONING_AUDIT_FAILED") {
+    } else if (reasonCode === "REASONING_AUDIT_FAILED" || type === "REASONING_AUDIT_FAILED") {
       statusLabel = "HOLD (audit failed)";
       statusDescription = "Held for approval: reasoning audit failed closed.";
     } else {
       statusLabel = "HOLD (policy)";
       statusDescription = "Held for human reviewer approval by deterministic policy.";
     }
+  } else if (type === "REASONING_AUDIT_COMPLETED") {
+    status = "allowed";
+    statusLabel = "Policy: allowed";
+    statusDescription = "Reasoning audit completed with no concern.";
+  } else {
+    status = "attempted";
+    statusLabel = "Action: attempted";
+    statusDescription = "Action call submitted to gateway.";
   }
 
-  const offset = `+00:${String(ev.sequence ?? 0).padStart(2, "0")}`;
+  const timestampRaw = ev.timestamp ?? ev.created_at ?? ev.occurred_at ?? null;
+  let offset = `+00:${String(ev.sequence ?? 0).padStart(2, "0")}`;
+  if (timestampRaw) {
+    const parsed = new Date(timestampRaw);
+    if (!Number.isNaN(parsed.getTime())) {
+      const runKey = ev.run_id || ev.runId || ev.action_request_id || ev.turn_id || "_default";
+      if (!timestampOffsetBaseline.has(runKey)) {
+        timestampOffsetBaseline.set(runKey, parsed.getTime());
+      }
+      const diffSec = Math.max(0, Math.round((parsed.getTime() - timestampOffsetBaseline.get(runKey)) / 1000));
+      offset = `+${String(Math.floor(diffSec / 60)).padStart(2, "0")}:${String(diffSec % 60).padStart(2, "0")}`;
+    }
+  }
   const title = ev.summary || (d.operation ? `${d.operation} on ${d.resource}` : `${type}`);
 
   // Approval tracking & join across turn / action events (#134)
@@ -1832,6 +1925,10 @@ export function transformApiEvent(ev, context = null) {
     policyVersionCurrent: d.policy_version_current || null,
     policyVersionChanged: d.policy_version_changed === true,
     policyExplanation: d.explanation || ev.summary || null,
+    actionRequestId: actionReqId,
+    action_request_id: actionReqId,
+    approvalId: d.approval_request_id || d.approval_id || null,
+    approval_id: d.approval_request_id || d.approval_id || null,
     approvalStatus:
       d.approval_status ||
       (type === "APPROVAL_GRANTED"
@@ -1842,11 +1939,12 @@ export function transformApiEvent(ev, context = null) {
         ? "Expired"
         : type === "APPROVAL_REQUESTED" ||
           type === "POLICY_HELD" ||
-          type === "POLICY_HELD_FOR_APPROVAL"
+          type === "POLICY_HELD_FOR_APPROVAL" ||
+          status === "held"
         ? "Pending reviewer authorization"
         : null) ||
       cachedApproval?.status ||
-      (status === "pending-approval" ? "Pending reviewer authorization" : null),
+      (status === "pending-approval" || status === "held" ? "Pending reviewer authorization" : null),
     resolvedBy:
       d.resolved_by ||
       (type === "APPROVAL_GRANTED" || type === "APPROVAL_DENIED" ? ev.actor || null : null) ||
@@ -1855,8 +1953,11 @@ export function transformApiEvent(ev, context = null) {
     resolutionReason: d.resolution_reason || cachedApproval?.resolutionReason || null,
     executionStatus:
       d.execution_status ||
-      d.status ||
-      (status === "executed" ? "EXECUTED" : "NOT_EXECUTED"),
+      (type === "EXECUTION_SUCCEEDED" || type === "RUN_COMPLETED"
+        ? "EXECUTED"
+        : type === "EXECUTION_FAILED" || type === "SYSTEM_ERROR" || d.status === "FAILED"
+        ? "FAILED"
+        : (type.startsWith("EXECUTION_") && d.status === "EXECUTED" ? "EXECUTED" : "NOT_EXECUTED")),
     executionSimulated,
     execution_simulated: executionSimulated,
     executionNote,
@@ -1873,7 +1974,12 @@ export function transformApiEvent(ev, context = null) {
     executionTimedOut,
     reasoningSummary,
     reasoning_summary: reasoningSummary,
-    execution: status === "executed" ? "Executed in synthetic sandbox." : "Not executed.",
+    execution:
+      (d.execution_status === "EXECUTED" || type === "EXECUTION_SUCCEEDED" || type === "RUN_COMPLETED")
+        ? "Executed in synthetic sandbox."
+        : (d.execution_status === "FAILED" || type === "EXECUTION_FAILED" || type === "SYSTEM_ERROR" || d.status === "FAILED")
+        ? "Execution failed in environment."
+        : "Not executed.",
     policyDecision: reasonCode ? `Policy decision: ${reasonCode}` : "No policy decision.",
     exposedReasoningTrace,
     exposed_reasoning_trace: exposedReasoningTrace,
@@ -1888,6 +1994,157 @@ export function transformApiEvent(ev, context = null) {
     reasoningAuditStatus,
     reasoning_audit_status: reasoningAuditStatus,
   };
+}
+
+export function reconcileRunActionStates(events) {
+  if (!Array.isArray(events) || events.length === 0) return events;
+  const liveEvents = events.filter((ev) => ev && ev.isFixture === false);
+  if (liveEvents.length === 0) return events;
+
+  const actionGroups = new Map();
+  const approvalToAction = new Map();
+
+  for (const ev of liveEvents) {
+    const actId = ev.actionRequestId || ev.action_request_id || (ev.eventType === "ACTION_REQUESTED" ? ev.id : null);
+    const apprId = ev.approvalId || ev.approval_id || null;
+    if (actId && apprId) {
+      approvalToAction.set(apprId, actId);
+    }
+  }
+
+  for (const ev of liveEvents) {
+    let actId = ev.actionRequestId || ev.action_request_id || (ev.eventType === "ACTION_REQUESTED" ? ev.id : null);
+    const apprId = ev.approvalId || ev.approval_id || null;
+    if (!actId && apprId && approvalToAction.has(apprId)) {
+      actId = approvalToAction.get(apprId);
+      ev.actionRequestId = actId;
+      ev.action_request_id = actId;
+    }
+    const key = actId || ev.id;
+    if (!actionGroups.has(key)) {
+      actionGroups.set(key, []);
+    }
+    actionGroups.get(key).push(ev);
+  }
+
+  for (const [key, group] of actionGroups) {
+    let executionResult = null;
+    for (const ev of group) {
+      if (
+        ev.eventType === "EXECUTION_FAILED" ||
+        ev.eventType === "SYSTEM_ERROR" ||
+        ev.executionStatus === "FAILED" ||
+        ev.status === "failed"
+      ) {
+        executionResult = "FAILED";
+        break;
+      }
+      if (
+        ev.eventType === "EXECUTION_SUCCEEDED" ||
+        ev.eventType === "RUN_COMPLETED" ||
+        ev.executionStatus === "EXECUTED"
+      ) {
+        executionResult = "SUCCEEDED";
+      }
+    }
+
+    let approvalResolution = null;
+    for (const ev of group) {
+      if (ev.eventType === "APPROVAL_GRANTED") {
+        approvalResolution = {
+          status: "Approved",
+          resolvedBy: ev.resolvedBy || "reviewer",
+          resolutionReason: ev.resolutionReason || null,
+        };
+        break;
+      } else if (ev.eventType === "APPROVAL_DENIED") {
+        approvalResolution = {
+          status: "Denied",
+          resolvedBy: ev.resolvedBy || "reviewer",
+          resolutionReason: ev.resolutionReason || null,
+        };
+        break;
+      } else if (ev.eventType === "APPROVAL_EXPIRED") {
+        approvalResolution = {
+          status: "Expired",
+          resolvedBy: ev.resolvedBy || "system",
+          resolutionReason: ev.resolutionReason || "Approval request expired.",
+        };
+        break;
+      }
+    }
+
+    if (!approvalResolution && key) {
+      for (const ev of group) {
+        const storeKey = ev.runId ? `${ev.runId}:${key}` : key;
+        const cached = approvalStore.get(storeKey);
+        if (cached && (cached.status === "Approved" || cached.status === "Denied" || cached.status === "Expired")) {
+          approvalResolution = cached;
+          break;
+        }
+      }
+    }
+
+    for (const ev of group) {
+      if (approvalResolution) {
+        ev.approvalStatus = approvalResolution.status;
+        if (approvalResolution.resolvedBy && !ev.resolvedBy) {
+          ev.resolvedBy = approvalResolution.resolvedBy;
+        }
+        if (approvalResolution.resolutionReason && !ev.resolutionReason) {
+          ev.resolutionReason = approvalResolution.resolutionReason;
+        }
+
+        const isHoldRow =
+          ev.eventType === "POLICY_HELD" ||
+          ev.eventType === "POLICY_HELD_FOR_APPROVAL" ||
+          ev.eventType === "APPROVAL_REQUESTED" ||
+          ev.status === "held" ||
+          ev.status === "pending-approval";
+
+        if (isHoldRow) {
+          if (approvalResolution.status === "Approved") {
+            ev.status = "approved";
+            ev.statusLabel = "Reviewer: approved";
+            ev.statusDescription = "Approved by human reviewer authorization.";
+          } else if (approvalResolution.status === "Denied") {
+            ev.status = "denied";
+            ev.statusLabel = "Reviewer: denied";
+            ev.statusDescription = "Denied by reviewer authorization.";
+          } else if (approvalResolution.status === "Expired") {
+            ev.status = "failed";
+            ev.statusLabel = "Reviewer: expired";
+            ev.statusDescription = "Approval request expired before review.";
+          }
+        } else if (ev.eventType === "APPROVAL_DENIED") {
+          ev.status = "denied";
+          ev.statusLabel = "Reviewer: denied";
+          ev.statusDescription = "Denied by reviewer authorization.";
+        }
+      }
+
+      if (executionResult === "FAILED") {
+        if (ev.status === "executed") {
+          ev.status = "failed";
+          ev.statusLabel = "Execution: failed";
+          ev.statusDescription = "Execution failed in gateway or environment.";
+        }
+        ev.executionStatus = "FAILED";
+        ev.execution = "Execution failed in environment.";
+      } else if (executionResult === "SUCCEEDED") {
+        if (
+          ev.eventType === "POLICY_ALLOWED" ||
+          ev.eventType === "APPROVAL_GRANTED" ||
+          ev.eventType === "ACTION_REQUESTED"
+        ) {
+          ev.executionStatus = "EXECUTED";
+          ev.execution = "Executed in synthetic sandbox.";
+        }
+      }
+    }
+  }
+
+  return events;
 }
 
 function subscribeToRun(runId) {
@@ -1910,11 +2167,12 @@ function subscribeToRun(runId) {
       if (!formatted) return;
       if (!targetRun.events.some((e) => e.sequence === formatted.sequence)) {
         targetRun.events.push(formatted);
-        if (apiEvent.event_type === "RUN_COMPLETED" || formatted.type === "RUN_COMPLETED") {
+        reconcileRunActionStates(targetRun.events);
+        if (apiEvent.event_type === "RUN_COMPLETED" || formatted.eventType === "RUN_COMPLETED" || formatted.type === "RUN_COMPLETED") {
           targetRun.status = "COMPLETED";
           renderRunButtons();
           renderScope();
-        } else if (apiEvent.event_type === "SYSTEM_ERROR" || formatted.type === "SYSTEM_ERROR") {
+        } else if (apiEvent.event_type === "SYSTEM_ERROR" || formatted.eventType === "SYSTEM_ERROR" || formatted.type === "SYSTEM_ERROR") {
           targetRun.status = "FAILED";
           renderRunButtons();
           renderScope();
@@ -1975,7 +2233,7 @@ export function buildStaticSimulationEvent(
         tool: payload.tool,
         operation: payload.operation,
         resource: payload.resource,
-        status: "pending-approval",
+        status: "held",
         statusLabel: "HOLD (reasoning concern)",
         statusDescription:
           "Simulated in browser — no gateway or auditor. Held for approval: mock pattern matched in reasoning trace.",
@@ -2039,7 +2297,7 @@ export function buildStaticSimulationEvent(
         tool: payload.tool,
         operation: payload.operation,
         resource: payload.resource,
-        status: "pending-approval",
+        status: "held",
         statusLabel: "HOLD (policy)",
         statusDescription:
           "Simulated in browser — no gateway or auditor. Held for human reviewer approval by simulated policy.",
@@ -2297,6 +2555,7 @@ if (typeof document !== "undefined") {
           }
 
           run.events.push(simEvent);
+          reconcileRunActionStates(run.events);
           state.eventId = simEvent.id;
           renderTimeline();
           renderEvidence();
@@ -2396,6 +2655,10 @@ async function bootstrap() {
   if (health && health.status === "ok") {
     isLiveMode = true;
     updateGatewayStatus("Live gateway connected", "connected");
+    const bannerMode = document.getElementById("synthetic-banner-mode");
+    if (bannerMode) {
+      bannerMode.textContent = "Connected to a live gateway; mutations require a reviewer token.";
+    }
     // Demo mode means the gate requires the reviewer token for every mutating
     // call (#115), so offer the credential panel up front instead of letting a
     // judge discover it through a 401.
@@ -2449,7 +2712,23 @@ async function bootstrap() {
       }
       const formattedLiveRuns = buildLiveRuns(backendRuns, eventsByRun);
 
-      activeRuns = [...fixtureRuns, ...formattedLiveRuns];
+      // Keep synthetic fixtures available as a fallback, but show live runs first
+      // and open on a live run with a pending approval when one exists.
+      activeRuns = [...formattedLiveRuns, ...fixtureRuns];
+      const preferredLiveRun =
+        formattedLiveRuns.find((run) =>
+          (Array.isArray(run.events) && run.events.length > 0) &&
+          (
+            run.status === "WAITING_FOR_APPROVAL" ||
+            run.events.some((ev) => ev.status === "pending-approval")
+          )
+        ) ||
+        formattedLiveRuns.find((run) => Array.isArray(run.events) && run.events.length > 0) ||
+        null;
+      if (preferredLiveRun) {
+        state.runId = preferredLiveRun.id;
+        state.eventId = preferredLiveRun.events?.[0]?.id || null;
+      }
       // Keep selection valid when new runs arrive; prefer the first live run
       // with held events so the M1 escalation headline is one click away.
       renderRunButtons();

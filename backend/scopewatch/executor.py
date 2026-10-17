@@ -25,8 +25,19 @@ from scopewatch.path_access import normalize_relative_path, scoped_path_reason
 from scopewatch.schemas import ActionRequest, ApprovalRequest, ExecutionReceipt, PolicyDecision, TaskScope
 
 
-class ExecutionSecurityError(Exception):
+from scopewatch.errors import ScopewatchAPIError
+
+
+class ExecutionSecurityError(ScopewatchAPIError):
     """Raised when execution invariants or policy boundaries are violated."""
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "EXECUTION_SECURITY_ERROR",
+        status_code: int = 409,
+    ):
+        super().__init__(code=code, message=message, status_code=status_code)
 
 
 LOCAL_EXECUTOR_NAME = "synthetic-workspace-executor"
@@ -44,7 +55,7 @@ def _verify_workspace_containment(workspace_root: Path, target_path: Path) -> Pa
     try:
         resolved_target.relative_to(resolved_root)
     except ValueError as exc:
-        raise ExecutionSecurityError("Path escapes workspace boundary.") from exc
+        raise ExecutionSecurityError("Path escapes workspace boundary.", "WORKSPACE_ESCAPE") from exc
     return resolved_target
 
 
@@ -76,23 +87,23 @@ def _verify_stored_run_not_terminal(
         conn, should_close = _resolve_connection(db_path)
     except Exception as exc:
         raise ExecutionSecurityError(
-            "Stored run authorization is unavailable; failing closed."
+            "Stored run authorization is unavailable; failing closed.", "STORE_UNAVAILABLE"
         ) from exc
     try:
         run = ScopewatchRepository.get_run(conn, action.run_id)
         if run is None:
             raise ExecutionSecurityError(
-                "Stored run is unknown; execution refused."
+                "Stored run is unknown; execution refused.", "RUN_UNKNOWN"
             )
         if run.status in (RunStatus.COMPLETED, RunStatus.FAILED):
             raise ExecutionSecurityError(
-                "Stored run is in a terminal state; execution refused."
+                "Stored run is in a terminal state; execution refused.", "RUN_TERMINAL"
             )
     except ExecutionSecurityError:
         raise
     except Exception as exc:
         raise ExecutionSecurityError(
-            "Stored run authorization could not be verified; failing closed."
+            "Stored run authorization could not be verified; failing closed.", "STORE_ERROR"
         ) from exc
     finally:
         if should_close:
@@ -119,28 +130,28 @@ def _verify_stored_approval_single_use(
         conn, should_close = _resolve_connection(db_path)
     except Exception as exc:
         raise ExecutionSecurityError(
-            "Stored approval authorization is unavailable; failing closed."
+            "Stored approval authorization is unavailable; failing closed.", "STORE_UNAVAILABLE"
         ) from exc
     try:
         stored = ScopewatchRepository.get_approval_by_action(conn, action.id)
         if stored is None or stored.id != approval_request.id:
             raise ExecutionSecurityError(
-                "No matching stored approval for this action; execution refused."
+                "No matching stored approval for this action; execution refused.", "APPROVAL_MISMATCH"
             )
         if stored.status != ApprovalStatus.APPROVED:
             raise ExecutionSecurityError(
-                "Stored approval is not APPROVED; replay refused."
+                "Stored approval is not APPROVED; replay refused.", "APPROVAL_NOT_APPROVED"
             )
         receipt = ScopewatchRepository.get_execution_receipt_by_action(conn, action.id)
         if receipt is not None:
             raise ExecutionSecurityError(
-                "Action was already executed; replay refused."
+                "Action was already executed; replay refused.", "ALREADY_EXECUTED"
             )
     except ExecutionSecurityError:
         raise
     except Exception as exc:
         raise ExecutionSecurityError(
-            "Stored approval authorization could not be verified; failing closed."
+            "Stored approval authorization could not be verified; failing closed.", "STORE_ERROR"
         ) from exc
     finally:
         if should_close:
@@ -157,11 +168,11 @@ def _verify_scoped_target(
     if task_scope is None:
         # A direct caller without scope evidence cannot authorize an alias.
         if canonical != requested:
-            raise ExecutionSecurityError("Symlink target requires task scope evidence.")
+            raise ExecutionSecurityError("Symlink target requires task scope evidence.", "SYMLINK_SCOPE_REQUIRED")
     else:
         allowed = task_scope.allowed_paths if require_allowed else ["."]
         if scoped_path_reason(requested, canonical, allowed, task_scope.blocked_paths):
-            raise ExecutionSecurityError("Resolved path violates the task scope.")
+            raise ExecutionSecurityError("Resolved path violates the task scope.", "SCOPE_VIOLATION")
     return target
 
 
@@ -200,7 +211,7 @@ def _execute_local(
             operation=action.operation,
         )
     if not verdict.proceed:
-        raise ExecutionSecurityError(verdict.reason)
+        raise ExecutionSecurityError(verdict.reason, verdict.code)
 
     # Verifiable single-use: when given a store handle, the executor
     # consults the stored approval, the execution receipt, and the run
@@ -217,7 +228,8 @@ def _execute_local(
     # backend, but the executor refuses it too as defence in depth).
     if action.operation == "run_command":
         raise ExecutionSecurityError(
-            "run_command requires the Docker executor (SCOPEWATCH_EXECUTOR=docker)."
+            "run_command requires the Docker executor (SCOPEWATCH_EXECUTOR=docker).",
+            "UNSUPPORTED_OPERATION",
         )
 
     # Target path resolution
@@ -378,7 +390,7 @@ def _execute_local(
             )
 
         else:
-            raise ExecutionSecurityError(f"Unsupported operation: {action.operation}")
+            raise ExecutionSecurityError(f"Unsupported operation: {action.operation}", "UNSUPPORTED_OPERATION")
 
     except Exception as exc:
         completed_at = datetime.now(timezone.utc).isoformat()
