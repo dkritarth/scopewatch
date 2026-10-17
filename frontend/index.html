@@ -35,7 +35,7 @@
           </div>
         </div>
         <p class="safety-banner" id="synthetic-banner">
-          <strong>Synthetic demo gateway.</strong> This local baseline mediates only actions submitted through its synthetic demo gateway. It does not intercept arbitrary host or agent operations. No actual enforcement outside the synthetic sandbox. Preview controls change this page only.
+          <strong>Synthetic demo gateway.</strong> This local baseline mediates only actions submitted through its synthetic demo gateway. It does not intercept arbitrary host or agent operations. No actual enforcement outside the synthetic sandbox. <span id="synthetic-banner-mode">Preview controls change this page only.</span>
         </p>
           <p class="mediation-boundary" id="mediation-boundary">
             <strong>Mediation boundary.</strong> All tool actions go through the gateway API; actions that bypass the API are not observed, blocked, or recorded. See docs/ARCHITECTURE.md (Mediation boundary).
@@ -152,9 +152,14 @@
               <select id="status-filter" name="status">
                 <option value="all">All statuses</option>
                 <option value="attempted">Action: attempted</option>
+                <option value="allowed">Policy: allowed</option>
+                <option value="held">Hold: pending review</option>
+                <option value="denied">Denied</option>
+                <option value="approved">Reviewer: approved</option>
                 <option value="executed">Action: executed</option>
-                <option value="blocked">Policy: blocked</option>
-                <option value="pending-approval">Policy: pending approval</option>
+                <option value="failed">Failed</option>
+                <option value="blocked" hidden>Policy: blocked</option>
+                <option value="pending-approval" hidden>Policy: pending approval</option>
               </select>
             </div>
             <div class="field-group grow">

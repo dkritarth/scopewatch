@@ -12,6 +12,7 @@ demo/SCENARIOS.md for the scripted vs mock-agent (replay) vs live distinction.
 """
 
 import json
+import os
 from typing import Any, Optional
 import httpx
 
@@ -254,17 +255,33 @@ class GatewayDispatcher:
         transport: Optional[httpx.BaseTransport] = None,
         timeout_s: float = 30.0,
         capture_token: Optional[str] = None,
+        demo_token: Optional[str] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.capture_token = (
             capture_token if capture_token is not None else configured_capture_token()
         )
+        self.demo_token = (
+            demo_token if demo_token is not None else os.environ.get("DEMO_TOKEN")
+        )
         self._external_client = http_client is not None
+        default_headers: dict[str, str] = {}
+        if self.demo_token:
+            default_headers["X-Demo-Token"] = self.demo_token
         self._client = http_client or httpx.Client(
             base_url=self.base_url,
             transport=transport,
             timeout=timeout_s,
+            headers=default_headers,
         )
+
+    def _mutating_headers(self, extra: Optional[dict[str, str]] = None) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.demo_token:
+            headers["X-Demo-Token"] = self.demo_token
+        if extra:
+            headers.update(extra)
+        return headers
 
     def close(self) -> None:
         """Close the underlying HTTP client if owned."""
@@ -284,7 +301,8 @@ class GatewayDispatcher:
     ) -> ActionResponse:
         """Submit an action request to POST /api/v1/runs/{run_id}/actions."""
         url = f"/api/v1/runs/{run_id}/actions"
-        headers = {CAPTURE_TOKEN_HEADER: self.capture_token} if self.capture_token else {}
+        extra = {CAPTURE_TOKEN_HEADER: self.capture_token} if self.capture_token else None
+        headers = self._mutating_headers(extra)
         resp = self._client.post(url, json=action.model_dump(), headers=headers)
         if resp.status_code not in (200, 201):
             raise RuntimeError(
@@ -317,7 +335,8 @@ class GatewayDispatcher:
     def complete_run(self, run_id: str) -> Run:
         """Mark run as COMPLETED via POST /api/v1/runs/{run_id}/complete."""
         url = f"/api/v1/runs/{run_id}/complete"
-        resp = self._client.post(url)
+        headers = self._mutating_headers()
+        resp = self._client.post(url, headers=headers)
         if resp.status_code != 200:
             raise RuntimeError(
                 f"Failed to complete run '{run_id}' (HTTP {resp.status_code}): {resp.text}"
@@ -327,7 +346,8 @@ class GatewayDispatcher:
     def fail_run(self, run_id: str, reason: str = "") -> Optional[Run]:
         """Mark run as FAILED via POST /api/v1/runs/{run_id}/fail if supported."""
         url = f"/api/v1/runs/{run_id}/fail"
-        resp = self._client.post(url, params={"reason": reason})
+        headers = self._mutating_headers()
+        resp = self._client.post(url, params={"reason": reason}, headers=headers)
         if resp.status_code == 200:
             return Run.model_validate(resp.json())
         return None
@@ -335,7 +355,8 @@ class GatewayDispatcher:
     def record_prompt_version(self, run_id: str, prompt_version: str) -> Optional[Run]:
         """Record the prompt version for the run via PATCH /api/v1/runs/{run_id}."""
         url = f"/api/v1/runs/{run_id}"
-        resp = self._client.patch(url, json={"prompt_version": prompt_version})
+        headers = self._mutating_headers()
+        resp = self._client.patch(url, json={"prompt_version": prompt_version}, headers=headers)
         if resp.status_code == 200:
             return Run.model_validate(resp.json())
         return None

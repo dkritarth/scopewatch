@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 import httpx
@@ -942,3 +943,38 @@ def test_complete_request_timeout_exceeded_before_retry_raises() -> None:
 
     assert exc_info.value.code == ProviderErrorCode.PROVIDER_TIMEOUT
     assert "call deadline" in str(exc_info.value).lower()
+
+
+def test_audit_chat_respects_timeout_and_halts_retries() -> None:
+    attempts: list[float] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(time.monotonic())
+        time.sleep(0.15)
+        return httpx.Response(500, json={"error": "temporary server failure"})
+
+    profile = ProviderProfile(
+        name="test-auditor-timeout",
+        base_url="https://api.example.com",
+        model="test-auditor-model",
+        timeout_s=30.0,
+        max_retries=3,
+    )
+    transport = httpx.MockTransport(mock_handler)
+    client = ProviderClient(
+        profile=profile,
+        api_key="synthetic-test-key",
+        transport=transport,
+        initial_backoff_s=0.2,
+    )
+
+    t0 = time.monotonic()
+    with pytest.raises(ProviderError) as exc_info:
+        client.audit_chat([{"role": "user", "content": "synthetic audit"}], timeout=0.25)
+    elapsed = time.monotonic() - t0
+
+    assert exc_info.value.code == ProviderErrorCode.PROVIDER_TIMEOUT
+    # The first attempt took ~0.15s; the backoff of 0.2s would exceed 0.25s deadline,
+    # so audit_chat must not make 4 attempts.
+    assert len(attempts) == 1
+    assert elapsed < 0.35

@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 import uuid
 
 from fastapi import status
@@ -586,11 +586,23 @@ capture_token: Optional[str] = None,
         finally:
             conn.close()
 
-    def complete_run(self, run_id: str) -> tuple[Run, EvidenceEvent]:
+    def _close_run(
+        self,
+        run_id: str,
+        new_status: RunStatus,
+        event_type: EventType,
+        summary: Callable[[str], str],
+        details: dict[str, Any],
+    ) -> tuple[Run, EvidenceEvent]:
+        """Move a run to a terminal status (#187).
+
+        An approval that is APPROVED but not yet consumed is mid-dispatch,
+        so closing the run now would record the execution after the run's
+        terminal event; refuse instead.
+        """
         conn = self._get_conn()
         try:
-            run = ScopewatchRepository.get_run(conn, run_id)
-            if not run:
+            if not ScopewatchRepository.get_run(conn, run_id):
                 raise ScopewatchAPIError(
                     code="RUN_NOT_FOUND",
                     message=f"Run '{run_id}' not found.",
@@ -598,51 +610,57 @@ capture_token: Optional[str] = None,
                 )
             now = datetime.now(timezone.utc).isoformat()
             with db_transaction(conn):
-                ScopewatchRepository.update_run_status(conn, run_id, RunStatus.COMPLETED, now)
+                # Re-read under the write lock so the checks below cannot be
+                # overtaken by a concurrent resolve or close.
+                run = ScopewatchRepository.get_run(conn, run_id)
+                if run is None:
+                    raise ScopewatchAPIError(
+                        code="RUN_NOT_FOUND",
+                        message=f"Run '{run_id}' not found.",
+                        status_code=status.HTTP_404_NOT_FOUND,
+                    )
+                if ScopewatchRepository.list_approvals(
+                    conn, status_filter=ApprovalStatus.APPROVED, run_id=run_id
+                ):
+                    raise ScopewatchAPIError(
+                        code="APPROVED_ACTION_IN_FLIGHT",
+                        message="An approved action is still executing; retry once it finishes.",
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
+                ScopewatchRepository.update_run_status(conn, run_id, new_status, now)
                 event = ScopewatchRepository.append_event(
                     conn,
                     run_id=run_id,
-                    event_type=EventType.RUN_COMPLETED,
+                    event_type=event_type,
                     actor=DEMO_REVIEWER_ID,
-                    summary=f"Run '{run.name}' was marked COMPLETED.",
+                    summary=summary(run.name),
                     timestamp=now,
-                    details={},
+                    details=details,
                 )
             broadcaster.publish_sync(run_id, event)
-            run.status = RunStatus.COMPLETED
+            run.status = new_status
             run.updated_at = now
             return run, event
         finally:
             conn.close()
 
+    def complete_run(self, run_id: str) -> tuple[Run, EvidenceEvent]:
+        return self._close_run(
+            run_id,
+            RunStatus.COMPLETED,
+            EventType.RUN_COMPLETED,
+            lambda name: f"Run '{name}' was marked COMPLETED.",
+            {},
+        )
+
     def fail_run(self, run_id: str, reason: str = "Agent execution failed.") -> tuple[Run, EvidenceEvent]:
-        conn = self._get_conn()
-        try:
-            run = ScopewatchRepository.get_run(conn, run_id)
-            if not run:
-                raise ScopewatchAPIError(
-                    code="RUN_NOT_FOUND",
-                    message=f"Run '{run_id}' not found.",
-                    status_code=status.HTTP_404_NOT_FOUND,
-                )
-            now = datetime.now(timezone.utc).isoformat()
-            with db_transaction(conn):
-                ScopewatchRepository.update_run_status(conn, run_id, RunStatus.FAILED, now)
-                event = ScopewatchRepository.append_event(
-                    conn,
-                    run_id=run_id,
-                    event_type=EventType.SYSTEM_ERROR,
-                    actor=DEMO_REVIEWER_ID,
-                    summary=f"Run '{run.name}' was marked FAILED: {reason}",
-                    timestamp=now,
-                    details={"reason": reason},
-                )
-            broadcaster.publish_sync(run_id, event)
-            run.status = RunStatus.FAILED
-            run.updated_at = now
-            return run, event
-        finally:
-            conn.close()
+        return self._close_run(
+            run_id,
+            RunStatus.FAILED,
+            EventType.SYSTEM_ERROR,
+            lambda name: f"Run '{name}' was marked FAILED: {reason}",
+            {"reason": reason},
+        )
 
     # ---------------- Actions ----------------
 
@@ -1264,10 +1282,13 @@ capture_token: Optional[str] = None,
             # Phase 2: Action dispatch for ALLOW outcome (evidence committed before effect #109)
             if decision.outcome == PolicyOutcome.ALLOW:
                 try:
-                    receipt = execute_action(
+                    # Run execution in thread pool to avoid blocking the event loop (#189)
+                    receipt = await asyncio.to_thread(
+                        execute_action,
                         action,
                         workspace,
                         policy_decision=decision,
+                        approval_request=None,
                         db_path=conn,
                         task_scope=fresh_run.task_scope,
                         # Issue #117: the wire key for the run's workspace
@@ -1276,9 +1297,10 @@ capture_token: Optional[str] = None,
                         # path inside the remote backend.
                         run_workspace=self.run_workspaces.workspace_key(fresh_run.id),
                     )
-                except Exception as exc:
+                except ExecutionSecurityError as exc:
+                    # ExecutionSecurityError indicates a policy/security violation:
+                    # return structured 409 with the FAILED receipt, don't 500.
                     failed_at = datetime.now(timezone.utc).isoformat()
-                    err_code = getattr(exc, "code", "EXECUTION_ERROR")
                     receipt = ExecutionReceipt(
                         id=str(uuid.uuid4()),
                         action_request_id=action.id,
@@ -1287,7 +1309,7 @@ capture_token: Optional[str] = None,
                         completed_at=failed_at,
                         executor="synthetic-workspace-executor",
                         sanitized_result={"error": str(exc)},
-                        error_code=err_code,
+                        error_code=exc.code,
                         resource=action.resource,
                         operation=action.operation,
                     )
@@ -1310,9 +1332,54 @@ capture_token: Optional[str] = None,
                             },
                         )
                         generated_events.append(ev_fail)
+                    # Broadcast and return structured response with FAILED receipt
                     for ev in generated_events:
-                        broadcaster.publish_sync(run_id, ev)
-                    raise
+                        await broadcaster.publish(run_id, ev)
+                    raise exc
+                except Exception as exc:
+                    # Other exceptions: sanitize error, persist FAILED receipt, return 500
+                    failed_at = datetime.now(timezone.utc).isoformat()
+                    sanitized_msg = type(exc).__name__
+                    # Only ExecutionSecurityError has a meaningful message; others are sanitized
+                    receipt = ExecutionReceipt(
+                        id=str(uuid.uuid4()),
+                        action_request_id=action.id,
+                        status=ExecutionStatus.FAILED,
+                        started_at=exec_started or failed_at,
+                        completed_at=failed_at,
+                        executor="synthetic-workspace-executor",
+                        sanitized_result={"error": sanitized_msg},
+                        error_code="EXECUTION_ERROR",
+                        resource=action.resource,
+                        operation=action.operation,
+                    )
+                    with db_transaction(conn):
+                        ScopewatchRepository.create_execution_receipt(conn, receipt)
+                        ev_fail = ScopewatchRepository.append_event(
+                            conn,
+                            run_id=run_id,
+                            event_type=EventType.EXECUTION_FAILED,
+                            actor="synthetic-workspace-executor",
+                            summary=f"Failed execution of {action.operation}: {receipt.error_code}",
+                            timestamp=failed_at,
+                            action_request_id=action.id,
+                            execution_receipt_id=receipt.id,
+                            turn_id=action.turn_id,
+                            details={
+                                "status": receipt.status.value,
+                                "result": receipt.sanitized_result,
+                                "error_code": receipt.error_code,
+                            },
+                        )
+                        generated_events.append(ev_fail)
+                    # Broadcast and return structured response with FAILED receipt
+                    for ev in generated_events:
+                        await broadcaster.publish(run_id, ev)
+                    raise ScopewatchAPIError(
+                        code="INTERNAL_EXECUTION_ERROR",
+                        message="Execution failed due to an internal error.",
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
 
                 with db_transaction(conn):
                     ScopewatchRepository.create_execution_receipt(conn, receipt)
@@ -1486,6 +1553,20 @@ capture_token: Optional[str] = None,
                     status_code=status.HTTP_404_NOT_FOUND,
                 )
             if approval.status != ApprovalStatus.PENDING:
+                # Closing a run expires its PENDING approvals (#187). Keep the
+                # PR #67 contract for callers: a terminal run answers
+                # RUN_NOT_ACTIVE, not a bare "already EXPIRED".
+                closed_run = ScopewatchRepository.get_run(conn, approval.run_id)
+                if (
+                    approval.status == ApprovalStatus.EXPIRED
+                    and closed_run is not None
+                    and closed_run.status in (RunStatus.COMPLETED, RunStatus.FAILED)
+                ):
+                    raise ScopewatchAPIError(
+                        code="RUN_NOT_ACTIVE",
+                        message=f"Cannot resolve approval: run is in status {closed_run.status.value}.",
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
                 raise ScopewatchAPIError(
                     code="APPROVAL_ALREADY_RESOLVED",
                     message=f"Approval request '{approval_id}' is already {approval.status.value}.",
@@ -1673,7 +1754,9 @@ capture_token: Optional[str] = None,
             # Phase 2: Action dispatch for approved action (#109)
             if approve and updated_approval:
                 try:
-                    receipt = execute_action(
+                    # Run execution in thread pool to avoid blocking the event loop (#189)
+                    receipt = await asyncio.to_thread(
+                        execute_action,
                         action,
                         run_workspace,
                         policy_decision=decision,
@@ -1682,7 +1765,9 @@ capture_token: Optional[str] = None,
                         task_scope=run.task_scope,
                         run_workspace=self.run_workspaces.workspace_key(run.id),
                     )
-                except Exception as exc:
+                except ExecutionSecurityError as exc:
+                    # ExecutionSecurityError indicates a policy/security violation:
+                    # return structured 409 with the FAILED receipt, don't 500.
                     failed_at = datetime.now(timezone.utc).isoformat()
                     receipt = ExecutionReceipt(
                         id=str(uuid.uuid4()),
@@ -1692,7 +1777,7 @@ capture_token: Optional[str] = None,
                         completed_at=failed_at,
                         executor="synthetic-workspace-executor",
                         sanitized_result={"error": str(exc)},
-                        error_code=getattr(exc, "code", "EXECUTION_ERROR"),
+                        error_code=exc.code,
                         resource=action.resource,
                         operation=action.operation,
                     )
@@ -1716,9 +1801,83 @@ capture_token: Optional[str] = None,
                         generated_events.append(ev_fail)
                         ScopewatchRepository.consume_approval(conn, approval_id)
                         updated_approval.status = ApprovalStatus.CONSUMED
+
+                        # Return run to ACTIVE if no other pending approvals
+                        pending = ScopewatchRepository.list_approvals(
+                            conn, status_filter=ApprovalStatus.PENDING, run_id=approval.run_id
+                        )
+                        current_run = ScopewatchRepository.get_run(conn, approval.run_id)
+                        if (
+                            not pending
+                            and current_run is not None
+                            and current_run.status
+                            in (RunStatus.ACTIVE, RunStatus.WAITING_FOR_APPROVAL)
+                        ):
+                            ScopewatchRepository.update_run_status(
+                                conn, approval.run_id, RunStatus.ACTIVE, failed_at
+                            )
                     for ev in generated_events:
-                        broadcaster.publish_sync(approval.run_id, ev)
-                    raise
+                        await broadcaster.publish(approval.run_id, ev)
+                    raise exc
+                except Exception as exc:
+                    # Other exceptions: sanitize error, persist FAILED receipt, return 500
+                    failed_at = datetime.now(timezone.utc).isoformat()
+                    sanitized_msg = type(exc).__name__
+                    # Only ExecutionSecurityError has a meaningful message; others are sanitized
+                    receipt = ExecutionReceipt(
+                        id=str(uuid.uuid4()),
+                        action_request_id=action.id,
+                        status=ExecutionStatus.FAILED,
+                        started_at=exec_started or failed_at,
+                        completed_at=failed_at,
+                        executor="synthetic-workspace-executor",
+                        sanitized_result={"error": sanitized_msg},
+                        error_code="EXECUTION_ERROR",
+                        resource=action.resource,
+                        operation=action.operation,
+                    )
+                    with db_transaction(conn):
+                        ScopewatchRepository.create_execution_receipt(conn, receipt)
+                        ev_fail = ScopewatchRepository.append_event(
+                            conn,
+                            run_id=approval.run_id,
+                            event_type=EventType.EXECUTION_FAILED,
+                            actor="synthetic-workspace-executor",
+                            summary=f"Failed execution of approved {action.operation}: {receipt.error_code}",
+                            timestamp=failed_at,
+                            action_request_id=action.id,
+                            execution_receipt_id=receipt.id,
+                            details={
+                                "status": receipt.status.value,
+                                "result": receipt.sanitized_result,
+                                "error_code": receipt.error_code,
+                            },
+                        )
+                        generated_events.append(ev_fail)
+                        ScopewatchRepository.consume_approval(conn, approval_id)
+                        updated_approval.status = ApprovalStatus.CONSUMED
+
+                        # Return run to ACTIVE if no other pending approvals
+                        pending = ScopewatchRepository.list_approvals(
+                            conn, status_filter=ApprovalStatus.PENDING, run_id=approval.run_id
+                        )
+                        current_run = ScopewatchRepository.get_run(conn, approval.run_id)
+                        if (
+                            not pending
+                            and current_run is not None
+                            and current_run.status
+                            in (RunStatus.ACTIVE, RunStatus.WAITING_FOR_APPROVAL)
+                        ):
+                            ScopewatchRepository.update_run_status(
+                                conn, approval.run_id, RunStatus.ACTIVE, failed_at
+                            )
+                    for ev in generated_events:
+                        await broadcaster.publish(approval.run_id, ev)
+                    raise ScopewatchAPIError(
+                        code="INTERNAL_EXECUTION_ERROR",
+                        message="Execution failed due to an internal error.",
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
 
                 with db_transaction(conn):
                     ScopewatchRepository.create_execution_receipt(conn, receipt)
@@ -1747,10 +1906,18 @@ capture_token: Optional[str] = None,
                     ScopewatchRepository.consume_approval(conn, approval_id)
                     updated_approval.status = ApprovalStatus.CONSUMED
 
+                    # Re-read: the run may have gone terminal while the
+                    # executor ran. Never reopen it (#187).
+                    current_run = ScopewatchRepository.get_run(conn, approval.run_id)
                     pending = ScopewatchRepository.list_approvals(
                         conn, status_filter=ApprovalStatus.PENDING, run_id=approval.run_id
                     )
-                    if not pending:
+                    if (
+                        not pending
+                        and current_run is not None
+                        and current_run.status
+                        in (RunStatus.ACTIVE, RunStatus.WAITING_FOR_APPROVAL)
+                    ):
                         ScopewatchRepository.update_run_status(
                             conn, approval.run_id, RunStatus.ACTIVE, now_iso
                         )

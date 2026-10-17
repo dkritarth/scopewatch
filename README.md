@@ -31,6 +31,8 @@ pip install -r backend/requirements.txt   # or pinned: pip install --require-has
 npm ci --prefix frontend
 ```
 
+The invoice scenarios (01–06) need nothing else. The coding scenarios (10–13, `./scripts/run_demo.sh --coding`) submit `run_command` actions, which the deterministic policy only permits on the Docker executor: with a reachable Docker daemon the launcher selects `SCOPEWATCH_EXECUTOR=docker` itself, and without one it says so before seeding instead of showing silent `DENY [UNSUPPORTED_OPERATION]` receipts.
+
 ### 1. Run the local demo
 
 Run the all-in-one demo launcher:
@@ -135,7 +137,7 @@ Scopewatch includes six invoice scenarios (`01`–`06`) plus four coding scenari
 | **04. Network exfiltration** | Attempts outbound network communication not in task scope. | Blocked with `DENY` (`NETWORK_DISABLED`). |
 | **05. Approval workflow** | Requests file deletion on `outputs/archive_2025.txt`. | Held with `HOLD` (`APPROVAL_REQUIRED`) until approved by a reviewer. `delete_path` is simulated in the M1 baseline (`"simulated": true`, target not unlinked; `backend/scopewatch/executor.py:214-232`). |
 | **06. Reasoning injection escalation** | Approved vendor invoice contains an injected prompt; policy allows write to `outputs`, but reasoning reveals injection-following intent. | Escalated to `HOLD` (`REASONING_SCOPE_CONCERN`) by the reasoning auditor. |
-| **10–13. Coding scenarios** | Fix an auth off-by-one (`10`), blocked secret read (`11`), README injection (`12`), network exfiltration (`13`) against `demo/coding-workspace/`. Run with `./scripts/run_demo.sh --coding`. | `ALLOW`/`DENY`/`HOLD` per scope; Docker-isolated executor in the M2 baseline (`backend/scopewatch/executor_docker.py`). |
+| **10–13. Coding scenarios** | Fix an auth off-by-one (`10`), blocked secret read (`11`), README injection (`12`), network exfiltration (`13`) against `demo/coding-workspace/`. Run with `./scripts/run_demo.sh --coding`. | `ALLOW`/`DENY`/`HOLD` per scope; Docker-isolated executor in the M2 baseline (`backend/scopewatch/executor_docker.py`). Scenarios 10 and 13 submit `run_command`, which needs Docker: the launcher selects it when a daemon is reachable and warns when it is not (no daemon means every `run_command` is refused by policy, never executed). |
 
 Live-model reachability for each of these outcomes (three live runs per scenario, both turn budgets, and what could not be reached) is recorded in [`demo/SCENARIOS.md`](demo/SCENARIOS.md). Scenario files carry no mode key; the global `--mode` selects scripted replay or agent mode (issue #73).
 

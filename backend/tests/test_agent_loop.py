@@ -844,7 +844,7 @@ def test_cli_scenario_01_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     scenario_path = "demo/scenarios/01_safe_audit.json"
     demo_out = Path("demo/workspace/outputs/audit-summary.txt")
-    assert not demo_out.is_file() or True  # baseline: must not be created by this test
+    assert not demo_out.is_file(), "baseline leak: demo/workspace/outputs/audit-summary.txt already exists"
     demo_mtime_before = demo_out.stat().st_mtime if demo_out.is_file() else None
 
     test_db = tmp_path / "cli_test.db"
@@ -878,6 +878,7 @@ def test_cli_scenario_01_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPat
             str(test_db),
             "--base-url",
             temp_base_url,
+            "--in-process",
         ]
     )
     assert exit_code == 0
@@ -1089,3 +1090,70 @@ def test_provider_client_receives_remaining_budget_kwargs(test_env: dict[str, An
     assert result.status == "COMPLETED"
     assert len(received_timeouts) == 1
     assert 0.0 < received_timeouts[0] <= 2.5
+
+
+def test_agent_cli_unreachable_base_url_exits_one_with_message(capsys: pytest.CaptureFixture) -> None:
+    """An unreachable --base-url exits 1 with a message naming the URL (#198)."""
+    from scopewatch.agent.__main__ import main
+
+    unreachable_url = "http://unreachable-gateway.invalid:8765"
+    exit_code = main(
+        [
+            "--scenario",
+            "demo/scenarios/01_safe_audit.json",
+            "--base-url",
+            unreachable_url,
+        ]
+    )
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert unreachable_url in captured.err
+    assert "unreachable" in captured.err.lower()
+
+
+def test_agent_cli_unhealthy_base_url_exits_one_with_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """A non-200 probe response on --base-url exits 1 with a message naming the URL (#198)."""
+    import httpx
+    from scopewatch.agent.__main__ import main
+
+    def mock_get(url: str, **kwargs: Any) -> httpx.Response:
+        return httpx.Response(502, text="Bad Gateway")
+
+    monkeypatch.setattr(httpx, "get", mock_get)
+
+    bad_url = "http://bad-gateway.example.com:8000"
+    exit_code = main(
+        [
+            "--scenario",
+            "demo/scenarios/01_safe_audit.json",
+            "--base-url",
+            bad_url,
+        ]
+    )
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert bad_url in captured.err
+    assert "502" in captured.err
+
+
+def test_agent_cli_in_process_flag_bypasses_remote_probe(tmp_path: Path) -> None:
+    """Passing --in-process runs locally without probing an unreachable base URL (#198)."""
+    from scopewatch.agent.__main__ import main
+
+    test_db = tmp_path / "in_process_test.db"
+    exit_code = main(
+        [
+            "--scenario",
+            "demo/scenarios/01_safe_audit.json",
+            "--base-url",
+            "http://unreachable-gateway.invalid:9999",
+            "--in-process",
+            "--db-path",
+            str(test_db),
+            "--max-turns",
+            "10",
+        ]
+    )
+    assert exit_code == 0

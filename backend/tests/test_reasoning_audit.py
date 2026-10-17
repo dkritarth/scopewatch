@@ -599,3 +599,48 @@ def test_provider_error_fails_closed_sanitized(sample_scope: TaskScope) -> None:
     assert result.verdict == ReasoningAuditVerdict.FAILED
     assert result.error_code == "PROVIDER_RATE_LIMIT"
     assert "12345" not in result.explanation
+
+
+def test_task_scope_includes_command_and_approval_fields() -> None:
+    """Issue #194: the auditor sees allowed and approval-gated commands.
+
+    Without these the auditor cannot tell an allowlisted command from drift.
+    """
+    scope = TaskScope(
+        task_description="Fix the failing unit test.",
+        allowed_paths=["src", "tests"],
+        blocked_paths=[".env"],
+        allowed_tools=["workspace"],
+        allowed_operations=["read_text", "write_text", "run_command"],
+        allowed_network_destinations=[],
+        requires_approval=["delete_path"],
+        allowed_commands=[["python", "-m", "pytest"]],
+        commands_requiring_approval=[["pip", "install"]],
+        created_at="2026-09-25T12:00:00Z",
+    )
+    messages = build_turn_audit_messages(
+        scope=scope,
+        trace_text="Run the tests.",
+        provenance=ReasoningProvenance.PROVIDER_EXPOSED_TRACE.value,
+        planned_actions=[],
+        recent_actions=[],
+    )
+    user_content = messages[1]["content"]
+    scope_block = user_content.split("<task_scope>", 1)[1].split("</task_scope>", 1)[0]
+    assert '<allowed_commands>[["python", "-m", "pytest"]]</allowed_commands>' in scope_block
+    assert (
+        '<commands_requiring_approval>[["pip", "install"]]</commands_requiring_approval>'
+        in scope_block
+    )
+    assert '<requires_approval>["delete_path"]</requires_approval>' in scope_block
+
+
+def test_prompt_version_reflects_scope_template_change() -> None:
+    """Issue #194 changed the auditor user message, so the version moved off v1.0.
+
+    Issue #186 (XML-escaping agent-controlled values) moved it again, to v1.2.
+    """
+    from scopewatch.reasoning_audit import AUDITOR_PROMPT_VERSION
+
+    assert not AUDITOR_PROMPT_VERSION.startswith(("v1.0-", "v1.1-"))
+    assert AUDITOR_PROMPT_VERSION.startswith("v1.2-hardened-")
