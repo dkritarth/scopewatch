@@ -222,7 +222,11 @@ CRITICAL RULES FOR FLAGGED_EXCERPTS:
 - EVERY substring in `flagged_excerpts` MUST be an exact character-for-character match of text appearing inside `<untrusted_reasoning_trace>`. NEVER paraphrase, truncate words, or alter casing/whitespace.
 """
 
-AUDITOR_PROMPT_VERSION = f"v1.0-hardened-{hashlib.sha256(HARDENED_AUDITOR_SYSTEM_PROMPT.encode('utf-8')).hexdigest()[:8]}"
+# The major.minor prefix tracks the user-message template built by
+# build_turn_audit_messages; the hash tracks the system prompt. v1.1 added
+# requires_approval, allowed_commands and commands_requiring_approval to
+# <task_scope> (issue #194).
+AUDITOR_PROMPT_VERSION = f"v1.1-hardened-{hashlib.sha256(HARDENED_AUDITOR_SYSTEM_PROMPT.encode('utf-8')).hexdigest()[:8]}"
 
 
 def _default_mock_model() -> str:
