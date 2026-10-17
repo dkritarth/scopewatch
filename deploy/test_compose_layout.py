@@ -23,7 +23,12 @@ from pathlib import Path
 
 DEPLOY_DIR = Path(__file__).resolve().parent
 COMPOSE = DEPLOY_DIR / "compose.yaml"
+RUNNER_FRAGMENT = DEPLOY_DIR / "executor-runner" / "compose.executor-runner.yaml"
 RUNBOOK = DEPLOY_DIR / "RUNBOOK.md"
+
+# The executor-runner fragment's own network. It is `internal: true` (no route
+# off the host) because the container holds the Docker socket.
+RUNNER_NETWORK = "executor-runner"
 
 # Services that are allowed to reach the host network, and the host ports each
 # is allowed to bind. Anything not listed here must publish nothing.
@@ -32,6 +37,58 @@ EXPECTED_PUBLISHED_PORTS = {
     "caddy": ['"80:80"', '"443:443"', '"443:443/udp"'],
     "gateway": [],
 }
+
+
+def top_level_section(text: str, key: str) -> str:
+    """Return the body of a top-level ``key:`` block, comments included."""
+    start = re.search(rf"^{re.escape(key)}:\s*$", text, re.MULTILINE)
+    assert start, f"no {key}: block"
+    rest = text[start.end():]
+    end = re.search(r"^\S", rest, re.MULTILINE)
+    return rest[: end.start()] if end else rest
+
+
+def declared_networks(text: str) -> dict[str, dict[str, str]]:
+    """Map every top-level network name to its attributes, by indentation."""
+    section = top_level_section(text, "networks")
+    networks: dict[str, dict[str, str]] = {}
+    current: str | None = None
+    for line in section.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        entry = re.match(r"^  ([A-Za-z0-9._-]+):\s*(.*)$", line)
+        if entry:
+            current = entry.group(1)
+            networks[current] = {}
+            inline = entry.group(2).strip()
+            if inline.startswith("{") and inline.endswith("}"):
+                # Inline mapping form, e.g. `internal: {external: true}`.
+                for part in inline[1:-1].split(","):
+                    if ":" in part:
+                        name, value = part.split(":", 1)
+                        networks[current][name.strip()] = value.strip()
+            continue
+        attribute = re.match(r"^    ([A-Za-z0-9_-]+):\s*(\S+)\s*$", line)
+        if attribute and current is not None:
+            networks[current][attribute.group(1)] = attribute.group(2)
+    return networks
+
+
+def service_networks(text: str, name: str) -> list[str]:
+    """Return the network names a service's ``networks:`` list attaches to."""
+    block = service_block(text, name)
+    match = re.search(r"^    networks:\s*$", block, re.MULTILINE)
+    assert match, f"service {name!r} declares no networks:"
+    names: list[str] = []
+    for line in block[match.end():].splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        entry = re.match(r"^      - (\S+)", line)
+        if not entry:
+            break  # left the networks list
+        names.append(entry.group(1))
+    return names
 
 
 def services_section(compose: str) -> str:
@@ -151,4 +208,83 @@ def test_every_loopback_curl_port_in_the_runbook_is_published() -> None:
     unpublished = sorted(referenced - published)
     assert not unpublished, (
         f"runbook curls loopback ports {unpublished} that compose never publishes"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Executor-runner overlay (issue #202)
+#
+# Two defects met here. The fragment redeclared the gateway's shared
+# `internal` network with `internal: true`, which Compose applies to every
+# service on it: the gateway lost its HTTPS egress to the model provider, so
+# every live audit failed closed to HOLD and the live agent could not reach
+# Nebius. And `compose.yaml` pinned `SCOPEWATCH_EXECUTOR: local` under
+# `environment:`, which overrides `env_file:`, so setting
+# `SCOPEWATCH_EXECUTOR=remote` in the VM `.env` did nothing at all.
+#
+# `docker compose config` on a real daemon is the authoritative check and was
+# not run for this change (no Docker here); these are the dependency-free
+# regression guards.
+# ---------------------------------------------------------------------------
+
+
+def test_the_runner_fragment_does_not_cut_gateway_egress() -> None:
+    """No shared network may be marked internal by the merged fragment."""
+    fragment = RUNNER_FRAGMENT.read_text(encoding="utf-8")
+    fragment_networks = declared_networks(fragment)
+    assert fragment_networks, "the fragment declares no networks"
+
+    for name, attributes in fragment_networks.items():
+        if name == RUNNER_NETWORK:
+            continue
+        assert attributes.get("internal") != "true", (
+            f"the fragment marks shared network {name!r} internal: true, which "
+            "removes egress from every service on it, including the gateway's "
+            "route to the model provider (issue #202)"
+        )
+
+    base = COMPOSE.read_text(encoding="utf-8")
+    assert declared_networks(base).get("internal", {}).get("internal") != "true", (
+        "the gateway's provider-facing `internal` network must stay routable"
+    )
+
+
+def test_the_runner_network_is_egress_less_and_shared_with_the_gateway() -> None:
+    """The socket-holding sidecar gets its own no-egress network, and the
+    gateway is on it so remote dispatch can still reach the runner."""
+    fragment = RUNNER_FRAGMENT.read_text(encoding="utf-8")
+    base = COMPOSE.read_text(encoding="utf-8")
+
+    assert declared_networks(fragment)[RUNNER_NETWORK].get("internal") == "true", (
+        "the runner's own network must be internal: true (no route off the host)"
+    )
+    # Declared in the base file too, so the gateway service stays valid when the
+    # fragment is not merged, and so both files resolve to one network.
+    assert RUNNER_NETWORK in declared_networks(base), (
+        f"{COMPOSE.name} must declare {RUNNER_NETWORK!r} for the gateway to join"
+    )
+    assert RUNNER_NETWORK in service_networks(base, "gateway"), (
+        "the gateway must attach to the runner network or remote dispatch cannot reach it"
+    )
+    assert RUNNER_NETWORK in service_networks(fragment, "executor-runner")
+    # Least privilege: nothing else joins it.
+    for service in ("gate", "caddy"):
+        attached = service_networks(base, service)
+        assert RUNNER_NETWORK not in attached, (
+            f"{service} must not join the runner-only network"
+        )
+
+
+def test_the_gateway_executor_backend_is_selectable_from_the_env_file() -> None:
+    """`environment:` must not pin the executor over `env_file:` (#202)."""
+    base = COMPOSE.read_text(encoding="utf-8")
+    gateway = service_block(base, "gateway")
+    match = re.search(
+        r"^\s+SCOPEWATCH_EXECUTOR:\s*(\S+)\s*$", gateway, re.MULTILINE
+    )
+    assert match, "the gateway service must set SCOPEWATCH_EXECUTOR"
+    value = match.group(1).strip('"')
+    assert value == "${SCOPEWATCH_EXECUTOR:-local}", (
+        "SCOPEWATCH_EXECUTOR must default to local through variable "
+        f"interpolation so .env can select remote; found {value!r}"
     )
