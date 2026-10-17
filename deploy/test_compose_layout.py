@@ -18,11 +18,17 @@ dependency-free regression guard for the specific regression above.
 
 from __future__ import annotations
 
-import re
+import json
+import os
 from pathlib import Path
+import re
+import subprocess
+
+import pytest
 
 DEPLOY_DIR = Path(__file__).resolve().parent
 COMPOSE = DEPLOY_DIR / "compose.yaml"
+RUNNER_FRAGMENT = DEPLOY_DIR / "executor-runner" / "compose.executor-runner.yaml"
 RUNBOOK = DEPLOY_DIR / "RUNBOOK.md"
 
 # Services that are allowed to reach the host network, and the host ports each
@@ -57,8 +63,13 @@ def service_block(text: str, name: str) -> str:
     return rest[: end.start()] if end else rest
 
 
-def published_ports(block: str) -> list[str]:
-    """Return the host-side mapping strings from a service's `ports:` list."""
+def raw_published_ports(block: str) -> list[str]:
+    """Return the host-side mapping strings from a service's `ports:` list.
+
+    Exactly as written in the file: ``${VAR:-default}`` substitutions are kept,
+    so a caller can assert that a port is *overridable* rather than merely
+    what it defaults to.
+    """
     match = re.search(r"^    ports:\s*$", block, re.MULTILINE)
     if not match:
         return []
@@ -72,6 +83,20 @@ def published_ports(block: str) -> list[str]:
             break  # left the ports list (next key at 4-space indent)
         entries.append(entry.group(1))
     return entries
+
+
+def default_of(mapping: str) -> str:
+    """Resolve ``${VAR:-default}`` substitutions to their shipped defaults."""
+    return re.sub(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-([^}]*)\}", r"\1", mapping)
+
+
+def published_ports(block: str) -> list[str]:
+    """Host-side mappings with ``${VAR:-default}`` resolved to the default.
+
+    A parameterised port is still checked against the value it ships with, so
+    the expectations below describe the live stack that operators run today.
+    """
+    return [default_of(mapping) for mapping in raw_published_ports(block)]
 
 
 def host_port(mapping: str) -> int:
@@ -151,4 +176,241 @@ def test_every_loopback_curl_port_in_the_runbook_is_published() -> None:
     unpublished = sorted(referenced - published)
     assert not unpublished, (
         f"runbook curls loopback ports {unpublished} that compose never publishes"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Throwaway budget-check stack (issue #201)
+#
+# The runbook told the operator to bring up a second project with
+# `-p budgetcheck`, but every volume and network carried a fixed top-level
+# `name:` — which Compose does NOT scope to the project — and every host port
+# was fixed. With the live stack up, the throwaway stack therefore:
+#
+# * could not bind 80/443 (caddy) or 127.0.0.1:8080 (gate);
+# * pointed the smoke script at the LIVE gate, spending the judging budget and
+#   failing the 429 expectation the check exists to prove;
+# * mounted the live SQLite evidence volume, so two containers answered as
+#   `gateway` on one shared network; and
+# * risked `down -v` removing the live named volumes, i.e. the judged evidence.
+#
+# `docker compose -p budgetcheck config` on a real daemon is the authoritative
+# check and was not run for this change (no Docker here); these are the
+# dependency-free regression guards.
+# ---------------------------------------------------------------------------
+
+PROJECT_SCOPED_NAME = "${COMPOSE_PROJECT_NAME:-scopewatch-demo}"
+
+# Host port knobs a second project must be able to override, and the live
+# defaults that must stay unchanged for the shipped stack.
+PORT_OVERRIDES = {
+    "gate": ["GATE_HOST_PORT"],
+    "caddy": ["HTTP_HOST_PORT", "HTTPS_HOST_PORT"],
+}
+
+
+def _top_level_block(text: str, key: str) -> str:
+    """Return the body of a top-level ``key:`` block."""
+    start = re.search(rf"^{re.escape(key)}:\s*$", text, re.MULTILINE)
+    assert start, f"no top-level {key}: block"
+    rest = text[start.end():]
+    end = re.search(r"^\S", rest, re.MULTILINE)
+    return rest[: end.start()] if end else rest
+
+
+def _declared_resource_names(text: str, key: str) -> dict[str, str]:
+    """Map each top-level network/volume entry to its explicit ``name:``.
+
+    The name is returned exactly as written, so a caller can assert both that it
+    is project-scoped and what it resolves to.
+    """
+    names: dict[str, str] = {}
+    current: str | None = None
+    for line in _top_level_block(text, key).splitlines():
+        entry = re.match(r"^  ([A-Za-z0-9._-]+):\s*(.*)$", line)
+        if entry:
+            current = entry.group(1)
+            continue
+        override = re.match(r"^\s+name:\s*(\S+)\s*$", line)
+        if override and current:
+            names[current] = override.group(1).strip('"')
+    return names
+
+
+def test_every_resource_name_is_project_scoped() -> None:
+    """A fixed top-level ``name:`` is shared by every project on the host."""
+    for compose in (COMPOSE, RUNNER_FRAGMENT):
+        text = compose.read_text(encoding="utf-8")
+        for key in ("networks", "volumes"):
+            declared = _declared_resource_names(text, key)
+            for entry, name in declared.items():
+                assert name.startswith(PROJECT_SCOPED_NAME + "-"), (
+                    f"{compose.name}: {key}.{entry} is named {name!r}, which "
+                    "every project on the host shares. Scope it with "
+                    "${COMPOSE_PROJECT_NAME:-scopewatch-demo}-... (issue #201)"
+                )
+    # The run-workspace volume is the one both files must agree on (#117), so
+    # it must be project-scoped on both sides rather than only one.
+    for compose in (COMPOSE, RUNNER_FRAGMENT):
+        declared = _declared_resource_names(
+            compose.read_text(encoding="utf-8"), "volumes"
+        )
+        assert "scopewatch-run-workspaces" in declared, (
+            f"{compose.name} must name the shared run-workspace volume"
+        )
+        assert declared["scopewatch-run-workspaces"].startswith(
+            PROJECT_SCOPED_NAME + "-"
+        ), f"{compose.name}: the shared volume is not project-scoped"
+
+
+def test_the_live_resource_names_are_unchanged_by_the_default() -> None:
+    """Parameterising must not rename what the shipped deployment owns.
+
+    An existing demo's volumes are ``scopewatch-demo-*``; a default that
+    resolved to anything else would orphan the live evidence on the next
+    `up -d --build`.
+    """
+    expected = {
+        "networks": {
+            "public": "scopewatch-demo-public",
+            "internal": "scopewatch-demo-internal",
+        },
+        "volumes": {
+            "scopewatch-data": "scopewatch-demo-data",
+            "scopewatch-workspace": "scopewatch-demo-workspace",
+            "scopewatch-run-workspaces": "scopewatch-demo-run-workspaces",
+            "caddy-data": "scopewatch-demo-caddy-data",
+            "caddy-config": "scopewatch-demo-caddy-config",
+        },
+    }
+    text = COMPOSE.read_text(encoding="utf-8")
+    for key, wanted in expected.items():
+        declared = _declared_resource_names(text, key)
+        resolved = {entry: default_of(name) for entry, name in declared.items()}
+        assert resolved == wanted, (
+            f"{key} names must resolve to the shipped values when "
+            f"COMPOSE_PROJECT_NAME is unset; found {resolved}"
+        )
+
+
+def test_every_host_port_is_overridable() -> None:
+    """A second project cannot share a host port with the live listeners."""
+    text = COMPOSE.read_text(encoding="utf-8")
+    for service, knobs in PORT_OVERRIDES.items():
+        block = service_block(text, service)
+        for mapping in raw_published_ports(block):
+            overridden = re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-", mapping)
+            assert overridden, (
+                f"{service} publishes {mapping!r} as a fixed host port, so a "
+                "second project on this VM cannot bind it (issue #201). Use "
+                "${SOME_PORT:-<live default>}."
+            )
+            for knob in overridden:
+                assert knob in knobs, (
+                    f"{service} uses unknown port knob {knob!r}; expected one of {knobs}"
+                )
+    # The loopback binding stays loopback-bound, whatever the port.
+    gate_ports = published_ports(service_block(text, "gate"))
+    assert all(p.startswith('"127.0.0.1:') for p in gate_ports), (
+        f"the gate must stay loopback-bound: {gate_ports}"
+    )
+
+
+def _budget_check_step() -> str:
+    """Return the documented budget-exhaustion shell step as text."""
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+    section = runbook.split("Budget-exhaustion check", 1)[1]
+    blocks = re.findall(r"```bash\n(.*?)```", section, re.S)
+    assert blocks, "the budget-exhaustion step lost its bash block"
+    return blocks[0]
+
+
+@pytest.mark.parametrize("smoke_fails", [False, True], ids=["clean", "failure-cleans-up"])
+def test_the_budget_check_step_runs_isolated_and_always_cleans_up(
+    tmp_path: Path, smoke_fails: bool
+) -> None:
+    """Execute the documented step against fake binaries (no Docker needed).
+
+    A fake `docker` and a fake `./scripts/smoke-demo.sh` record their argv and
+    the knobs the runbook claims to set, so the step is checked as a program
+    rather than as prose: right project, right ports, and `down -v` on failure
+    too.
+    """
+    step = _budget_check_step()
+
+    log = tmp_path / "calls.jsonl"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "with open(os.environ['CALL_LOG'], 'a') as fh:\n"
+        "    fh.write(json.dumps({'tool': 'docker', 'argv': sys.argv[1:],\n"
+        "        'project': os.environ.get('COMPOSE_PROJECT_NAME'),\n"
+        "        'gate_port': os.environ.get('GATE_HOST_PORT')}) + '\\n')\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    smoke = scripts_dir / "smoke-demo.sh"
+    smoke.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "with open(os.environ['CALL_LOG'], 'a') as fh:\n"
+        "    fh.write(json.dumps({'tool': 'smoke', 'argv': sys.argv[1:],\n"
+        "        'project': os.environ.get('COMPOSE_PROJECT_NAME'),\n"
+        "        'runs_per_day': os.environ.get('DEMO_MAX_RUNS_PER_DAY')}) + '\\n')\n"
+        "sys.exit(1 if os.environ.get('SMOKE_FAILS') else 0)\n",
+        encoding="utf-8",
+    )
+    smoke.chmod(0o755)
+
+    env = {
+        "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+        "HOME": os.environ.get("HOME", ""),
+        "TOKEN": "synthetic-demo-token",
+        "CALL_LOG": str(log),
+        "SMOKE_FAILS": "1" if smoke_fails else "",
+    }
+    proc = subprocess.run(
+        ["bash", "-c", step],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == (1 if smoke_fails else 0), proc.stderr
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    kinds = [call["tool"] for call in calls]
+    # config, up, smoke — and `down -v` whether or not the smoke test passed.
+    assert kinds == ["docker", "docker", "smoke", "docker"], kinds
+
+    config, up, smoke_call, down = calls
+    assert config["argv"][:3] == ["compose", "-p", "budgetcheck"]
+    assert "config" in config["argv"]
+    assert up["argv"][:3] == ["compose", "-p", "budgetcheck"]
+    assert "up" in up["argv"]
+    # Caddy must not be part of the throwaway stack: it would request a
+    # certificate for DOMAIN=localhost and bind 80/443.
+    assert "gateway" in up["argv"] and "gate" in up["argv"]
+    assert "caddy" not in up["argv"]
+    assert down["argv"][-2:] == ["down", "-v"]
+    assert down["argv"][:3] == ["compose", "-p", "budgetcheck"]
+
+    for call in calls:
+        assert call["project"] == "budgetcheck", (
+            "every compose call must name the throwaway project, or `down -v` "
+            "can remove the live stack's volumes"
+        )
+    assert smoke_call["runs_per_day"] == "1", (
+        "the throwaway budget cap must be set for the smoke test"
+    )
+    assert smoke_call["argv"][0] == "--exhaust-budget"
+    assert "18080" in smoke_call["argv"][1], (
+        f"the smoke test must hit the throwaway gate, not the live one: {smoke_call['argv']}"
     )

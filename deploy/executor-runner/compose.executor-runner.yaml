@@ -79,6 +79,8 @@ volumes:
   # MUST be the same host volume as deploy/compose.yaml's, or the two services
   # resolve `run_workspace` keys against different directories. Declared in
   # both fragments so either can be merged on its own; identical `name:` values
-  # mean both resolve to one volume rather than two.
+  # mean both resolve to one volume rather than two. The name is project-scoped
+  # (issue #201) so a second project on the same host gets its own copy instead
+  # of sharing this one.
   scopewatch-run-workspaces:
-    name: scopewatch-demo-run-workspaces
+    name: ${COMPOSE_PROJECT_NAME:-scopewatch-demo}-run-workspaces
