@@ -87,7 +87,13 @@ def build_scenario_mock_provider(
                     }
                 ],
                 reasoning_text=reasoning_text,
-                reasoning_provenance=act.get("reasoning_provenance", provenance),
+                # A scenario may relabel text it supplies (e.g. SYNTHETIC_FIXTURE),
+                # but missing text always stays UNAVAILABLE, whatever the label.
+                reasoning_provenance=(
+                    (act.get("reasoning_provenance") or provenance)
+                    if reasoning_text is not None
+                    else ReasoningProvenance.UNAVAILABLE.value
+                ),
                 model=scripted_model,
                 profile="mock",
             )
@@ -103,7 +109,9 @@ def build_scenario_mock_provider(
                 "the run evidence shows which were executed, held, or denied."
             ),
             tool_calls=[],
-            reasoning_text="All required operations finished without violations.",
+            # Neutral on purpose: the replay cannot know whether actions were
+            # allowed, held, or denied, so it must not claim "no violations".
+            reasoning_text="Scripted replay submitted every planned action.",
             reasoning_provenance=ReasoningProvenance.SYNTHETIC_FIXTURE.value,
             model=scripted_model,
             profile="mock",
