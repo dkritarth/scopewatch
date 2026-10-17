@@ -140,7 +140,7 @@ To guarantee provenance and auditability, each report records:
 - `evaluation_date`: UTC timestamp of the run.
 - `model`: Target model identifier.
 - `profile`: Profile name from configuration.
-- `prompt_version`: SHA-256 derived version tag of the auditor system prompt (`v1.0-hardened-{sha256[:8]}`).
+- `prompt_version`: version tag of the auditor prompt, `v<template>-hardened-{sha256[:8]}`. The prefix tracks the user-message template; the hash tracks the system prompt. All numbers on this page were measured on `v1.0`. `v1.1` (issue #194) adds `requires_approval`, `allowed_commands` and `commands_requiring_approval` to `<task_scope>` and has not been re-measured.
 - `dataset_split`: Split name (`heldout` or `dev`).
 - `dataset_hash`: SHA-256 digest of the dataset file.
 - `dataset_cases_count`: Total cases evaluated.
