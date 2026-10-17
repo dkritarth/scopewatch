@@ -122,6 +122,11 @@ from scopewatch.docker_job import (  # noqa: E402
 # which the three gateway backends import too; the image COPYs it in beside
 # ``docker_job.py`` so the plain import resolves. Stdlib-only like that module.
 from scopewatch import dispatch_gate  # noqa: E402
+from scopewatch.scope_paths import (  # noqa: E402
+    normalize_relative_segments,
+    scoped_path_denial,
+    segments_within,
+)  # noqa: E402
 
 # Single-use dispatch tokens expire after 60s (issue #78).
 DISPATCH_TOKEN_TTL_S = 60.0
@@ -152,12 +157,17 @@ def canonical_action_digest(
     action: dict[str, Any],
     policy_decision: dict[str, Any],
     run_workspace: str = "",
+    task_scope: Optional[dict[str, Any]] = None,
 ) -> str:
     """Recompute the gateway action digest (must match exactly).
 
     ``run_workspace`` (issue #117) is the per-run workspace key the gateway
     resolved; it is part of the digest so a dispatch token minted for one
     run's workspace cannot be replayed against another's.
+
+    ``task_scope`` (issue #184) binds the dispatch to the scope the run
+    declared, so a bearer-token holder cannot swap the scope the runner
+    re-applies against the staged copy: changing it changes the digest.
     """
     canonical = {
         "action_id": action.get("id"),
@@ -168,6 +178,14 @@ def canonical_action_digest(
         "policy_decision_id": policy_decision.get("id"),
         "policy_outcome": policy_decision.get("outcome"),
         "run_workspace": run_workspace or "",
+        "task_scope": {
+            "allowed_paths": list((task_scope or {}).get("allowed_paths") or []),
+            "blocked_paths": list((task_scope or {}).get("blocked_paths") or []),
+            "allowed_commands": [
+                list(prefix)
+                for prefix in (task_scope or {}).get("allowed_commands") or []
+            ],
+        },
     }
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -390,7 +408,7 @@ def handle_execute(
     if outcome == "invalid":
         return 400, {"error": "malformed dispatch"}
     expected_digest = canonical_action_digest(
-        action, decision, body.get("run_workspace") or ""
+        action, decision, body.get("run_workspace") or "", body.get("task_scope")
     )
     if not hmac.compare_digest(str(body.get("action_digest") or ""), expected_digest):
         return 409, {"error": "action digest mismatch"}
@@ -441,6 +459,24 @@ def handle_execute(
         code = 403 if "boundary" in (reason or "") else 400
         return code, {"error": reason or "invalid resource"}
 
+    task_scope = body.get("task_scope")
+    if isinstance(task_scope, dict):
+        allowed = task_scope.get("allowed_paths") or []
+        blocked = task_scope.get("blocked_paths") or []
+        req_segments = normalize_relative_segments(str(resource))
+        try:
+            res_segments = target.relative_to(workspace.resolve()).parts
+        except (ValueError, OSError, RuntimeError):
+            return 403, {"error": "path escapes workspace boundary"}
+        if allowed or blocked:
+            require_allowed = (operation != "run_command")
+            eff_allowed = allowed if require_allowed else ["."]
+            denial = scoped_path_denial(req_segments, res_segments, eff_allowed, blocked)
+            if denial is not None:
+                return 403, {"error": "resource violates task scope"}
+        elif res_segments != req_segments:
+            return 403, {"error": "symlink target requires task scope evidence"}
+
     arguments = action.get("arguments") or {}
     if not isinstance(arguments, dict):
         return 400, {"error": "malformed arguments"}
@@ -449,6 +485,21 @@ def handle_execute(
         argv, timeout, error = normalize_run_command(arguments)
         if error is not None or argv is None:
             return 400, {"error": error or "malformed argv for run_command"}
+        if isinstance(task_scope, dict):
+            allowed_cmds = task_scope.get("allowed_commands") or []
+            if allowed_cmds:
+                if not any(argv[: len(cmd)] == cmd for cmd in allowed_cmds):
+                    return 403, {"error": "command not allowed by task scope"}
+            blocked = task_scope.get("blocked_paths") or []
+            for item in argv:
+                candidates = [item]
+                if "=" in item:
+                    candidates.append(item.split("=", 1)[1])
+                for candidate in candidates:
+                    cand_segments = normalize_relative_segments(candidate)
+                    for b in blocked:
+                        if segments_within(cand_segments, b):
+                            return 403, {"error": f"command argument violates blocked path '{b}'"}
         arguments = {"argv": argv, "timeout_s": timeout}
         run_timeout_s = timeout
 
@@ -459,6 +510,66 @@ def handle_execute(
             staging_root, workspace_copy = stage_workspace_copy(workspace)
         except OSError:
             return 500, {"error": "workspace staging failed"}
+
+        target_copy, reason_copy = validate_resource_inside_workspace(resource, workspace_copy)
+        if target_copy is None:
+            code = 403 if "boundary" in (reason_copy or "") else 400
+            return code, {"error": reason_copy or "invalid resource"}
+        if isinstance(task_scope, dict):
+            allowed = task_scope.get("allowed_paths") or []
+            blocked = task_scope.get("blocked_paths") or []
+            req_segments = normalize_relative_segments(str(resource))
+            try:
+                res_copy_segments = target_copy.relative_to(workspace_copy.resolve()).parts
+            except (ValueError, OSError, RuntimeError):
+                return 403, {"error": "path escapes workspace boundary"}
+            if allowed or blocked:
+                require_allowed = (operation != "run_command")
+                eff_allowed = allowed if require_allowed else ["."]
+                denial = scoped_path_denial(req_segments, res_copy_segments, eff_allowed, blocked)
+                if denial is not None:
+                    return 403, {"error": "resource violates task scope"}
+            elif res_copy_segments != req_segments:
+                return 403, {"error": "symlink target requires task scope evidence"}
+
+            if operation == "run_command":
+                staged_argv = list(arguments.get("argv", []))
+                # The allowlisted prefix (e.g. an absolute interpreter path)
+                # is not a workspace path; everything after it is, exactly as
+                # the gateway's revalidate_run_command_in_workspace treats it.
+                prefix_len = max(
+                    (
+                        len(cmd)
+                        for cmd in task_scope.get("allowed_commands") or []
+                        if staged_argv[: len(cmd)] == cmd
+                    ),
+                    default=0,
+                )
+                try:
+                    copy_root = workspace_copy.resolve()
+                except (OSError, RuntimeError):
+                    return 500, {"error": "workspace staging failed"}
+                for index, item in enumerate(staged_argv):
+                    candidates = [item]
+                    if "=" in item:
+                        candidates.append(item.split("=", 1)[1])
+                    for candidate in candidates:
+                        is_path_argument = index >= prefix_len
+                        if is_path_argument and candidate.startswith(("/", "\\")):
+                            return 403, {"error": "command argument uses an absolute path"}
+                        try:
+                            cand_resolved = (workspace_copy / candidate).resolve()
+                            cand_canonical = cand_resolved.relative_to(copy_root).parts
+                        except (ValueError, OSError, RuntimeError):
+                            # A relative argument that resolves outside the
+                            # staged copy is a symlink escape: fail closed, as
+                            # the gateway does (RULE_RUN_COMMAND_SYMLINK_ESCAPE).
+                            if is_path_argument:
+                                return 403, {"error": "command argument escapes the workspace boundary"}
+                            continue
+                        for b in blocked:
+                            if segments_within(cand_canonical, b):
+                                return 403, {"error": f"command argument resolves into blocked path '{b}'"}
         # Same job builder as the gateway (issue #106): the JSON the container
         # parses and the argv it receives cannot disagree, and the host wait is
         # derived from the same timeout the container gets.
