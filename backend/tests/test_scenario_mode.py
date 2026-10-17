@@ -77,7 +77,7 @@ def test_mock_provider_final_turn_completes_without_tools():
     mock = build_scenario_mock_provider(data)
     final = mock._queue[-1]
     assert final.tool_calls == []
-    assert "completed" in (final.content or "").lower()
+    assert "replay finished" in (final.content or "").lower()
 
 
 def test_seed_mode_help_documents_replay_and_sole_control(tmp_path: Path):

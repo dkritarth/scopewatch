@@ -2,9 +2,12 @@
 
 export const STATUS_FACETS = [
   "attempted",
+  "allowed",
+  "held",
+  "denied",
+  "approved",
   "executed",
-  "blocked",
-  "pending-approval",
+  "failed",
 ];
 
 export function createInitialFilters() {
@@ -20,8 +23,20 @@ export function normalizeText(value) {
 
 export function eventMatchesFilters(event, filters) {
   const normalizedStatus = String(event.status ?? "").toLowerCase();
-  const statusAccepted =
-    filters.status === "all" || normalizedStatus === filters.status;
+  const filterStatus = String(filters.status ?? "all").toLowerCase();
+
+  let statusAccepted = filterStatus === "all" || normalizedStatus === filterStatus;
+  if (!statusAccepted) {
+    if (filterStatus === "blocked" && (normalizedStatus === "denied" || normalizedStatus === "blocked")) {
+      statusAccepted = true;
+    } else if (filterStatus === "pending-approval" && (normalizedStatus === "held" || normalizedStatus === "pending-approval")) {
+      statusAccepted = true;
+    } else if (filterStatus === "denied" && normalizedStatus === "blocked") {
+      statusAccepted = true;
+    } else if (filterStatus === "held" && normalizedStatus === "pending-approval") {
+      statusAccepted = true;
+    }
+  }
   if (!statusAccepted) {
     return false;
   }
