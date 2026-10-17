@@ -51,6 +51,10 @@ in the new module `backend/scopewatch/evidence_chain.py`:
   consistency, prev linkage, hash recomputation, and DECISION-before-
   EXECUTION ordering per `action_id` (`POLICY_ALLOWED/DENIED/HELD` must
   precede `EXECUTION_STARTED/SUCCEEDED/FAILED` for the same action).
+  *Amended by issue #190:* the ordering check is now a per-action lifecycle
+  check. A `POLICY_DENIED` permits no execution, a `POLICY_HELD` needs a
+  single `APPROVAL_GRANTED` first, each action has one decision, and each
+  action executes at most once. See `docs/security/evidence-log.md`.
 - First failure is reported as `{ok: false, code, reason, first_bad_seq,
   head_hash, checked}`. Truncation (dropped suffix) is detected only against
   a pinned `expected_head` / `expected_length`, because a bare prefix is
