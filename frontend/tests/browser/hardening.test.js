@@ -336,3 +336,57 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     }
   }
 });
+
+test("armed state and note survive an SSE frame (#208)", { timeout: 30000 }, async () => {
+  const server = createStaticServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    await page.goto(origin);
+    await page.locator("#timeline button").first().waitFor();
+
+    await page.selectOption("#action-preset", "approval_required");
+    await page.click("#submit-action-btn");
+    const card = page.locator(".approval-card").first();
+    await card.waitFor({ timeout: 5000 });
+
+    // Verify card content requirements (#208): reason, arguments preview, run, expiry
+    assert.match(await card.locator(".approval-card-run").innerText(), /Run:/);
+    assert.match(await card.locator(".approval-card-reason").innerText(), /Reason:/);
+    assert.match(await card.locator(".approval-card-args").innerText(), /Arguments:/);
+    assert.match(await card.locator(".approval-card-expiry").innerText(), /Expires:/);
+
+    // Type reviewer note
+    const noteText = "Retain this note across SSE frame";
+    await card.locator(".approval-reason-input").fill(noteText);
+
+    // Arm approve
+    await card.locator(".btn-approve").click();
+    assert.equal(await card.locator(".btn-approve").innerText(), "Confirm approve");
+    assert.equal(await card.locator(".approval-confirm-note").isVisible(), true);
+
+    // Trigger an SSE frame / approvals re-render
+    await page.evaluate(() => {
+      window.__scopewatch.renderApprovals();
+    });
+
+    // Assert armed state and note survived!
+    assert.equal(await card.locator(".approval-reason-input").inputValue(), noteText);
+    assert.equal(await card.locator(".btn-approve").innerText(), "Confirm approve");
+    assert.equal(await card.locator(".approval-confirm-note").isVisible(), true);
+
+    // Second click finishes resolution
+    await card.locator(".btn-approve").click();
+    await page.locator("#no-approvals-msg").waitFor({ timeout: 5000 });
+    assert.deepEqual(errors, []);
+  } finally {
+    if (browser) await browser.close();
+    server.close();
+  }
+});

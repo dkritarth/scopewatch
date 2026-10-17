@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { STATUS_FACETS } from "../scripts/reviewer-state.js";
 import {
   APPROVAL_CONFIRM_COPY,
+  STATUS_GLYPHS,
+  getStatusGlyph,
+  reconcileRunActionStates,
   LEGACY_POLICY_VERSION_LABEL,
   NOT_APPLICABLE_LABEL,
   POLICY_DECISION_EVENT_TYPES,
@@ -14,6 +18,7 @@ import {
   authFailureHint,
   clearStores,
   buildStaticSimulationEvent,
+  formatApprovalCardData,
   resolveSubmissionTarget,
   getHoldIcon,
   getHoldKind,
@@ -269,7 +274,7 @@ test("transformApiEvent distinguishes all three hold types via text badge and re
     event_type: "POLICY_HELD",
     details: { reason_code: "APPROVAL_REQUIRED" },
   });
-  assert.equal(evPolicy.status, "pending-approval");
+  assert.equal(evPolicy.status, "held");
   assert.equal(evPolicy.statusLabel, "HOLD (policy)");
   assert.equal(evPolicy.reasonCode, "APPROVAL_REQUIRED");
 
@@ -280,7 +285,7 @@ test("transformApiEvent distinguishes all three hold types via text badge and re
     event_type: "POLICY_HELD",
     details: { reason_code: "REASONING_SCOPE_CONCERN" },
   });
-  assert.equal(evConcern.status, "pending-approval");
+  assert.equal(evConcern.status, "held");
   assert.equal(evConcern.statusLabel, "HOLD (reasoning concern)");
   assert.equal(evConcern.reasonCode, "REASONING_SCOPE_CONCERN");
 
@@ -291,7 +296,7 @@ test("transformApiEvent distinguishes all three hold types via text badge and re
     event_type: "POLICY_HELD",
     details: { reason_code: "REASONING_AUDIT_FAILED" },
   });
-  assert.equal(evAuditFailed.status, "pending-approval");
+  assert.equal(evAuditFailed.status, "held");
   assert.equal(evAuditFailed.statusLabel, "HOLD (audit failed)");
   assert.equal(evAuditFailed.reasonCode, "REASONING_AUDIT_FAILED");
 });
@@ -385,7 +390,7 @@ test("safeTransformApiEvent passes valid frames through unchanged", () => {
   const viaSafe = safeTransformApiEvent(raw);
   const viaDirect = transformApiEvent({ ...raw, details: { ...raw.details } });
   assert.deepEqual(viaSafe, viaDirect);
-  assert.equal(viaSafe.status, "pending-approval");
+  assert.equal(viaSafe.status, "held");
 });
 
 test("hold kinds carry distinct icons plus text (never colour alone)", () => {
@@ -531,7 +536,7 @@ test("transformApiEvent joins approval record and surfaces simulated execution m
       reason_code: "APPROVAL_REQUIRED",
     },
   });
-  assert.equal(held.status, "pending-approval");
+  assert.equal(held.status, "held");
   assert.equal(held.approvalStatus, "Pending reviewer authorization");
 
   // 2. Reviewer approves
@@ -960,7 +965,7 @@ test("two actions in one turn share no audit or approval (#207)", () => {
       flagged_excerpts: ["exfiltrate"],
     },
   });
-  assert.equal(act1Hold.status, "pending-approval");
+  assert.equal(act1Hold.status, "held");
   assert.equal(act1Hold.statusLabel, "HOLD (reasoning concern)");
   assert.equal(act1Hold.approvalStatus, "Pending reviewer authorization");
   assert.equal(act1Hold.reasoningAudit?.verdict, "CONCERN");
@@ -978,8 +983,8 @@ test("two actions in one turn share no audit or approval (#207)", () => {
     },
   });
   // Must NOT leak action 1's concern or pending approval!
-  assert.equal(act2Allow.status, "executed");
-  assert.equal(act2Allow.statusLabel, "Action: executed");
+  assert.equal(act2Allow.status, "allowed");
+  assert.equal(act2Allow.statusLabel, "Policy: allowed");
   assert.equal(act2Allow.approvalStatus, null);
   assert.equal(act2Allow.reasoningAudit, null);
   assert.notEqual(act2Allow.reasonCode, "REASONING_SCOPE_CONCERN");
@@ -998,8 +1003,8 @@ test("two actions in one turn share no audit or approval (#207)", () => {
     },
   });
   // Must NOT leak action 1's approval status!
-  assert.equal(act3Deny.status, "blocked");
-  assert.equal(act3Deny.statusLabel, "Policy: blocked");
+  assert.equal(act3Deny.status, "denied");
+  assert.equal(act3Deny.statusLabel, "Policy: denied");
   assert.equal(act3Deny.approvalStatus, null);
   assert.equal(act3Deny.reasoningAudit, null);
 });
@@ -1050,4 +1055,219 @@ test("the same turn ID in two runs shows no leak (#207)", () => {
   assert.equal(auditStore.size, 0);
   assert.equal(actionRequestStore.size, 0);
   assert.equal(approvalStore.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #208: Approval card data formatting (reason, args, run, expiry)
+// ---------------------------------------------------------------------------
+
+test("formatApprovalCardData displays reason, arguments preview, run, and expiry (#208)", () => {
+  const dummyRun = {
+    id: "run-approval-test",
+    name: "Invoice Processing (Live)",
+    events: [
+      {
+        id: "ev-hold-1",
+        action_request_id: "act-del-1",
+        reasonCode: "REASONING_SCOPE_CONCERN",
+        statusLabel: "HOLD (reasoning concern)",
+        arguments: { path: "outputs/secret.txt", content: "forbidden payload" },
+        expires_at: "2026-10-15T12:00:00Z",
+      },
+    ],
+  };
+
+  const appr = {
+    id: "appr-1",
+    run_id: "run-approval-test",
+    action_request_id: "act-del-1",
+    operation: "write_text",
+    resource: "outputs/secret.txt",
+    requested_at: "2026-10-15T11:55:00Z",
+    expires_at: "2026-10-15T12:00:00Z",
+  };
+
+  const data = formatApprovalCardData(appr, [dummyRun], dummyRun);
+  assert.equal(data.runName, "Invoice Processing (Live)");
+  assert.equal(data.holdReason, "Reasoning scope concern");
+  assert.match(data.argsPreview, /forbidden payload/);
+  assert.equal(data.expiryText, "12:00:00");
+  assert.equal(data.timelineEvent?.id, "ev-hold-1");
+});
+
+test("maps every backend EventType to its expected status (#206)", () => {
+  const mapping = {
+    RUN_CREATED: "attempted",
+    ACTION_REQUESTED: "attempted",
+    POLICY_ALLOWED: "allowed",
+    POLICY_DENIED: "denied",
+    POLICY_HELD: "held",
+    APPROVAL_REQUESTED: "held",
+    APPROVAL_GRANTED: "approved",
+    APPROVAL_DENIED: "denied",
+    APPROVAL_EXPIRED: "failed",
+    EXECUTION_STARTED: "attempted",
+    EXECUTION_SUCCEEDED: "executed",
+    EXECUTION_FAILED: "failed",
+    RUN_COMPLETED: "executed",
+    SYSTEM_ERROR: "failed",
+    REASONING_AUDIT_COMPLETED: "allowed",
+    REASONING_AUDIT_FAILED: "held",
+  };
+
+  for (const [eventType, expectedStatus] of Object.entries(mapping)) {
+    const res = transformApiEvent({
+      id: `ev-map-${eventType}`,
+      sequence: 1,
+      event_type: eventType,
+      details: {
+        operation: "test_op",
+        resource: "test/res",
+      },
+    });
+    assert.equal(
+      res.status,
+      expectedStatus,
+      `EventType.${eventType} must map to status '${expectedStatus}', got '${res.status}'`
+    );
+    assert.ok(STATUS_FACETS.includes(res.status), `status '${res.status}' must be in STATUS_FACETS`);
+  }
+});
+
+test("a failed execution never shows executed and a reviewer denial never says policy (#206)", () => {
+  // 1. Action allowed by policy, but execution failed
+  const events = [
+    transformApiEvent({
+      id: "ev-allow-1",
+      sequence: 1,
+      action_request_id: "act-fail-test",
+      event_type: "POLICY_ALLOWED",
+      details: { operation: "read_text", resource: "invoices/approved/nope.txt" },
+    }),
+    transformApiEvent({
+      id: "ev-exec-fail-1",
+      sequence: 2,
+      action_request_id: "act-fail-test",
+      event_type: "EXECUTION_FAILED",
+      details: {
+        operation: "read_text",
+        resource: "invoices/approved/nope.txt",
+        result: { exit_code: 1, stderr: "No such file" },
+      },
+    }),
+  ];
+
+  reconcileRunActionStates(events);
+
+  for (const ev of events) {
+    assert.notEqual(ev.status, "executed", "failed action event must never show executed");
+    assert.equal(ev.executionStatus, "FAILED", "execution status must be FAILED");
+    assert.match(ev.execution, /failed/, "execution label must describe failure");
+  }
+  assert.equal(events[0].status, "allowed", "policy allowed event status remains allowed");
+  assert.equal(events[1].status, "failed", "execution failed event status is failed");
+
+  // 2. Reviewer denial never mentions policy in its statusLabel or description
+  const denialEv = transformApiEvent({
+    id: "ev-deny-human",
+    sequence: 3,
+    action_request_id: "act-deny-test",
+    event_type: "APPROVAL_DENIED",
+    actor: "security-reviewer",
+    details: { reason: "Suspicious target path" },
+  });
+  assert.equal(denialEv.status, "denied");
+  assert.equal(denialEv.statusLabel, "Reviewer: denied");
+  assert.doesNotMatch(denialEv.statusLabel, /policy/i, "reviewer denial label must never say policy");
+  assert.doesNotMatch(denialEv.statusDescription, /policy/i, "reviewer denial description must never say policy");
+});
+
+test("after approve/deny/expire every row for that action shows the final resolution (#206)", () => {
+  // Scenario A: Held -> Approved
+  const approvedActionEvents = [
+    transformApiEvent({
+      id: "ev-a1",
+      sequence: 1,
+      action_request_id: "act-appr",
+      event_type: "ACTION_REQUESTED",
+      details: { operation: "write_text", resource: "out.txt" },
+    }),
+    transformApiEvent({
+      id: "ev-a2",
+      sequence: 2,
+      action_request_id: "act-appr",
+      event_type: "POLICY_HELD",
+      details: { reason_code: "APPROVAL_REQUIRED" },
+    }),
+    transformApiEvent({
+      id: "ev-a3",
+      sequence: 3,
+      action_request_id: "act-appr",
+      event_type: "APPROVAL_GRANTED",
+      actor: "lead-reviewer",
+      details: { reason: "Approved for release" },
+    }),
+  ];
+  reconcileRunActionStates(approvedActionEvents);
+  assert.equal(approvedActionEvents[1].status, "approved");
+  assert.equal(approvedActionEvents[1].statusLabel, "Reviewer: approved");
+  assert.equal(approvedActionEvents[1].approvalStatus, "Approved");
+  assert.equal(approvedActionEvents[1].resolvedBy, "lead-reviewer");
+
+  // Scenario B: Held -> Denied
+  const deniedActionEvents = [
+    transformApiEvent({
+      id: "ev-b1",
+      sequence: 1,
+      action_request_id: "act-denied",
+      event_type: "POLICY_HELD",
+      details: { reason_code: "APPROVAL_REQUIRED" },
+    }),
+    transformApiEvent({
+      id: "ev-b2",
+      sequence: 2,
+      action_request_id: "act-denied",
+      event_type: "APPROVAL_DENIED",
+      actor: "lead-reviewer",
+      details: { reason: "Out of scope" },
+    }),
+  ];
+  reconcileRunActionStates(deniedActionEvents);
+  assert.equal(deniedActionEvents[0].status, "denied");
+  assert.equal(deniedActionEvents[0].statusLabel, "Reviewer: denied");
+  assert.equal(deniedActionEvents[0].approvalStatus, "Denied");
+  assert.doesNotMatch(deniedActionEvents[0].statusLabel, /policy/i);
+
+  // Scenario C: Held -> Expired
+  const expiredActionEvents = [
+    transformApiEvent({
+      id: "ev-c1",
+      sequence: 1,
+      action_request_id: "act-exp",
+      event_type: "POLICY_HELD",
+      details: { reason_code: "APPROVAL_REQUIRED" },
+    }),
+    transformApiEvent({
+      id: "ev-c2",
+      sequence: 2,
+      action_request_id: "act-exp",
+      event_type: "APPROVAL_EXPIRED",
+      details: { reason: "TTL exceeded" },
+    }),
+  ];
+  reconcileRunActionStates(expiredActionEvents);
+  assert.equal(expiredActionEvents[0].status, "failed");
+  assert.equal(expiredActionEvents[0].statusLabel, "Reviewer: expired");
+  assert.equal(expiredActionEvents[0].approvalStatus, "Expired");
+});
+
+test("each of the seven states renders a distinct label and glyph (#206)", () => {
+  assert.equal(STATUS_FACETS.length, 7);
+  const glyphs = new Set();
+  for (const st of STATUS_FACETS) {
+    const glyph = getStatusGlyph(st);
+    assert.ok(glyph, `glyph for ${st} must be non-empty`);
+    assert.ok(!glyphs.has(glyph), `glyph '${glyph}' for ${st} must be unique`);
+    glyphs.add(glyph);
+  }
 });
