@@ -15,7 +15,7 @@ DB_PATH = Path(os.environ.get("SCOPEWATCH_DB_PATH", str(DEFAULT_DATA_DIR / "scop
 WORKSPACE_ROOT = Path(os.environ.get("SCOPEWATCH_WORKSPACE_ROOT", str(DEFAULT_WORKSPACE_DIR)))
 DEMO_REVIEWER_ID = "demo-reviewer (synthetic)"
 DEFAULT_EXPIRY_SECONDS = int(os.environ.get("SCOPEWATCH_APPROVAL_TTL", "300"))
-MAX_READ_BYTES = 256 * 1024  # 256 KiB
+MAX_READ_BYTES = 64 * 1024  # 64 KiB
 MAX_WRITE_BYTES = 64 * 1024  # 64 KiB
 
 # --- Gateway-native demo guards (issues #76 / #77) ---------------------------

@@ -423,6 +423,14 @@ class AgentLoop:
                             if receipt and receipt.sanitized_result is not None
                             else {"status": "EXECUTED"}
                         )
+                        # Issue #197: reads that are truncated without content are refused with an explicit error
+                        if isinstance(result_data, dict) and result_data.get("operation") == "read_text":
+                            if result_data.get("truncated") and "content" not in result_data:
+                                result_data = {
+                                    "status": "FAILED",
+                                    "error": f"File read was truncated ({result_data.get('byte_count', 0)} bytes). Reads above the bound are refused.",
+                                    "error_code": "OVERSIZED_FILE",
+                                }
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call_id,

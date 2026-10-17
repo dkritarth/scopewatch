@@ -35,9 +35,24 @@ services:
       - path: .env
         required: false
     environment:
-      # Pinned on purpose: no socket is mounted, so the docker executor
-      # backend could not reach a daemon anyway; fail-closed stays local.
-      SCOPEWATCH_EXECUTOR: local
+      # NOT pinned any more (issue #202): it used to be the literal `local`,
+      # which `environment:` applies over `env_file:`, so setting
+      # SCOPEWATCH_EXECUTOR=remote in the VM .env did nothing and the sidecar
+      # fragment was dead configuration. It is now an operator choice with the
+      # same default: `local` (no Docker socket anywhere, execution in-process
+      # in the gateway), overridable to `docker` or `remote`.
+      #
+      # `remote` requires the executor-runner fragment
+      # (deploy/executor-runner/compose.executor-runner.yaml) merged into this
+      # project: the runner alone mounts the Docker socket, and the gateway
+      # reaches it at EXECUTOR_RUNNER_URL on the runner-only network below.
+      # Merging that fragment does NOT cut the gateway's model-provider egress:
+      # the runner gets its own `internal: true` network, and `internal` stays
+      # routable (see the note under `networks:`).
+      SCOPEWATCH_EXECUTOR: ${SCOPEWATCH_EXECUTOR:-local}
+      # Only used by SCOPEWATCH_EXECUTOR=remote; resolved on the internal
+      # runner network, never published to the host.
+      EXECUTOR_RUNNER_URL: ${EXECUTOR_RUNNER_URL:-http://executor-runner:8091}
       # Scripted seed at first start makes no model calls (see
       # deploy/docker-entrypoint.sh). Live agent/auditor profiles are
       # selected here and need their keys in the VM env file.
@@ -84,6 +99,12 @@ services:
       - scopewatch-run-workspaces:/runs
     networks:
       - internal
+      # Runner-only network (issue #202). The executor-runner sidecar attaches
+      # here too, and the fragment marks the network `internal: true` (no
+      # egress) — which it could not do to `internal`, because the gateway
+      # needs that one routable for provider calls. Declared in the base file
+      # so this service stays valid with or without the fragment merged.
+      - executor-runner
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -204,6 +225,18 @@ networks:
     # (Nebius/OpenRouter) for live agent/auditor calls. Inbound reachability
     # is still least-privilege: only caddy publishes host ports, and the
     # gateway accepts traffic only from the gate (same internal network).
+    #
+    # The executor-runner fragment used to redeclare THIS network with
+    # `internal: true`, which silently removed the gateway's egress and made
+    # every live audit fail closed to HOLD (issue #202). The runner now has
+    # its own egress-less network below, and this one is left alone.
+  # Runner-only: the gateway and the executor-runner sidecar, nothing else.
+  # The merged fragment marks it `internal: true`, so the socket-holding
+  # container has no route out; the gateway keeps `internal` for egress.
+  # Not attached to caddy or the gate. The name is derived from the project
+  # rather than pinned, so a second project (see RUNBOOK's throwaway
+  # budget-check stack) cannot collide with the live one.
+  executor-runner: {}
 
 volumes:
   scopewatch-data:

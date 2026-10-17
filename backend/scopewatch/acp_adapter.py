@@ -50,8 +50,9 @@ GATEWAY_TOOL = "workspace"
 # Bounds on executor-supplied data relayed back to the agent (#154, #169).
 # The adapter is the boundary that decides what reaches the agent, so the
 # bounds live here rather than depending on whichever executor happened to
-# cap its own output (docker_job clips streams at 64 KiB, reads expose a
-# 500-char preview, executor_remote relays runner results verbatim).
+# cap its own output (docker_job clips streams at 64 KiB, reads return full
+# content up to MAX_READ_BYTES since #197, executor_remote relays runner
+# results verbatim).
 #
 # This is a documented per-field set rather than one shared number, because
 # the three kinds of data fail differently:
@@ -70,10 +71,10 @@ GATEWAY_TOOL = "workspace"
 # The stream bound (2000) is reused unchanged from #154 so a command result
 # is relayed identically whether it succeeded or failed; the error-detail
 # bound (500) is the same value #123 already applied, now named. The file
-# bound (64 KiB) mirrors the docker runner's own per-stream cap, so no
-# executor in this repository trips it today, and it sits below the
-# gateway's MAX_READ_BYTES (256 KiB) so the adapter refuses before the
-# gateway would.
+# bound (64 Ki characters) matches the gateway's MAX_READ_BYTES (64 KiB
+# since #197). A file within the byte bound decodes to at most that many
+# characters, so a local or docker read the gateway allows is never refused
+# here; the check still guards runner results relayed verbatim.
 MAX_RELAYED_STREAM_CHARS = 2000
 MAX_RELAYED_ERROR_CHARS = 500
 MAX_RELAYED_FILE_CHARS = 64 * 1024
@@ -376,10 +377,11 @@ class AcpClientAdapter:
         )
         receipt = action_resp.get("execution_receipt") or {}
         sanitized = receipt.get("sanitized_result") or {}
-        # #169: content is relayed whole or refused, never clipped. No
-        # executor in this repository returns "content" today (reads expose
-        # a preview), but executor_remote passes runner results through
-        # verbatim, so the adapter cannot assume the key stays small.
+        # #169: content is relayed whole or refused, never clipped. Local
+        # and docker reads return "content" bounded by MAX_READ_BYTES (#197);
+        # the "preview" fallback covers an older runner, and executor_remote
+        # passes runner results through verbatim, so the adapter cannot
+        # assume the key stays small.
         content = sanitized.get("content")
         if content is None:
             content = sanitized.get("preview")

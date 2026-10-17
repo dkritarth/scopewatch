@@ -12,6 +12,7 @@ WORKDIR /app
 COPY backend/scopewatch/__init__.py /app/scopewatch/__init__.py
 COPY backend/scopewatch/docker_job.py /app/scopewatch/docker_job.py
 COPY backend/scopewatch/dispatch_gate.py /app/scopewatch/dispatch_gate.py
+COPY backend/scopewatch/scope_paths.py /app/scopewatch/scope_paths.py
 COPY deploy/executor-runner/runner.py /app/runner.py
 
 # The runner needs the Docker CLI to talk to the mounted socket (or a
@@ -28,13 +29,15 @@ RUN apt-get update \
 RUN python3 -c "import sys; sys.path.insert(0, '/app'); \
     from scopewatch.docker_job import helper_code, build_docker_command; \
     from scopewatch.dispatch_gate import authorize_dispatch; \
+    from scopewatch.scope_paths import scoped_path_denial; \
     assert 'import json, os, subprocess, sys' in helper_code(); \
-    assert authorize_dispatch(None, None).code == 'NO_DECISION'"
+    assert authorize_dispatch(None, None).code == 'NO_DECISION'; \
+    assert scoped_path_denial((\,), (\,), [\], [])[0] == 'PATH_NOT_ALLOWED'"
 
 # Byte-compile ahead of time so a syntax error in a shared module fails the
 # build rather than the first dispatch.
 RUN python3 -m compileall -q /app/runner.py /app/scopewatch/docker_job.py \
-    /app/scopewatch/dispatch_gate.py
+    /app/scopewatch/dispatch_gate.py /app/scopewatch/scope_paths.py
 
 # /runs is where the gateway materialises per-run workspaces (#117). The
 # compose fragment mounts the gateway's own `scopewatch-run-workspaces` volume
