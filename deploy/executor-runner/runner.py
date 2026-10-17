@@ -110,7 +110,9 @@ from scopewatch.docker_job import (  # noqa: E402
     best_effort_remove,
     build_docker_command,
     clamp_run_command_timeout,
+    StagingScopeError,
     make_world_accessible,
+    normalize_blocked_paths,
     prepare_docker_job,
     replace_link,
     stage_workspace_copy,
@@ -362,6 +364,105 @@ class RunnerConfig:
 TOKEN_STORE = DispatchTokenStore()
 
 
+def _dispatch_blocked_paths(body: dict[str, Any]) -> tuple[list[str], Optional[str]]:
+    """Return ``(blocked_paths, error)`` from the signed dispatch (issue #183).
+
+    ``task_scope`` is optional: a dispatch without it stages the whole run
+    workspace, as before. When present it must be a mapping whose
+    ``blocked_paths`` (if any) is a list of strings; anything else is an error
+    so a malformed scope cannot silently exclude nothing.
+    """
+    scope = body.get("task_scope")
+    if scope is None:
+        return [], None
+    if not isinstance(scope, dict):
+        return [], "malformed task_scope"
+    raw = scope.get("blocked_paths")
+    if raw is None:
+        return [], None
+    if not isinstance(raw, list):
+        return [], "malformed task_scope.blocked_paths"
+    try:
+        normalize_blocked_paths(raw)
+    except StagingScopeError:
+        return [], "malformed task_scope.blocked_paths"
+    return list(raw), None
+
+
+def _task_scope_shape_error(scope: object) -> Optional[str]:
+    """Static error when the signed ``task_scope`` is not the gateway's shape.
+
+    Checked before the digest is recomputed, so a malformed scope is a 400
+    rather than a crash in ``canonical_action_digest``. ``None`` (no scope)
+    is allowed and keeps the pre-#184 behaviour.
+    """
+    if scope is None:
+        return None
+    if not isinstance(scope, dict):
+        return "malformed task_scope"
+    for key in ("allowed_paths", "blocked_paths"):
+        value = scope.get(key)
+        if value is not None and (
+            not isinstance(value, list) or not all(isinstance(v, str) for v in value)
+        ):
+            return f"malformed task_scope.{key}"
+    commands = scope.get("allowed_commands")
+    if commands is not None and (
+        not isinstance(commands, list)
+        or not all(
+            isinstance(cmd, list) and all(isinstance(part, str) for part in cmd)
+            for cmd in commands
+        )
+    ):
+        return "malformed task_scope.allowed_commands"
+    return None
+
+
+def _argv_scope_denial(
+    argv: list[str], root: Path, task_scope: dict[str, Any]
+) -> Optional[str]:
+    """Return a static refusal when argv leaves the signed scope under ``root``.
+
+    Run against the live run workspace before staging and against the staged
+    copy after it. The allowlisted prefix (e.g. an absolute interpreter path)
+    is a command, not a workspace path; every later argument (and the value
+    of ``--flag=value``) must be relative, resolve inside ``root``, and avoid
+    every blocked prefix, mirroring the gateway's
+    ``revalidate_run_command_in_workspace``. Escapes fail closed.
+    """
+    blocked = task_scope.get("blocked_paths") or []
+    prefix_len = max(
+        (
+            len(cmd)
+            for cmd in task_scope.get("allowed_commands") or []
+            if argv[: len(cmd)] == cmd
+        ),
+        default=0,
+    )
+    try:
+        resolved_root = root.resolve()
+    except (OSError, RuntimeError):
+        return "workspace could not be resolved"
+    for index, item in enumerate(argv):
+        is_path_argument = index >= prefix_len
+        candidates = [item]
+        if "=" in item:
+            candidates.append(item.split("=", 1)[1])
+        for candidate in candidates:
+            if is_path_argument and candidate.startswith(("/", "\\")):
+                return "command argument uses an absolute path"
+            try:
+                canonical = (root / candidate).resolve().relative_to(resolved_root).parts
+            except (ValueError, OSError, RuntimeError):
+                if is_path_argument:
+                    return "command argument escapes the workspace boundary"
+                continue
+            for prefix in blocked:
+                if segments_within(canonical, prefix):
+                    return f"command argument resolves into blocked path '{prefix}'"
+    return None
+
+
 def handle_execute(
     body: dict[str, Any],
     config: RunnerConfig,
@@ -407,6 +508,9 @@ def handle_execute(
         return 409, {"error": "dispatch token already used"}
     if outcome == "invalid":
         return 400, {"error": "malformed dispatch"}
+    scope_shape_error = _task_scope_shape_error(body.get("task_scope"))
+    if scope_shape_error is not None:
+        return 400, {"error": scope_shape_error}
     expected_digest = canonical_action_digest(
         action, decision, body.get("run_workspace") or "", body.get("task_scope")
     )
@@ -503,11 +607,30 @@ def handle_execute(
         arguments = {"argv": argv, "timeout_s": timeout}
         run_timeout_s = timeout
 
+    # Issue #183: the signed dispatch's task_scope.blocked_paths stay out of
+    # the staged copy and out of copy-back. The scope is covered by the
+    # dispatch HMAC. A dispatch without one stages as before; a malformed one
+    # is refused before anything is staged.
+    blocked_paths, scope_error = _dispatch_blocked_paths(body)
+    if scope_error is not None:
+        return 400, {"error": scope_error}
+
+    # Revalidate argv against the run's own workspace BEFORE staging (#183 +
+    # #184), as the gateway Docker backend does: staging now drops a link
+    # whose target is blocked, so after staging the argument has simply
+    # vanished and only this pass still sees (and refuses) it.
+    if operation == "run_command" and isinstance(task_scope, dict):
+        argv_error = _argv_scope_denial(list(arguments["argv"]), workspace, task_scope)
+        if argv_error is not None:
+            return 403, {"error": argv_error}
+
     staging_root: Optional[Path] = None
     container_name = f"scopewatch-runner-{uuid.uuid4().hex[:12]}"
     try:
         try:
-            staging_root, workspace_copy = stage_workspace_copy(workspace)
+            staging_root, workspace_copy = stage_workspace_copy(
+                workspace, blocked_paths
+            )
         except OSError:
             return 500, {"error": "workspace staging failed"}
 
@@ -533,43 +656,11 @@ def handle_execute(
                 return 403, {"error": "symlink target requires task scope evidence"}
 
             if operation == "run_command":
-                staged_argv = list(arguments.get("argv", []))
-                # The allowlisted prefix (e.g. an absolute interpreter path)
-                # is not a workspace path; everything after it is, exactly as
-                # the gateway's revalidate_run_command_in_workspace treats it.
-                prefix_len = max(
-                    (
-                        len(cmd)
-                        for cmd in task_scope.get("allowed_commands") or []
-                        if staged_argv[: len(cmd)] == cmd
-                    ),
-                    default=0,
+                argv_error = _argv_scope_denial(
+                    list(arguments.get("argv", [])), workspace_copy, task_scope
                 )
-                try:
-                    copy_root = workspace_copy.resolve()
-                except (OSError, RuntimeError):
-                    return 500, {"error": "workspace staging failed"}
-                for index, item in enumerate(staged_argv):
-                    candidates = [item]
-                    if "=" in item:
-                        candidates.append(item.split("=", 1)[1])
-                    for candidate in candidates:
-                        is_path_argument = index >= prefix_len
-                        if is_path_argument and candidate.startswith(("/", "\\")):
-                            return 403, {"error": "command argument uses an absolute path"}
-                        try:
-                            cand_resolved = (workspace_copy / candidate).resolve()
-                            cand_canonical = cand_resolved.relative_to(copy_root).parts
-                        except (ValueError, OSError, RuntimeError):
-                            # A relative argument that resolves outside the
-                            # staged copy is a symlink escape: fail closed, as
-                            # the gateway does (RULE_RUN_COMMAND_SYMLINK_ESCAPE).
-                            if is_path_argument:
-                                return 403, {"error": "command argument escapes the workspace boundary"}
-                            continue
-                        for b in blocked:
-                            if segments_within(cand_canonical, b):
-                                return 403, {"error": f"command argument resolves into blocked path '{b}'"}
+                if argv_error is not None:
+                    return 403, {"error": argv_error}
         # Same job builder as the gateway (issue #106): the JSON the container
         # parses and the argv it receives cannot disagree, and the host wait is
         # derived from the same timeout the container gets.
@@ -615,9 +706,11 @@ def handle_execute(
             return 502, {"error": "Docker helper returned malformed output"}
         if status == "EXECUTED" and operation in ("write_text", "run_command"):
             try:
-                sync_copy_back(workspace_copy, workspace)
+                refused = sync_copy_back(workspace_copy, workspace, blocked_paths)
             except Exception:
                 return 200, {"status": "FAILED", "result": {"error": "Docker execution failed."}, "error_code": "EXECUTION_FAILED"}
+            if refused:
+                result = {**result, "copy_back_refused": refused}
         return 200, {"status": status, "result": result, "error_code": error_code}
     finally:
         if staging_root is not None:

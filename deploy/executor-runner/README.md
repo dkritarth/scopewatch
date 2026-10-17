@@ -79,7 +79,9 @@ Validation order (all fail closed with static messages):
    (64 KiB/stream) and per-command timeouts (1–300s, default 60s) match the
    gateway Docker backend. Copy-back after `write_text`/`run_command` is
    symlink-tolerant (issue #80: existing links are replaced, never
-   followed; only additions/overwrites propagate).
+   followed; only additions/overwrites propagate). The signed dispatch's
+   `task_scope.blocked_paths` are left out of the staged copy and refused
+   on copy-back (issue #183); a malformed `task_scope` → `400`.
 
 Steps 1–7 are this module's own. Step 8's container construction is shared
 with the gateway (below).
