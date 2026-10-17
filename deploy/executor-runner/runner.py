@@ -533,19 +533,43 @@ def handle_execute(
                 return 403, {"error": "symlink target requires task scope evidence"}
 
             if operation == "run_command":
-                for item in arguments.get("argv", []):
+                staged_argv = list(arguments.get("argv", []))
+                # The allowlisted prefix (e.g. an absolute interpreter path)
+                # is not a workspace path; everything after it is, exactly as
+                # the gateway's revalidate_run_command_in_workspace treats it.
+                prefix_len = max(
+                    (
+                        len(cmd)
+                        for cmd in task_scope.get("allowed_commands") or []
+                        if staged_argv[: len(cmd)] == cmd
+                    ),
+                    default=0,
+                )
+                try:
+                    copy_root = workspace_copy.resolve()
+                except (OSError, RuntimeError):
+                    return 500, {"error": "workspace staging failed"}
+                for index, item in enumerate(staged_argv):
                     candidates = [item]
                     if "=" in item:
                         candidates.append(item.split("=", 1)[1])
                     for candidate in candidates:
+                        is_path_argument = index >= prefix_len
+                        if is_path_argument and candidate.startswith(("/", "\\")):
+                            return 403, {"error": "command argument uses an absolute path"}
                         try:
                             cand_resolved = (workspace_copy / candidate).resolve()
-                            cand_canonical = cand_resolved.relative_to(workspace_copy.resolve()).parts
-                            for b in blocked:
-                                if segments_within(cand_canonical, b):
-                                    return 403, {"error": f"command argument resolves into blocked path '{b}'"}
+                            cand_canonical = cand_resolved.relative_to(copy_root).parts
                         except (ValueError, OSError, RuntimeError):
-                            pass
+                            # A relative argument that resolves outside the
+                            # staged copy is a symlink escape: fail closed, as
+                            # the gateway does (RULE_RUN_COMMAND_SYMLINK_ESCAPE).
+                            if is_path_argument:
+                                return 403, {"error": "command argument escapes the workspace boundary"}
+                            continue
+                        for b in blocked:
+                            if segments_within(cand_canonical, b):
+                                return 403, {"error": f"command argument resolves into blocked path '{b}'"}
         # Same job builder as the gateway (issue #106): the JSON the container
         # parses and the argv it receives cannot disagree, and the host wait is
         # derived from the same timeout the container gets.

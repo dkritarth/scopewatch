@@ -683,3 +683,133 @@ def test_terminal_run_refused_on_every_gateway_backend(
             action, ws, policy_decision=decision, db_path=db_path
         )
     assert exc_remote.value.code in ("RUN_TERMINAL", "RUN_NOT_ACTIVE")
+
+
+# ---------------------------------------------------------------------------
+# Gate 6 (#184 second-pass review): the runner re-applies the signed scope to
+# run_command after staging, never reaches `docker run` on a refusal, and the
+# gateway refuses before any network call.
+# ---------------------------------------------------------------------------
+
+
+def _run_command_body(argv, scope, resource="."):
+    action = {"id": "a", "run_id": "r", "operation": "run_command", "resource": resource,
+              "arguments": {"argv": argv, "timeout_s": 5}}
+    decision = {"id": "d", "action_request_id": "a", "outcome": "ALLOW"}
+    body = {
+        "issued_at": time.time(), "dispatch_token": "tok-" + str(time.time_ns()),
+        "run_workspace": _DISPATCH_RUN_WORKSPACE, "task_scope": scope,
+        "action_digest": runner_mod.canonical_action_digest(action, decision, _DISPATCH_RUN_WORKSPACE, scope),
+        "action": action, "policy_decision": decision, "approval": None,
+    }
+    body["dispatch_signature"] = sign_dispatch_payload(body, "synthetic-independent-signing-key")
+    return body
+
+
+@pytest.fixture
+def no_docker_run(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        if cmd[:2] == ['docker', 'run']:
+            calls.append(cmd)
+        raise FileNotFoundError
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
+    return calls
+
+
+def _runner_ws_with_secret(tmp_path, monkeypatch):
+    _runner_env(monkeypatch, tmp_path)
+    ws = tmp_path / _DISPATCH_RUN_WORKSPACE
+    (ws / "secrets").mkdir()
+    (ws / "secrets" / "key.txt").write_text("classified")
+    (ws / "src").mkdir()
+    return ws
+
+
+_RUN_SCOPE_184 = {"allowed_paths": ["src"], "blocked_paths": ["secrets"], "allowed_commands": [["cat"]]}
+
+
+def test_runner_refuses_run_command_arg_symlinked_into_blocked_path(tmp_path, monkeypatch, no_docker_run):
+    ws = _runner_ws_with_secret(tmp_path, monkeypatch)
+    (ws / "src" / "link.txt").symlink_to("../secrets/key.txt")
+    status, payload = runner_mod.handle_execute(_run_command_body(["cat", "src/link.txt"], _RUN_SCOPE_184), config=runner_mod.RunnerConfig(), token_store=runner_mod.DispatchTokenStore())
+    assert status == 403, payload
+    assert no_docker_run == []
+
+
+def test_runner_refuses_run_command_arg_symlink_escaping_staged_copy(tmp_path, monkeypatch, no_docker_run):
+    ws = _runner_ws_with_secret(tmp_path, monkeypatch)
+    (ws / "src" / "link.txt").symlink_to(ws / "secrets" / "key.txt")
+    status, payload = runner_mod.handle_execute(_run_command_body(["cat", "src/link.txt"], _RUN_SCOPE_184), config=runner_mod.RunnerConfig(), token_store=runner_mod.DispatchTokenStore())
+    assert status == 403, payload
+    assert no_docker_run == []
+
+
+def test_runner_refuses_command_outside_signed_allowlist(tmp_path, monkeypatch, no_docker_run):
+    _runner_ws_with_secret(tmp_path, monkeypatch)
+    status, payload = runner_mod.handle_execute(_run_command_body(["rm", "src/x"], _RUN_SCOPE_184), config=runner_mod.RunnerConfig(), token_store=runner_mod.DispatchTokenStore())
+    assert status == 403, payload
+    assert no_docker_run == []
+
+
+def test_runner_refuses_tampered_task_scope(tmp_path, monkeypatch, no_docker_run):
+    ws = _runner_ws_with_secret(tmp_path, monkeypatch)
+    (ws / "src" / "link.txt").symlink_to("../secrets/key.txt")
+    body = _run_command_body(["cat", "src/link.txt"], _RUN_SCOPE_184)
+    body["task_scope"] = {**_RUN_SCOPE_184, "blocked_paths": []}
+    status, _ = runner_mod.handle_execute(body, config=runner_mod.RunnerConfig(), token_store=runner_mod.DispatchTokenStore())
+    assert status == 403  # signature
+    body["dispatch_signature"] = sign_dispatch_payload({k: v for k, v in body.items() if k != "dispatch_signature"}, "synthetic-independent-signing-key")
+    status, _ = runner_mod.handle_execute(body, config=runner_mod.RunnerConfig(), token_store=runner_mod.DispatchTokenStore())
+    assert status == 409  # digest still binds the original scope
+    assert no_docker_run == []
+
+
+def test_remote_gateway_never_contacts_runner_for_blocked_symlink(tmp_path, monkeypatch):
+    _remote_env(monkeypatch)
+    ws = tmp_path / "ws"
+    (ws / "secrets").mkdir(parents=True)
+    (ws / "secrets" / "key.txt").write_text("x")
+    (ws / "src").mkdir()
+    (ws / "src" / "link.txt").symlink_to("../secrets/key.txt")
+    seen = []
+
+    def handler(req):
+        seen.append(req)
+        return httpx.Response(200, json={"status": "EXECUTED", "result": {}, "error_code": None})
+
+    scope = TaskScope(task_description="p", allowed_paths=["src"], blocked_paths=["secrets"],
+                      allowed_commands=[["cat"]], allowed_operations=["run_command", "read_text"], created_at=_now())
+    for op, res, args in [("read_text", "src/link.txt", {}), ("run_command", ".", {"argv": ["cat", "src/link.txt"]})]:
+        action = _action(op, res, arguments=args)
+        receipt = RemoteExecutor(transport=httpx.MockTransport(handler)).execute(
+            action, ws, policy_decision=_decision(action.id, PolicyOutcome.ALLOW), task_scope=scope)
+        assert receipt.status == ExecutionStatus.FAILED, (op, receipt)
+    assert seen == []
+
+
+@pytest.mark.parametrize(
+    ("argv", "allowed_commands"),
+    [
+        (["cat", "src/plain.txt"], [["cat"]]),
+        # An absolute allowlisted prefix is a command, not a workspace path.
+        (["/usr/bin/cat", "src/plain.txt"], [["/usr/bin/cat"]]),
+    ],
+)
+def test_runner_in_scope_run_command_still_reaches_docker(
+    tmp_path, monkeypatch, no_docker_run, argv, allowed_commands
+):
+    """Positive control: the refusals above are not vacuous."""
+    ws = _runner_ws_with_secret(tmp_path, monkeypatch)
+    (ws / "src" / "plain.txt").write_text("ok")
+    scope = {**_RUN_SCOPE_184, "allowed_commands": allowed_commands}
+    status, payload = runner_mod.handle_execute(
+        _run_command_body(argv, scope),
+        config=runner_mod.RunnerConfig(),
+        token_store=runner_mod.DispatchTokenStore(),
+    )
+    # The fake Docker CLI raises FileNotFoundError, which the runner maps to 502.
+    assert status == 502, payload
+    assert len(no_docker_run) == 1
