@@ -20,7 +20,10 @@ internet --443/80--> caddy (automatic TLS, Caddyfile)
                         |  concurrent-run cap, per-run turn cap, daily budget
                         v  (compose `internal` network, no published ports)
                     gateway :8000 (FastAPI + static reviewer dashboard)
-                        |  SCOPEWATCH_EXECUTOR=local (no Docker socket anywhere)
+                        |  SCOPEWATCH_EXECUTOR=local by default (no Docker
+                        |  socket anywhere); `remote` selects the
+                        |  executor-runner sidecar on its own egress-less
+                        |  `executor-runner` network
                         v
               volumes: scopewatch-data (/data/sqlite),
                        scopewatch-workspace (the pristine scenario fixture),
@@ -250,9 +253,14 @@ The sidecar deliberately does **not** mount `scopewatch-workspace`. It holds the
 Docker socket and runs as root; giving it write access to the pristine fixture
 buys nothing and reopens what the per-run copies exist to prevent.
 
-Note that `deploy/compose.yaml` still pins `SCOPEWATCH_EXECUTOR=local`, so the
-sidecar is not part of the demo stack today (section 6). The contract above
-matters for the day that fragment is merged.
+`SCOPEWATCH_EXECUTOR` is an operator choice, defaulted to `local` in
+`deploy/compose.yaml` and overridable in the deploy `.env`. Selecting `remote`
+means merging the sidecar fragment (`deploy/executor-runner/README.md`), which
+puts the runner on its own `internal: true` `executor-runner` network that the
+gateway also joins — that network is why the gateway keeps its provider egress
+(issue #202). With `local` (the shipped default) the sidecar is not part of the
+demo stack today (section 6); the contract above matters for the day the
+fragment is merged.
 
 `backend/tests/test_run_workspaces_deployment.py` asserts this layout from the
 compose files and exercises it against a simulated read-only container root. It
@@ -391,7 +399,7 @@ mounting the Docker socket into anything the agent can reach.
 
 Decision for this stack:
 
-- **Pin `SCOPEWATCH_EXECUTOR=local` and mount no socket anywhere.**
+- **Default to `SCOPEWATCH_EXECUTOR=local` and mount no socket anywhere.**
   `deploy/compose.yaml`, both Dockerfiles, and the Caddyfile contain zero
   host daemon-control-socket mounts. This runbook spells that filename as
   `docker[.]sock` rather than embedding the literal token (verify:
@@ -402,15 +410,18 @@ Decision for this stack:
   unprivileged gateway container, confined to the synthetic `/workspace`
   volume with workspace-containment checks in code, under `read_only: true`,
   `cap_drop: ALL`, `no-new-privileges`, a 256-process limit, and 1 GB RAM.
+  `remote` is selectable from the deploy `.env` (it is no longer pinned in
+  `environment:`, which used to override the env file), but only with the
+  sidecar fragment merged in — see below.
 - **Why not mount the socket into the gateway?** The socket is root on the
   host; anything the agent's HTTP traffic can reach (the gateway) must never
   hold it — a policy or approval bug would become a host takeover.
 - **Path to full container isolation:** a dedicated `executor-runner`
-  sidecar that ALONE holds the socket (or a rootless daemon) on the internal
-  network, with the gateway calling it only with policy-approved digests.
-  That needs a gateway-side remote-executor hook, which is a filed follow-up
-  (see below) owned by the executor thread — it is deliberately NOT
-  half-built here.
+  sidecar that ALONE holds the socket (or a rootless daemon) on its own
+  egress-less `executor-runner` network, with the gateway calling it only
+  with policy-approved digests. The fragment exists
+  (`deploy/executor-runner/compose.executor-runner.yaml`);
+  the demo stack ships without it, so the shipped deployment stays on `local`.
 
 Residual risks you accept by running this demo:
 
