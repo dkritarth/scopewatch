@@ -63,12 +63,13 @@ from scopewatch.executor_docker import (
     extract_run_command_argv,
 )
 from scopewatch.dispatch_gate import authorize_dispatch
-from scopewatch.models import ExecutionStatus
+from scopewatch.models import ExecutionStatus, PolicyOutcome
 from scopewatch.schemas import (
     ActionRequest,
     ApprovalRequest,
     ExecutionReceipt,
     PolicyDecision,
+    TaskScope,
 )
 
 EXECUTOR_NAME = "remote-executor"
@@ -86,11 +87,30 @@ DISPATCH_TOKEN_TTL_S = 60
 REMOTE_TIMEOUT_S = 90.0
 
 
+def _dispatch_scope(task_scope: Optional[TaskScope]) -> dict[str, Any]:
+    """Return the signed scope summary the runner re-applies (issue #184).
+
+    Exactly three keys, always present, always the same shape: the gateway and
+    the runner both put this mapping inside the action digest, so the two sides
+    must build byte-identical JSON. Keys the runner does not use (allowed
+    operations, approval-gated commands) are deliberately absent rather than
+    forwarded and ignored.
+    """
+    if task_scope is None:
+        return {"allowed_paths": [], "blocked_paths": [], "allowed_commands": []}
+    return {
+        "allowed_paths": list(task_scope.allowed_paths),
+        "blocked_paths": list(task_scope.blocked_paths),
+        "allowed_commands": [list(prefix) for prefix in task_scope.allowed_commands],
+    }
+
+
 def compute_action_digest(
     action: ActionRequest,
     policy_decision: PolicyDecision,
     arguments: Optional[dict[str, Any]] = None,
     run_workspace: Optional[str] = None,
+    task_scope: Optional[TaskScope] = None,
 ) -> str:
     """Bind one dispatch to one approved action (hex SHA-256).
 
@@ -108,6 +128,10 @@ def compute_action_digest(
     identity, not just one run id, so a token minted against one run's
     workspace cannot be replayed against another run's directory on the
     shared runner volume.
+
+    ``task_scope`` (issue #184) binds the dispatch to the scope the run
+    declared, so a bearer-token holder cannot swap the scope the runner
+    re-applies against the staged copy: changing it changes the digest.
     """
     canonical = {
         "action_id": action.id,
@@ -118,6 +142,7 @@ def compute_action_digest(
         "policy_decision_id": policy_decision.id,
         "policy_outcome": policy_decision.outcome.value,
         "run_workspace": run_workspace or "",
+        "task_scope": _dispatch_scope(task_scope),
     }
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -159,6 +184,7 @@ def prepare_dispatch(
     dispatch_token: Optional[str] = None,
     approval_request: Optional[ApprovalRequest] = None,
     run_workspace: Optional[str] = None,
+    task_scope: Optional[TaskScope] = None,
 ) -> tuple[dict[str, Any], str]:
     """Build the runner request body and the digest that describes it.
 
@@ -168,6 +194,10 @@ def prepare_dispatch(
     the other. That mistake previously made every remote ``run_command``
     fail with HTTP 409, because the gateway hashed the original arguments
     and sent the normalized ones.
+
+    ``task_scope`` (issue #184) is carried inside the signed payload and
+    covered by the digest, so the runner re-applies exactly the scope this
+    gateway evaluated against — not one a bearer-token holder substituted.
     """
     action_arguments = _normalize_dispatch_arguments(action)
     payload: dict[str, Any] = {
@@ -179,6 +209,8 @@ def prepare_dispatch(
         # Issue #117: the runner resolves its per-run subdirectory from this
         # key, so a dispatch cannot be pointed at another run's workspace.
         "run_workspace": run_workspace,
+        # Issue #184: the scope the runner re-applies against its staged copy.
+        "task_scope": _dispatch_scope(task_scope),
         "action": {
             "id": action.id,
             "run_id": action.run_id,
@@ -204,7 +236,7 @@ def prepare_dispatch(
         ),
     }
     digest = compute_action_digest(
-        action, policy_decision, action_arguments, run_workspace
+        action, policy_decision, action_arguments, run_workspace, task_scope
     )
     payload["action_digest"] = digest
     return payload, digest
@@ -247,6 +279,8 @@ class RemoteExecutor:
         policy_decision: Optional[PolicyDecision] = None,
         approval_request: Optional[ApprovalRequest] = None,
         run_workspace: Optional[str] = None,
+        db_path: Optional[Path | str | sqlite3.Connection] = None,
+        task_scope: Optional[TaskScope] = None,
     ) -> ExecutionReceipt:
         receipt_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc).isoformat()
@@ -293,6 +327,71 @@ class RemoteExecutor:
 
             raise ExecutionSecurityError(verdict.reason)
 
+        # Backend-specific checks (issue #184). The remote backend used to
+        # skip every one of them: the gateway signed and dispatched an action
+        # the local and Docker backends refuse. All of these run BEFORE any
+        # network call, and all of them fail closed.
+        from scopewatch.executor import (
+            ExecutionSecurityError,
+            _verify_scoped_target,
+            _verify_stored_approval_single_use,
+            _verify_stored_run_not_terminal,
+        )
+
+        # 1. Stored single-use and run lifecycle. A missing or broken store is
+        #    refused, exactly as local and Docker do.
+        if policy_decision is not None and policy_decision.outcome == PolicyOutcome.HOLD:
+            if db_path is not None:
+                _verify_stored_approval_single_use(action, approval_request, db_path)
+        elif db_path is not None:
+            _verify_stored_run_not_terminal(action, db_path)
+
+        # 2. Scoped-target revalidation on this host: the resolved target must
+        #    stay inside the workspace AND inside the task scope, so a symlink
+        #    in an allowed directory pointing at a blocked file is refused
+        #    before signing rather than executed in the sidecar.
+        try:
+            _verify_scoped_target(
+                workspace_root,
+                action.resource,
+                task_scope,
+                require_allowed=action.operation != "run_command",
+            )
+        except (ExecutionSecurityError, OSError, RuntimeError):
+            return _failed("EXECUTION_FAILED", "Resolved path violates the task scope.")
+
+        # 3. run_command revalidation (issue #68) against the run's own
+        #    workspace: argv allowlist prefix, path-bearing arguments, and the
+        #    command cwd. The runner repeats it against its staged copy, which
+        #    is where a symlink swapped after this check finally resolves.
+        if action.operation == "run_command":
+            try:
+                resolved_workspace = workspace_root.resolve()
+            except OSError:
+                return _failed("EXECUTION_FAILED", "Workspace root not found.")
+            scope_for_revalidation = task_scope
+            if scope_for_revalidation is None and db_path is not None:
+                from scopewatch.executor_docker import _load_scope_from_store
+
+                scope_for_revalidation = _load_scope_from_store(action, db_path)
+                if scope_for_revalidation is None:
+                    return _failed(
+                        "EXECUTION_FAILED",
+                        "run_command scope unavailable; failing closed.",
+                    )
+            if scope_for_revalidation is not None:
+                from scopewatch.policy import revalidate_run_command_in_workspace
+
+                denial = revalidate_run_command_in_workspace(
+                    action, scope_for_revalidation, resolved_workspace
+                )
+                if denial is not None:
+                    reason_code, _explanation, _matched_rule = denial
+                    return _failed(
+                        reason_code.value,
+                        "run_command dispatch refused: scope revalidation failed.",
+                    )
+
         if (
             not self.runner_url
             or not self._runner_token
@@ -313,7 +412,8 @@ class RemoteExecutor:
         workspace_key = run_workspace or action.run_id
 
         # Build the body and its digest together so the digest always
-        # describes the arguments the runner receives (#104).
+        # describes the arguments the runner receives (#104), and carries the
+        # scope the runner re-applies (#184).
         dispatch_token = _new_dispatch_token()
         try:
             payload, _digest = prepare_dispatch(
@@ -322,6 +422,7 @@ class RemoteExecutor:
                 dispatch_token,
                 approval_request,
                 run_workspace=workspace_key,
+                task_scope=task_scope,
             )
             payload["dispatch_signature"] = sign_dispatch_payload(payload, self._signing_key)
         except ValueError:
@@ -378,6 +479,8 @@ def execute_action_remote(
     runner_token: Optional[str] = None,
     transport: Optional[httpx.BaseTransport] = None,
     run_workspace: Optional[str] = None,
+    db_path: Optional[Path | str | sqlite3.Connection] = None,
+    task_scope: Optional[TaskScope] = None,
 ) -> ExecutionReceipt:
     """Convenience wrapper used by the gateway entry point and tests."""
     return RemoteExecutor(
@@ -390,4 +493,6 @@ def execute_action_remote(
         policy_decision=policy_decision,
         approval_request=approval_request,
         run_workspace=run_workspace,
+        db_path=db_path,
+        task_scope=task_scope,
     )

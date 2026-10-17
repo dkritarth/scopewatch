@@ -487,7 +487,10 @@ def test_docker_executor_rechecks_staged_workspace(
     decision = evaluate_policy(action, bypass_run, bypass_workspace)
     assert decision.outcome == PolicyOutcome.ALLOW
 
-    def stage_with_changed_link(root: Path) -> tuple[Path, Path]:
+    # The stager also receives the run's blocked paths (issue #183). This stub
+    # ignores them on purpose: it simulates a swap that lands in the copy
+    # anyway, so the post-staging target check is what must refuse dispatch.
+    def stage_with_changed_link(root: Path, blocked_paths=()) -> tuple[Path, Path]:
         staging = tmp_path / "stage"
         copy = staging / "workspace"
         shutil.copytree(root, copy, symlinks=True)

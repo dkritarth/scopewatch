@@ -79,7 +79,9 @@ Validation order (all fail closed with static messages):
    (64 KiB/stream) and per-command timeouts (1–300s, default 60s) match the
    gateway Docker backend. Copy-back after `write_text`/`run_command` is
    symlink-tolerant (issue #80: existing links are replaced, never
-   followed; only additions/overwrites propagate).
+   followed; only additions/overwrites propagate). The signed dispatch's
+   `task_scope.blocked_paths` are left out of the staged copy and refused
+   on copy-back (issue #183); a malformed `task_scope` → `400`.
 
 Steps 1–7 are this module's own. Step 8's container construction is shared
 with the gateway (below).
@@ -142,8 +144,8 @@ image). It is enforced in three places:
 - `scripts/check_docker_acceptance.py` asserts neither `executor_docker.py` nor
   `runner.py` re-declares the flag list.
 
-The Dockerfile therefore copies exactly four files — `scopewatch/__init__.py`,
-`scopewatch/docker_job.py`, `scopewatch/dispatch_gate.py`, and `runner.py` —
+The Dockerfile therefore copies exactly five files — `scopewatch/__init__.py`,
+`scopewatch/docker_job.py`, `scopewatch/dispatch_gate.py`, `scopewatch/scope_paths.py`, and `runner.py` —
 which is why the compose build context is the repository root rather than this
 directory. Nothing else from the gateway ships in the sidecar image.
 
