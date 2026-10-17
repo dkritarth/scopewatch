@@ -88,8 +88,10 @@ RUN_COMMAND_OUTPUT_LIMIT = 64 * 1024
 # Container output caps. These must stay equal to the gateway config values in
 # ``backend/scopewatch/config.py``; they are restated here because the runner
 # cannot import gateway config, and the cross-test pins them together.
-MAX_READ_BYTES = 256 * 1024  # 256 KiB
-MAX_WRITE_BYTES = 64 * 1024  # 64 KiB
+# Both read from environment variables (issue #195) so they can be configured
+# without changing code. Defaults match config.py.
+MAX_READ_BYTES = int(os.environ.get("SCOPEWATCH_MAX_READ_BYTES", str(256 * 1024)))  # 256 KiB
+MAX_WRITE_BYTES = int(os.environ.get("SCOPEWATCH_MAX_WRITE_BYTES", str(64 * 1024)))  # 64 KiB
 
 
 def clamp_run_command_timeout(value: Any) -> float:

@@ -15,8 +15,19 @@ DB_PATH = Path(os.environ.get("SCOPEWATCH_DB_PATH", str(DEFAULT_DATA_DIR / "scop
 WORKSPACE_ROOT = Path(os.environ.get("SCOPEWATCH_WORKSPACE_ROOT", str(DEFAULT_WORKSPACE_DIR)))
 DEMO_REVIEWER_ID = "demo-reviewer (synthetic)"
 DEFAULT_EXPIRY_SECONDS = int(os.environ.get("SCOPEWATCH_APPROVAL_TTL", "300"))
-MAX_READ_BYTES = 256 * 1024  # 256 KiB
-MAX_WRITE_BYTES = 64 * 1024  # 64 KiB
+
+# Executor size bounds (issue #195) - configurable via env vars
+MAX_READ_BYTES = int(os.environ.get("SCOPEWATCH_MAX_READ_BYTES", str(256 * 1024)))  # 256 KiB default
+MAX_WRITE_BYTES = int(os.environ.get("SCOPEWATCH_MAX_WRITE_BYTES", str(64 * 1024)))  # 64 KiB default
+
+# CORS and Security (issue #185)
+# Comma-separated list of allowed origins, e.g. "https://app.example.com,https://dashboard.example.com"
+# Defaults to "*" for backwards compatibility in demo/dev; production MUST set explicitly.
+CORS_ALLOW_ORIGINS = os.environ.get("SCOPEWATCH_CORS_ALLOW_ORIGINS", "*").split(",")
+# Whether to allow credentials (cookies, auth headers) in CORS requests
+CORS_ALLOW_CREDENTIALS = os.environ.get("SCOPEWATCH_CORS_ALLOW_CREDENTIALS", "true").lower() == "true"
+# API key for production authentication (when not in demo mode)
+API_KEY = os.environ.get("SCOPEWATCH_API_KEY", "")
 
 # --- Gateway-native demo guards (issues #76 / #77) ---------------------------
 # Demo mode engages when DEMO_TOKEN is set; see scopewatch.demo_guards for the
