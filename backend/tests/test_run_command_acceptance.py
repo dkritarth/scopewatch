@@ -255,7 +255,9 @@ def test_m2_allowed_prefix_with_extra_args(
     cmd_workspace: Path, cmd_run: Run, docker_backend: None
 ) -> None:
     decision = evaluate_policy(
-        _cmd(cmd_run, command="python -m pytest tests/ -q"), cmd_run, cmd_workspace
+        _cmd(cmd_run, command="python -m pytest tests/ test_extra.py"),
+        cmd_run,
+        cmd_workspace,
     )
     assert decision.outcome == PolicyOutcome.ALLOW
 
@@ -350,16 +352,20 @@ def test_m2_symlinked_arg_escaping_denied(
     assert decision.reason_code == ReasonCode.SYMLINK_ESCAPE
 
 
-def test_m2_plain_flags_are_not_paths(
+def test_m2_plain_flags_not_in_allowlist_denied(
     cmd_workspace: Path, cmd_run: Run, docker_backend: None
 ) -> None:
-    """Non-path arguments (dashes, single tokens) pass the path rules."""
+    """Behavioural flags carry no path signal, so the run_command flag
+    allowlist denies options that are not declared for the matched prefix
+    (``-q``/``--tb``) instead of letting them slide through the path rules;
+    non-flag tokens (paths, node ids) still pass those rules."""
     decision = evaluate_policy(
         _cmd(cmd_run, command="pytest tests/ -q --tb=short"),
         cmd_run,
         cmd_workspace,
     )
-    assert decision.outcome == PolicyOutcome.ALLOW
+    assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.COMMAND_NOT_ALLOWED
 
 
 @pytest.mark.parametrize("cwd", ["", "."])

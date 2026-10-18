@@ -80,7 +80,7 @@ def _run_command_action(action_id: str = "action-183") -> ActionRequest:
         tool="workspace",
         operation="run_command",
         resource=".",
-        arguments={"argv": ["python", "-m", "pytest", "-s"]},
+        arguments={"argv": ["python", "-m", "pytest"]},
         requested_at=_now(),
     )
 
@@ -342,7 +342,7 @@ def _fake_pytest_container(monkeypatch: pytest.MonkeyPatch, module, seen: dict) 
                 "status": "EXECUTED",
                 "result": {
                     "operation": "run_command",
-                    "argv": ["python", "-m", "pytest", "-s"],
+                    "argv": ["python", "-m", "pytest"],
                     "exit_code": 0,
                     "stdout": stdout,
                     "stderr": "",
@@ -443,7 +443,7 @@ def _runner_body(runner_mod, run_workspace: str, task_scope: object, key: str) -
         "run_id": "run-183",
         "operation": "run_command",
         "resource": ".",
-        "arguments": {"argv": ["python", "-m", "pytest", "-s"]},
+        "arguments": {"argv": ["python", "-m", "pytest"]},
     }
     decision = {"id": "d-183", "action_request_id": "action-183", "outcome": "ALLOW"}
     body = {

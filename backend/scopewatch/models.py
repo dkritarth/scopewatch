@@ -106,6 +106,30 @@ EXECUTABLE_OPERATIONS = {
 # the other declared rule-set facts.
 RUN_COMMAND_METACHARACTERS = (";", "&", "|", ">", "<", "`", "$(", "\n", "\r", "\x00")
 
+# Known-safe run_command option names, keyed by the matched allowlist
+# prefix. Any post-prefix token starting with ``-`` whose option name (the
+# token up to the first ``=``) is not listed for the matched prefix is
+# denied: options that carry no path signal (``--maxfail``, ``-x``, ``-q``,
+# ``--tb``, ``-p``, ``-k``, ``--deselect``, ...) were exactly the surface
+# V1 gap 6 left unchecked. A prefix with no entry here accepts no options
+# at all (fail closed), and every option that is allowed still has its
+# value checked by the path rules in policy.py. Declared here so the
+# fingerprint below covers it with the other rule-set facts.
+RUN_COMMAND_ALLOWED_FLAGS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    # pytest: options whose value is a path or an ini-style setting.
+    (
+        ("pytest",),
+        ("--rootdir", "--junitxml", "--confcutdir", "--basetemp", "-o"),
+    ),
+    (
+        ("python", "-m", "pytest"),
+        ("--rootdir", "--junitxml", "--confcutdir", "--basetemp", "-o"),
+    ),
+    # Bare python: interpreter options only; a bare-python scope already
+    # admits ``python -c``, so nothing is widened by listing them.
+    (("python",), ("-c", "-m")),
+)
+
 
 # ---------------------------------------------------------------------------
 # Deterministic policy identity (issue #119)
@@ -144,7 +168,7 @@ RUN_COMMAND_METACHARACTERS = (";", "&", "|", ">", "<", "`", "$(", "\n", "\r", "\
 #    reported as ``LEGACY_POLICY_VERSION_LABEL``. They are never backfilled:
 #    stamping today's revision onto a past decision would assert something
 #    untrue about when it was evaluated.
-POLICY_RULES_REVISION = "2026-10-03.1"
+POLICY_RULES_REVISION = "2026-10-17.1"
 
 #: Display label for decisions recorded before policy versions were stored.
 LEGACY_POLICY_VERSION_LABEL = "unknown (legacy)"
@@ -157,9 +181,10 @@ def policy_rules_fingerprint() -> str:
     """Return a fingerprint of the declared deterministic rule-set facts.
 
     Covers: reason codes, supported tools, supported and executable
-    operations, and the ``run_command`` shell metacharacter set. Does *not*
-    cover evaluation order or rule logic in :mod:`scopewatch.policy` and
-    :mod:`scopewatch.path_access`; bump ``POLICY_RULES_REVISION`` for those.
+    operations, the ``run_command`` shell metacharacter set, and the
+    ``run_command`` flag allowlist. Does *not* cover evaluation order or
+    rule logic in :mod:`scopewatch.policy` and :mod:`scopewatch.path_access`;
+    bump ``POLICY_RULES_REVISION`` for those.
     """
     payload = {
         "reason_codes": sorted(code.value for code in ReasonCode),
@@ -167,6 +192,10 @@ def policy_rules_fingerprint() -> str:
         "supported_operations": sorted(SUPPORTED_OPERATIONS),
         "executable_operations": sorted(EXECUTABLE_OPERATIONS),
         "run_command_metacharacters": list(RUN_COMMAND_METACHARACTERS),
+        "run_command_allowed_flags": [
+            {"prefix": list(prefix), "flags": list(flags)}
+            for prefix, flags in RUN_COMMAND_ALLOWED_FLAGS
+        ],
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:POLICY_FINGERPRINT_LENGTH]
