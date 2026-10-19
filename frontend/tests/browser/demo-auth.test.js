@@ -11,7 +11,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,30 +23,21 @@ const DEMO_TOKEN = "browser-test-demo-token-not-real";
 function createUnhealthyGatewayExecutable({ ignoreSigterm = false } = {}) {
   const repoRoot = mkdtempSync(join(tmpdir(), "scopewatch-unhealthy-gateway-"));
   const pythonBin = join(repoRoot, ".venv", "bin", "python");
-  const pidPath = join(repoRoot, "gateway.pid");
+  const readyPath = join(repoRoot, "gateway.ready");
   mkdirSync(join(repoRoot, ".venv", "bin"), { recursive: true });
   writeFileSync(
     pythonBin,
     `#!/usr/bin/env node
 const { writeFileSync } = require("node:fs");
-writeFileSync(process.env.SCOPEWATCH_TEST_GATEWAY_PID, String(process.pid));
 ${ignoreSigterm ? 'process.on("SIGTERM", () => {});' : ""}
+writeFileSync(${JSON.stringify(readyPath)}, "ready");
 setInterval(() => {}, 1_000);
 `,
     "utf-8",
   );
   chmodSync(pythonBin, 0o755);
 
-  const started = new Promise((resolve) => {
-    const watcher = watch(repoRoot, (_eventType, filename) => {
-      if (filename === "gateway.pid" && existsSync(pidPath)) {
-        watcher.close();
-        resolve();
-      }
-    });
-  });
-
-  return { repoRoot, pidPath, started };
+  return { repoRoot, readyPath };
 }
 
 function isProcessRunning(pid) {
@@ -89,7 +80,7 @@ function getFreePort() {
   });
 }
 
-async function startGateway(repoRoot, { demoMode }) {
+async function startGateway(repoRoot, { demoMode, onSpawn = () => {} }) {
   const tmpDir = mkdtempSync(join(tmpdir(), "scopewatch-demo-auth-"));
   const workspacePath = join(tmpDir, "workspace");
   mkdirSync(join(workspacePath, "invoices", "approved"), { recursive: true });
@@ -121,6 +112,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
       ...(demoMode ? { DEMO_TOKEN } : { DEMO_TOKEN: "" }),
     },
   });
+  onSpawn(proc);
 
   let healthy = false;
   const startupDeadline = Date.now() + 30_000;
@@ -147,14 +139,15 @@ test("gateway startup polling continues beyond the old eight-second attempt cap 
   const originalFetch = globalThis.fetch;
   const originalSetTimeout = globalThis.setTimeout;
   const originalDateNow = Date.now;
-  const originalPidPath = process.env.SCOPEWATCH_TEST_GATEWAY_PID;
   let now = 0;
   let attempts = 0;
   let proc;
 
-  process.env.SCOPEWATCH_TEST_GATEWAY_PID = fixture.pidPath;
   globalThis.fetch = async () => {
-    await fixture.started;
+    if (!existsSync(fixture.readyPath)) {
+      await new Promise(setImmediate);
+      return { ok: false };
+    }
     now += 200;
     attempts += 1;
     return { ok: attempts === 41 };
@@ -166,18 +159,18 @@ test("gateway startup polling continues beyond the old eight-second attempt cap 
   Date.now = () => now;
 
   try {
-    ({ proc } = await startGateway(fixture.repoRoot, { demoMode: true }));
+    await startGateway(fixture.repoRoot, {
+      demoMode: true,
+      onSpawn: (child) => {
+        proc = child;
+      },
+    });
     assert.equal(attempts, 41, "startup must not stop at the old 40-attempt cap");
   } finally {
     globalThis.fetch = originalFetch;
     globalThis.setTimeout = originalSetTimeout;
     Date.now = originalDateNow;
-    if (originalPidPath === undefined) delete process.env.SCOPEWATCH_TEST_GATEWAY_PID;
-    else process.env.SCOPEWATCH_TEST_GATEWAY_PID = originalPidPath;
-
-    const pid = Number(readFileSync(fixture.pidPath, "utf-8"));
-    if (proc) proc.kill("SIGKILL");
-    else if (isProcessRunning(pid)) process.kill(pid, "SIGKILL");
+    if (proc) await terminateProcess(proc);
   }
 });
 
@@ -186,13 +179,14 @@ test("failed gateway startup force-kills and reaps a child that ignores SIGTERM 
   const originalFetch = globalThis.fetch;
   const originalSetTimeout = globalThis.setTimeout;
   const originalDateNow = Date.now;
-  const originalPidPath = process.env.SCOPEWATCH_TEST_GATEWAY_PID;
   let now = 0;
-  let pid;
+  let proc;
 
-  process.env.SCOPEWATCH_TEST_GATEWAY_PID = fixture.pidPath;
   globalThis.fetch = async () => {
-    await fixture.started;
+    if (!existsSync(fixture.readyPath)) {
+      await new Promise(setImmediate);
+      return { ok: false };
+    }
     now += 1_000;
     throw new Error("synthetic gateway is still unavailable");
   };
@@ -204,22 +198,21 @@ test("failed gateway startup force-kills and reaps a child that ignores SIGTERM 
 
   try {
     await assert.rejects(
-      startGateway(fixture.repoRoot, { demoMode: true }),
+      startGateway(fixture.repoRoot, {
+        demoMode: true,
+        onSpawn: (child) => {
+          proc = child;
+        },
+      }),
       /gateway failed to become healthy/,
     );
-    pid = Number(readFileSync(fixture.pidPath, "utf-8"));
-    assert.equal(isProcessRunning(pid), false, "failed startup must not leave the gateway process running");
+    assert.ok(proc, "the synthetic gateway must have started");
+    assert.equal(isProcessRunning(proc.pid), false, "failed startup must not leave the gateway process running");
   } finally {
     globalThis.fetch = originalFetch;
     globalThis.setTimeout = originalSetTimeout;
     Date.now = originalDateNow;
-    if (originalPidPath === undefined) delete process.env.SCOPEWATCH_TEST_GATEWAY_PID;
-    else process.env.SCOPEWATCH_TEST_GATEWAY_PID = originalPidPath;
-
-    if (pid === undefined && existsSync(fixture.pidPath)) {
-      pid = Number(readFileSync(fixture.pidPath, "utf-8"));
-    }
-    if (pid !== undefined && isProcessRunning(pid)) process.kill(pid, "SIGKILL");
+    if (proc && isProcessRunning(proc.pid)) await terminateProcess(proc);
   }
 });
 
@@ -337,7 +330,7 @@ test("hosted demo: mutations need a reviewer token, reads never carry one", { ti
     assert.deepEqual(pageErrors, [], "no uncaught page errors");
   } finally {
     if (browser) await browser.close();
-    proc.kill("SIGTERM");
+    await terminateProcess(proc);
   }
 });
 
@@ -389,6 +382,6 @@ test("a gateway without demo mode never asks for a token (#115)", { timeout: 600
     assert.equal(await page.locator("#reviewer-access-panel").isVisible(), false);
   } finally {
     if (browser) await browser.close();
-    proc.kill("SIGTERM");
+    await terminateProcess(proc);
   }
 });
