@@ -191,6 +191,62 @@ def test_submit_hold_and_approve_lifecycle(test_env, created_run_id: str) -> Non
     assert replay_resp.json()["error"]["code"] == "APPROVAL_ALREADY_RESOLVED"
 
 
+def test_approved_read_keeps_content_out_of_execution_event(test_env) -> None:
+    client, _ = test_env
+    run_response = client.post(
+        "/api/v1/runs",
+        json={
+            "name": "Approved Read",
+            "task_scope": {
+                "schema_version": "1",
+                "task_description": "Read an invoice after reviewer approval",
+                "allowed_paths": ["invoices/approved"],
+                "blocked_paths": ["invoices/private"],
+                "allowed_tools": ["workspace"],
+                "allowed_operations": [],
+                "allowed_network_destinations": [],
+                "requires_approval": ["read_text"],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        },
+    )
+    assert run_response.status_code == 201
+    run_id = run_response.json()["id"]
+
+    action_response = client.post(
+        f"/api/v1/runs/{run_id}/actions",
+        json={
+            "tool": "workspace",
+            "operation": "read_text",
+            "resource": "invoices/approved/vendor-a.txt",
+            "arguments": {},
+        },
+    )
+    assert action_response.status_code == 201
+    approval_id = action_response.json()["approval_request"]["id"]
+
+    approval_response = client.post(
+        f"/api/v1/approvals/{approval_id}/approve",
+        json={"resolution_reason": "Approved synthetic invoice read"},
+    )
+    assert approval_response.status_code == 200
+    approval_data = approval_response.json()
+    assert approval_data["execution_receipt"]["sanitized_result"]["content"] == "approved text"
+    execution_event = next(
+        event
+        for event in approval_data["events"]
+        if event["event_type"] == "EXECUTION_SUCCEEDED"
+    )
+    assert execution_event["details"]["result"] == {
+        "operation": "read_text",
+        "resource": "invoices/approved/vendor-a.txt",
+        "byte_count": 13,
+        "preview": "approved text",
+        "truncated": False,
+        "content_sha256": "5b45d3af2f796de0939d50e4fd38b7eb2eead1d4aef4c003ffb289b5b784441d",
+    }
+
+
 def test_submit_hold_and_deny_lifecycle(test_env, created_run_id: str) -> None:
     client, _ = test_env
     payload = {
