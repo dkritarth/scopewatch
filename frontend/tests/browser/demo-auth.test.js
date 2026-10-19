@@ -11,7 +11,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +19,44 @@ import { chromium } from "playwright";
 
 // Synthetic credential for this test process only. Never a real demo token.
 const DEMO_TOKEN = "browser-test-demo-token-not-real";
+
+function createUnhealthyGatewayExecutable() {
+  const repoRoot = mkdtempSync(join(tmpdir(), "scopewatch-unhealthy-gateway-"));
+  const pythonBin = join(repoRoot, ".venv", "bin", "python");
+  const pidPath = join(repoRoot, "gateway.pid");
+  mkdirSync(join(repoRoot, ".venv", "bin"), { recursive: true });
+  writeFileSync(
+    pythonBin,
+    `#!/usr/bin/env node
+const { writeFileSync } = require("node:fs");
+writeFileSync(process.env.SCOPEWATCH_TEST_GATEWAY_PID, String(process.pid));
+setInterval(() => {}, 1_000);
+`,
+    "utf-8",
+  );
+  chmodSync(pythonBin, 0o755);
+
+  const started = new Promise((resolve) => {
+    const watcher = watch(repoRoot, (_eventType, filename) => {
+      if (filename === "gateway.pid" && existsSync(pidPath)) {
+        watcher.close();
+        resolve();
+      }
+    });
+  });
+
+  return { repoRoot, pidPath, started };
+}
+
+function isProcessRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -79,6 +117,87 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
   assert.equal(healthy, true, "gateway failed to become healthy");
   return { port, proc };
 }
+
+test("gateway startup polling continues beyond the old eight-second attempt cap (#263)", { timeout: 5000 }, async () => {
+  const fixture = createUnhealthyGatewayExecutable();
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalDateNow = Date.now;
+  const originalPidPath = process.env.SCOPEWATCH_TEST_GATEWAY_PID;
+  let now = 0;
+  let attempts = 0;
+  let proc;
+
+  process.env.SCOPEWATCH_TEST_GATEWAY_PID = fixture.pidPath;
+  globalThis.fetch = async () => {
+    await fixture.started;
+    now += 200;
+    attempts += 1;
+    return { ok: attempts === 41 };
+  };
+  globalThis.setTimeout = (callback) => {
+    queueMicrotask(callback);
+    return 0;
+  };
+  Date.now = () => now;
+
+  try {
+    ({ proc } = await startGateway(fixture.repoRoot, { demoMode: true }));
+    assert.equal(attempts, 41, "startup must not stop at the old 40-attempt cap");
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    Date.now = originalDateNow;
+    if (originalPidPath === undefined) delete process.env.SCOPEWATCH_TEST_GATEWAY_PID;
+    else process.env.SCOPEWATCH_TEST_GATEWAY_PID = originalPidPath;
+
+    const pid = Number(readFileSync(fixture.pidPath, "utf-8"));
+    if (proc) proc.kill("SIGKILL");
+    else if (isProcessRunning(pid)) process.kill(pid, "SIGKILL");
+  }
+});
+
+test("failed gateway startup reaps its child process before rejecting (#263)", { timeout: 5000 }, async () => {
+  const fixture = createUnhealthyGatewayExecutable();
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalDateNow = Date.now;
+  const originalPidPath = process.env.SCOPEWATCH_TEST_GATEWAY_PID;
+  let now = 0;
+  let pid;
+
+  process.env.SCOPEWATCH_TEST_GATEWAY_PID = fixture.pidPath;
+  globalThis.fetch = async () => {
+    await fixture.started;
+    now += 1_000;
+    throw new Error("synthetic gateway is still unavailable");
+  };
+  globalThis.setTimeout = (callback) => {
+    queueMicrotask(callback);
+    return 0;
+  };
+  Date.now = () => now;
+
+  try {
+    await assert.rejects(
+      startGateway(fixture.repoRoot, { demoMode: true }),
+      /gateway failed to become healthy/,
+    );
+    pid = Number(readFileSync(fixture.pidPath, "utf-8"));
+    assert.equal(isProcessRunning(pid), false, "failed startup must not leave the gateway process running");
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    Date.now = originalDateNow;
+    if (originalPidPath === undefined) delete process.env.SCOPEWATCH_TEST_GATEWAY_PID;
+    else process.env.SCOPEWATCH_TEST_GATEWAY_PID = originalPidPath;
+
+    if (pid === undefined && existsSync(fixture.pidPath)) {
+      pid = Number(readFileSync(fixture.pidPath, "utf-8"));
+    }
+    if (pid !== undefined && isProcessRunning(pid)) process.kill(pid, "SIGKILL");
+  }
+});
 
 test("hosted demo: mutations need a reviewer token, reads never carry one", { timeout: 60000 }, async () => {
   const repoRoot = join(import.meta.dirname, "..", "..", "..");
