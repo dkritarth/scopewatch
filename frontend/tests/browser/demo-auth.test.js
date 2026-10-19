@@ -20,7 +20,7 @@ import { chromium } from "playwright";
 // Synthetic credential for this test process only. Never a real demo token.
 const DEMO_TOKEN = "browser-test-demo-token-not-real";
 
-function createUnhealthyGatewayExecutable() {
+function createUnhealthyGatewayExecutable({ ignoreSigterm = false } = {}) {
   const repoRoot = mkdtempSync(join(tmpdir(), "scopewatch-unhealthy-gateway-"));
   const pythonBin = join(repoRoot, ".venv", "bin", "python");
   const pidPath = join(repoRoot, "gateway.pid");
@@ -30,6 +30,7 @@ function createUnhealthyGatewayExecutable() {
     `#!/usr/bin/env node
 const { writeFileSync } = require("node:fs");
 writeFileSync(process.env.SCOPEWATCH_TEST_GATEWAY_PID, String(process.pid));
+${ignoreSigterm ? 'process.on("SIGTERM", () => {});' : ""}
 setInterval(() => {}, 1_000);
 `,
     "utf-8",
@@ -55,6 +56,26 @@ function isProcessRunning(pid) {
   } catch (error) {
     if (error.code === "ESRCH") return false;
     throw error;
+  }
+}
+
+async function terminateProcess(proc, graceMs = 2_000) {
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
+
+  const exited = new Promise((resolve) => proc.once("exit", resolve));
+  proc.kill("SIGTERM");
+
+  let graceTimer;
+  const graceExpired = new Promise((resolve) => {
+    graceTimer = setTimeout(resolve, graceMs);
+    graceTimer.unref?.();
+  });
+  await Promise.race([exited, graceExpired]);
+  clearTimeout(graceTimer);
+
+  if (proc.exitCode === null && proc.signalCode === null) {
+    proc.kill("SIGKILL");
+    await exited;
   }
 }
 
@@ -102,7 +123,8 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
   });
 
   let healthy = false;
-  for (let i = 0; i < 40; i++) {
+  const startupDeadline = Date.now() + 30_000;
+  while (Date.now() < startupDeadline) {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/api/v1/health`);
       if (res.ok) {
@@ -114,6 +136,8 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     }
     await new Promise((r) => setTimeout(r, 200));
   }
+
+  if (!healthy) await terminateProcess(proc);
   assert.equal(healthy, true, "gateway failed to become healthy");
   return { port, proc };
 }
@@ -157,8 +181,8 @@ test("gateway startup polling continues beyond the old eight-second attempt cap 
   }
 });
 
-test("failed gateway startup reaps its child process before rejecting (#263)", { timeout: 5000 }, async () => {
-  const fixture = createUnhealthyGatewayExecutable();
+test("failed gateway startup force-kills and reaps a child that ignores SIGTERM (#263)", { timeout: 5000 }, async () => {
+  const fixture = createUnhealthyGatewayExecutable({ ignoreSigterm: true });
   const originalFetch = globalThis.fetch;
   const originalSetTimeout = globalThis.setTimeout;
   const originalDateNow = Date.now;
