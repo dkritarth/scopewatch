@@ -2,6 +2,8 @@
 
 Scopewatch is a pre-execution security gateway and reviewer interface for auditing and mediating autonomous AI agent actions against declared task scopes before execution occurs.
 
+**Project website and interactive demo:** https://dkritarth.github.io/scopewatch/ (source in [`site/`](site/README.md)).
+
 It enforces a strict defense-in-depth model:
 1. **Deterministic policy first**: Evaluates path, tool, and operation allowlists before any model call or executor dispatch. Deterministic `DENY` decisions are final.
 2. **Escalate-only reasoning audit**: An independent auditor analyzes the agent's chain-of-thought trace for scope drift, prompt injection, and policy evasion. The auditor can only escalate an `ALLOW` to a `HOLD`—it can never grant access or downgrade a decision.
@@ -156,6 +158,7 @@ Live-model reachability for each of these outcomes (three live runs per scenario
 | `scripts/` | `run_demo.sh`, `validate.sh`, `seed_demo.py`; `scripts/agents/` backlog and worktree helpers |
 | `docs/` | Architecture, decision records (ADR-0001), ideas, spikes, agent playbook, and hackathon notes ([index](docs/README.md)) |
 | `poc/` | Prototypes and experiments (including CoT auditing PoC in `poc/cot-auditing/`) |
+| `site/` | Project website and interactive scenario replay, deployed to GitHub Pages |
 | `.agents/` | Agent role specs, slash commands, and shared skills |
 
 ---
