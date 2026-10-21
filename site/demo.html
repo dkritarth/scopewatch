@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scopewatch demo: step through the gateway</title>
+  <meta name="description" content="Step through six synthetic invoice scenarios and watch the Scopewatch gateway decide on each agent action: policy, reasoning audit, human approval, and execution.">
+  <meta name="theme-color" content="#07070a">
+  <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#demo">Skip to demo</a>
+
+  <header class="nav">
+    <div class="wrap">
+      <a class="brand" href="./"><img src="assets/logo.svg" alt="" width="28" height="28">Scopewatch</a>
+      <nav class="nav-links" aria-label="Primary">
+        <a class="hide-sm" href="./#how">How it works</a>
+        <a class="hide-sm" href="./#results">Results</a>
+        <a href="demo.html" aria-current="page">Demo</a>
+        <a class="btn btn-primary btn-sm" href="https://github.com/dkritarth/scopewatch">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="demo-hero">
+      <div class="wrap">
+        <span class="eyebrow"><span class="tag">Demo</span> Six scenarios, fifteen agent actions</span>
+        <h1>Watch the gateway decide.</h1>
+        <p class="lead" style="max-width:760px">Pick a scenario and press <strong>Play</strong>. Each action an agent asks for goes through policy, the reasoning auditor, human approval, and the executor in that order. When an action is held, you choose whether to approve it.</p>
+        <div class="banner" role="note">
+          <span aria-hidden="true">ⓘ</span>
+          <span><strong>Recorded, not simulated.</strong> Every decision, audit verdict, and execution receipt below was produced by the real Scopewatch gateway when it seeded these scenarios with the offline <code>mock</code> provider (<code>scripts/export_site_demo.py</code>). Your browser replays the record and never decides anything itself. Approve and Deny only show what the gateway would do next. All data is synthetic.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="wrap">
+      <div class="demo" id="demo">
+        <nav class="scenarios" id="scenario-list" aria-label="Scenarios"></nav>
+
+        <div>
+          <section class="panel" aria-labelledby="scn-title" style="padding:0">
+            <div class="panel-head">
+              <div>
+                <h2 id="scn-title">Loading scenarios…</h2>
+                <p id="scn-desc"></p>
+              </div>
+              <div class="controls">
+                <button class="btn btn-primary btn-sm" type="button" id="btn-play">▶ Play</button>
+                <button class="btn btn-ghost btn-sm" type="button" id="btn-step">Next step</button>
+                <button class="btn btn-ghost btn-sm" type="button" id="btn-reset">Reset</button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="scope" id="scn-scope"></div>
+            </div>
+          </section>
+
+          <section class="panel" aria-label="Decision pipeline for the selected action" style="padding:0">
+            <div class="track" id="track" aria-live="polite"></div>
+            <div class="review-bar" id="review-bar" role="group" aria-label="Reviewer decision" hidden></div>
+            <ol class="timeline" id="timeline" aria-label="Actions in this run"></ol>
+          </section>
+
+          <section class="panel" aria-labelledby="ev-title" style="padding:0">
+            <div class="panel-head">
+              <div>
+                <h2 id="ev-title">Evidence</h2>
+                <p>The record a reviewer sees for the selected action.</p>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="evidence" id="evidence"><p class="empty">Press Play or pick an action to see its evidence.</p></div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div>Scopewatch · Nebius × NVIDIA Global AI Hackathon 2026 · MIT licence</div>
+      <div class="links">
+        <a href="./">Home</a>
+        <a href="https://github.com/dkritarth/scopewatch">GitHub</a>
+        <a href="https://github.com/dkritarth/scopewatch/tree/main/demo/scenarios">Scenario files</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="assets/site.js"></script>
+  <script type="module" src="assets/demo.js"></script>
+</body>
+</html>
