@@ -161,10 +161,11 @@ def test_approval_is_single_use() -> None:
     chain = _chain(
         ("ACTION_REQUESTED", "a1"),
         ("POLICY_HELD", "a1"),
+        ("APPROVAL_REQUESTED", "a1"),
         ("APPROVAL_GRANTED", "a1"),
         ("APPROVAL_GRANTED", "a1"),
     )
-    _assert_violation(chain, 4)
+    _assert_violation(chain, 5)
 
 
 @pytest.mark.parametrize("closing_event", ["APPROVAL_DENIED", "APPROVAL_EXPIRED"])
@@ -195,10 +196,11 @@ def test_approval_for_one_action_does_not_authorise_another() -> None:
     chain = _chain(
         ("POLICY_HELD", "a1"),
         ("POLICY_HELD", "a2"),
+        ("APPROVAL_REQUESTED", "a1"),
         ("APPROVAL_GRANTED", "a1"),
         ("EXECUTION_STARTED", "a2"),
     )
-    _assert_violation(chain, 4)
+    _assert_violation(chain, 5)
 
 
 # ---------------------------------------------------------------------------
