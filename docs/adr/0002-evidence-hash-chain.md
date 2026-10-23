@@ -55,6 +55,11 @@ in the new module `backend/scopewatch/evidence_chain.py`:
   check. A `POLICY_DENIED` permits no execution, a `POLICY_HELD` needs a
   single `APPROVAL_GRANTED` first, each action has one decision, and each
   action executes at most once. See `docs/security/evidence-log.md`.
+  *Amended by issue #268:* event types must match the supported catalog;
+  action activity cannot follow run completion/failure, except expiry of
+  already-pending approvals. Repeated close/fail records remain valid.
+  Grants need a prior request for the same action and cannot later expire
+  or be denied. These checks require no payload or chain-format changes.
 - First failure is reported as `{ok: false, code, reason, first_bad_seq,
   head_hash, checked}`. Truncation (dropped suffix) is detected only against
   a pinned `expected_head` / `expected_length`, because a bare prefix is
