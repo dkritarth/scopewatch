@@ -42,10 +42,21 @@ from scopewatch.agent.tools import (
     get_gateway_tools,
 )
 from scopewatch.config import AGENT_WALL_CLOCK_ENV_VAR, agent_wall_clock_timeout_s
-from scopewatch.models import ApprovalStatus, PolicyOutcome, ReasoningProvenance
+from scopewatch.models import ApprovalStatus, ExecutionStatus, PolicyOutcome, ReasoningProvenance
 from scopewatch.providers.client import ChatResult, ProviderClient
 from scopewatch.providers.loader import get_agent_profile
-from scopewatch.schemas import ActionResponse, Run
+from scopewatch.schemas import ActionResponse, ExecutionReceipt, Run
+
+
+def _receipt_feedback(receipt: ExecutionReceipt) -> dict[str, Any]:
+    """Forward stored results without inventing success for a failed receipt."""
+    result = dict(receipt.sanitized_result or {})
+    if not result or receipt.status != ExecutionStatus.EXECUTED:
+        result["status"] = receipt.status.value
+    if receipt.error_code:
+        result["error_code"] = receipt.error_code
+    return result
+
 
 #: How many measured-p95 turns a wall-clock budget should be able to buy.
 #: Fewer than this and a run is very likely to be cut off mid-scenario, which
@@ -418,11 +429,9 @@ class AgentLoop:
 
                     if decision_str == PolicyOutcome.ALLOW.value:
                         receipt = action_resp.execution_receipt
-                        result_data = (
-                            receipt.sanitized_result
-                            if receipt and receipt.sanitized_result is not None
-                            else {"status": "EXECUTED"}
-                        )
+                        if receipt is None:
+                            raise RuntimeError("Allowed action returned no execution receipt.")
+                        result_data = _receipt_feedback(receipt)
                         # Issue #197: reads that are truncated without content are refused with an explicit error
                         if isinstance(result_data, dict) and result_data.get("operation") == "read_text":
                             if result_data.get("truncated") and "content" not in result_data:
@@ -459,9 +468,15 @@ class AgentLoop:
                         approval_id = approval_req.id if approval_req else None
                         poll_start = time.monotonic()
                         resolved = False
+                        execution_in_flight = False
                         tool_content = ""
 
-                        while (time.monotonic() - poll_start) < self.approval_timeout_s:
+                        # The review deadline stops applying once dispatch starts.
+                        # Execution must settle before feedback or a terminal event.
+                        while (
+                            execution_in_flight
+                            or (time.monotonic() - poll_start) < self.approval_timeout_s
+                        ):
                             if (time.monotonic() - start_time) >= self.wall_clock_timeout_s:
                                 err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s) while awaiting approval."
                                 self.dispatcher.fail_run(self.run_id, reason=err)
@@ -494,18 +509,15 @@ class AgentLoop:
                                     "APPROVED",
                                     "CONSUMED",
                                 ):
+                                    execution_in_flight = True
                                     act_data = self.dispatcher.get_action(
                                         self.run_id, action_resp.action_request.id
                                     )
                                     receipt = act_data.execution_receipt
-                                    result_data = (
-                                        receipt.sanitized_result
-                                        if receipt and receipt.sanitized_result is not None
-                                        else {"status": "EXECUTED"}
-                                    )
-                                    tool_content = json.dumps(result_data)
-                                    resolved = True
-                                    break
+                                    if receipt is not None:
+                                        tool_content = json.dumps(_receipt_feedback(receipt))
+                                        resolved = True
+                                        break
                                 elif matching.status in (ApprovalStatus.DENIED, "DENIED"):
                                     tool_content = json.dumps({
                                         "status": "DENIED",
