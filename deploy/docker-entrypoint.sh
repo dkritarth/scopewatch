@@ -8,6 +8,13 @@
 # from scratch (see RUNBOOK.md "Reset demo data").
 set -euo pipefail
 
+# Hosted images require demo mode. Compose rejects unset/empty values, but
+# a whitespace-only token would disable the native gateway guards too.
+if [[ "${DEMO_TOKEN:-}" =~ ^[[:space:]]*$ ]]; then
+  echo "[entrypoint] DEMO_TOKEN must contain non-whitespace characters." >&2
+  exit 1
+fi
+
 MARKER="/data/.seeded-scripted-v1"
 
 if [[ ! -f "${MARKER}" ]]; then

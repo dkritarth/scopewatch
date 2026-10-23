@@ -1,19 +1,8 @@
-"""Structural checks on the hosted-demo compose file and runbook (#107).
+"""Hosted-demo deployment regression checks.
 
-The bug this guards against: `deploy/RUNBOOK.md` told an operator to curl
-`http://127.0.0.1:8080/healthz` and `http://127.0.0.1:8000/api/v1/health`, but
-`deploy/compose.yaml` published neither port, so every section-3 verify command
-failed with connection-refused on a freshly provisioned VM.
-
-These tests read the YAML as text rather than importing a YAML parser: the
-locked dependency set (`backend/requirements.txt`) has no YAML library, and
-adding one for three assertions would mean regenerating `requirements.lock`
-under `--generate-hashes`. The assertions below are deliberately narrow and
-fail loudly if the file's shape changes, so a silent false pass is not possible.
-
-`docker compose config` on a real Docker CLI is the authoritative check and was
-NOT run for this change (no Docker daemon available); these tests are the
-dependency-free regression guard for the specific regression above.
+Check the public ingress, private gateway/runner networks, project isolation,
+and executable operator procedures without a Docker daemon. Compose config
+is the authoritative parser check and is run separately when available.
 """
 
 from __future__ import annotations
@@ -38,7 +27,6 @@ RUNNER_NETWORK = "executor-runner"
 # Services that are allowed to reach the host network, and the host ports each
 # is allowed to bind. Anything not listed here must publish nothing.
 EXPECTED_PUBLISHED_PORTS = {
-    "gate": ['"127.0.0.1:8080:8080"'],
     "caddy": ['"80:80"', '"443:443"', '"443:443/udp"'],
     "gateway": [],
 }
@@ -190,23 +178,12 @@ def test_only_expected_services_publish_ports() -> None:
 
 
 def test_the_gateway_stays_unpublished() -> None:
-    """The gateway must never bind a host port: the gate is its only way in."""
+    """The gateway must never bind a host port: Caddy is its only public way in."""
     assert published_by_service().get("gateway") == [], (
         "gateway must publish no host ports"
     )
     block = service_block(COMPOSE.read_text(encoding="utf-8"), "gateway")
     assert not re.search(r"^\s*network_mode:\s*host", block, re.MULTILINE)
-
-
-def test_the_gate_binds_loopback_only() -> None:
-    """`127.0.0.1:` is load-bearing: a bare `8080:8080` would expose the gate."""
-    ports = published_by_service().get("gate") or []
-    assert ports, "the gate must publish a port so the runbook can verify it"
-    for mapping in ports:
-        host_part = mapping.split(":", 1)[0].strip('"')
-        assert host_part == "127.0.0.1", (
-            f"gate mapping {mapping!r} is not loopback-bound; the public path is caddy -> gate"
-        )
 
 
 def test_every_loopback_curl_port_in_the_runbook_is_published() -> None:
@@ -227,7 +204,7 @@ def test_every_loopback_curl_port_in_the_runbook_is_published() -> None:
         for line in RUNBOOK.read_text(encoding="utf-8").splitlines()
         if "docker compose exec" not in line
     )
-    referenced = {int(p) for p in re.findall(r"http://127\.0\.0\.1:(\d+)", host_side)}
+    referenced = {int(p) for p in re.findall(r"http://(?:127\.0\.0\.1|localhost):(\d+)", host_side)}
     assert referenced, "runbook no longer curls any loopback port; update this test"
     unpublished = sorted(referenced - published)
     assert not unpublished, (
@@ -260,7 +237,6 @@ PROJECT_SCOPED_NAME = "${COMPOSE_PROJECT_NAME:-scopewatch-demo}"
 # Host port knobs a second project must be able to override, and the live
 # defaults that must stay unchanged for the shipped stack.
 PORT_OVERRIDES = {
-    "gate": ["GATE_HOST_PORT"],
     "caddy": ["HTTP_HOST_PORT", "HTTPS_HOST_PORT"],
 }
 
@@ -365,11 +341,6 @@ def test_every_host_port_is_overridable() -> None:
                 assert knob in knobs, (
                     f"{service} uses unknown port knob {knob!r}; expected one of {knobs}"
                 )
-    # The loopback binding stays loopback-bound, whatever the port.
-    gate_ports = published_ports(service_block(text, "gate"))
-    assert all(p.startswith('"127.0.0.1:') for p in gate_ports), (
-        f"the gate must stay loopback-bound: {gate_ports}"
-    )
 
 
 def _budget_check_step() -> str:
@@ -404,7 +375,7 @@ def test_the_budget_check_step_runs_isolated_and_always_cleans_up(
         "with open(os.environ['CALL_LOG'], 'a') as fh:\n"
         "    fh.write(json.dumps({'tool': 'docker', 'argv': sys.argv[1:],\n"
         "        'project': os.environ.get('COMPOSE_PROJECT_NAME'),\n"
-        "        'gate_port': os.environ.get('GATE_HOST_PORT')}) + '\\n')\n",
+        "        'http_port': os.environ.get('HTTP_HOST_PORT'), 'domain': os.environ.get('DOMAIN'), 'runs_per_day': os.environ.get('DEMO_MAX_RUNS_PER_DAY')}) + '\\n')\n",
         encoding="utf-8",
     )
     docker.chmod(0o755)
@@ -443,18 +414,20 @@ def test_the_budget_check_step_runs_isolated_and_always_cleans_up(
 
     calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     kinds = [call["tool"] for call in calls]
-    # config, up, smoke — and `down -v` whether or not the smoke test passed.
-    assert kinds == ["docker", "docker", "smoke", "docker"], kinds
+    # Config, initial start, budget recreation, smoke, and cleanup on either outcome.
+    assert kinds == ["docker", "docker", "docker", "smoke", "docker"], kinds
 
-    config, up, smoke_call, down = calls
+    config, up, recreate, smoke_call, down = calls
     assert config["argv"][:3] == ["compose", "-p", "budgetcheck"]
     assert "config" in config["argv"]
     assert up["argv"][:3] == ["compose", "-p", "budgetcheck"]
     assert "up" in up["argv"]
-    # Caddy must not be part of the throwaway stack: it would request a
-    # certificate for DOMAIN=localhost and bind 80/443.
-    assert "gateway" in up["argv"] and "gate" in up["argv"]
-    assert "caddy" not in up["argv"]
+    assert "gateway" in up["argv"] and "caddy" in up["argv"]
+    assert up["domain"] == "http://localhost"  # explicit HTTP, no certificate
+    assert up["runs_per_day"] == "200"  # offline seeding can finish
+    assert recreate["argv"][:3] == ["compose", "-p", "budgetcheck"]
+    assert recreate["argv"][-1] == "gateway"
+    assert recreate["runs_per_day"] == "1"
     assert down["argv"][-2:] == ["down", "-v"]
     assert down["argv"][:3] == ["compose", "-p", "budgetcheck"]
 
@@ -467,8 +440,8 @@ def test_the_budget_check_step_runs_isolated_and_always_cleans_up(
         "the throwaway budget cap must be set for the smoke test"
     )
     assert smoke_call["argv"][0] == "--exhaust-budget"
-    assert "18080" in smoke_call["argv"][1], (
-        f"the smoke test must hit the throwaway gate, not the live one: {smoke_call['argv']}"
+    assert smoke_call["argv"][1] == "http://localhost:18000", (
+        f"the smoke test must hit the throwaway Caddy, not the live one: {smoke_call['argv']}"
     )
 
 
@@ -529,11 +502,9 @@ def test_the_runner_network_is_egress_less_and_shared_with_the_gateway() -> None
     )
     assert RUNNER_NETWORK in service_networks(fragment, "executor-runner")
     # Least privilege: nothing else joins it.
-    for service in ("gate", "caddy"):
-        attached = service_networks(base, service)
-        assert RUNNER_NETWORK not in attached, (
-            f"{service} must not join the runner-only network"
-        )
+    assert RUNNER_NETWORK not in service_networks(base, "caddy"), (
+        "Caddy must not join the runner-only network"
+    )
 
 
 def test_the_gateway_executor_backend_is_selectable_from_the_env_file() -> None:
@@ -548,4 +519,45 @@ def test_the_gateway_executor_backend_is_selectable_from_the_env_file() -> None:
     assert value == "${SCOPEWATCH_EXECUTOR:-local}", (
         "SCOPEWATCH_EXECUTOR must default to local through variable "
         f"interpolation so .env can select remote; found {value!r}"
+    )
+
+
+def test_caddy_routes_directly_to_the_only_demo_enforcement_layer() -> None:
+    """The public path must reach native guards without a second policy."""
+    base = COMPOSE.read_text(encoding="utf-8")
+    assert set(published_by_service()) == {"caddy", "gateway"}
+    assert "reverse_proxy gateway:8000" in (DEPLOY_DIR / "Caddyfile").read_text()
+    assert set(service_networks(base, "caddy")) & set(service_networks(base, "gateway"))
+    assert re.search(r"gateway:\s*\n\s+condition: service_healthy", service_block(base, "caddy"))
+    assert not (DEPLOY_DIR / "gate").exists()
+
+
+def test_hosted_demo_cannot_start_with_guards_disabled() -> None:
+    gateway = service_block(COMPOSE.read_text(), "gateway")
+    assert re.search(r"^      DEMO_TOKEN: \$\{DEMO_TOKEN:\?", gateway, re.MULTILINE)
+
+
+@pytest.mark.parametrize("name,default", [
+    ("DEMO_MAX_CONCURRENT_RUNS", 5),
+    ("DEMO_MAX_TURNS_PER_RUN", 40),
+    ("DEMO_RATE_LIMIT_RUNS_PER_MIN_PER_IP", 6),
+    ("DEMO_MAX_RUNS_PER_DAY", 200),
+    ("DEMO_MAX_ACTIONS_PER_DAY", 5000),
+])
+def test_demo_numeric_overrides_reach_the_enforcing_gateway(name: str, default: int) -> None:
+    gateway = service_block(COMPOSE.read_text(), "gateway")
+    aliases = {
+        "DEMO_RATE_LIMIT_RUNS_PER_MIN_PER_IP": "DEMO_RATE_LIMIT_PER_MIN",
+        "DEMO_MAX_RUNS_PER_DAY": "DEMO_DAILY_RUN_BUDGET",
+        "DEMO_MAX_ACTIONS_PER_DAY": "DEMO_DAILY_ACTION_BUDGET",
+    }
+    fallback = f"${{{aliases[name]}:-{default}}}" if name in aliases else str(default)
+    assert f"{name}: ${{{name}:-{fallback}}}" in gateway
+
+
+def test_smoke_default_targets_caddys_published_http_port() -> None:
+    script = (DEPLOY_DIR / "scripts/smoke-demo.sh").read_text()
+    assert 'BASE="${1:-http://localhost:${HTTP_HOST_PORT:-80}}"' in script
+    assert '"${HTTP_HOST_PORT:-80}:80"' in raw_published_ports(
+        service_block(COMPOSE.read_text(), "caddy")
     )
