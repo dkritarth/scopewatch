@@ -11,6 +11,7 @@ Tests:
 """
 
 import ast
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -273,6 +274,21 @@ def create_test_run(
     )
     assert resp.status_code == 201, resp.text
     return resp.json()["id"]
+
+
+def wait_for_approval(
+    client: TestClient, run_id: str, timeout_s: float = 5.0,
+) -> dict[str, Any]:
+    """Wait for the gateway to persist a HOLD, with a bounded failure."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        response = client.get(f"/api/v1/runs/{run_id}/approvals")
+        assert response.status_code == 200, response.text
+        approvals = response.json()
+        if approvals:
+            return approvals[0]
+        assert time.monotonic() < deadline, "HOLD approval was not created"
+        time.sleep(0.01)
 
 
 # ---------------- End-to-End & Decision Tests ----------------
@@ -593,23 +609,20 @@ def test_scripted_hold_approved_lifecycle(test_env: dict[str, Any]) -> None:
         poll_interval_s=0.05,
     )
 
-    def reviewer_approval_worker():
-        # Wait a short moment for the approval to be created in the gateway
-        time.sleep(0.15)
-        approvals = client.get(f"/api/v1/runs/{run_id}/approvals").json()
-        assert len(approvals) >= 1
-        approval_id = approvals[0]["id"]
+    def reviewer_approval_worker() -> None:
+        approval_id = wait_for_approval(client, run_id)["id"]
         res = client.post(
             f"/api/v1/approvals/{approval_id}/approve",
             json={"resolution_reason": "Authorized cleanup."},
         )
         assert res.status_code == 200
 
-    thread = threading.Thread(target=reviewer_approval_worker)
-    thread.start()
-
-    result = loop.run()
-    thread.join()
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        review = workers.submit(reviewer_approval_worker)
+        try:
+            result = loop.run()
+        finally:
+            review.result(timeout=10)
 
     assert result.status == "COMPLETED"
     assert result.decisions == ["HOLD"]
@@ -627,7 +640,6 @@ def test_approved_action_waits_for_stored_receipt(
     include_result: bool,
 ) -> None:
     """APPROVED is in flight; only a stored receipt can resume the model."""
-    from concurrent.futures import ThreadPoolExecutor
     import scopewatch.service as service_module
 
     client = test_env["client"]
@@ -687,17 +699,9 @@ def test_approved_action_waits_for_stored_receipt(
     with ThreadPoolExecutor(max_workers=2) as workers:
         loop_result = workers.submit(loop.run)
         try:
-            deadline = time.monotonic() + 5
-            while True:
-                response = client.get(f"/api/v1/runs/{run_id}/approvals")
-                assert response.status_code == 200
-                approvals = response.json()
-                if approvals:
-                    break
-                assert time.monotonic() < deadline, "HOLD approval was not created"
-                time.sleep(0.01)
-            approval_id = approvals[0]["id"]
-            action_id = approvals[0]["action_request_id"]
+            approval = wait_for_approval(client, run_id)
+            approval_id = approval["id"]
+            action_id = approval["action_request_id"]
             review = workers.submit(
                 client.post, f"/api/v1/approvals/{approval_id}/approve", json={},
             )
@@ -809,22 +813,20 @@ def test_scripted_hold_denied_lifecycle(test_env: dict[str, Any]) -> None:
         poll_interval_s=0.05,
     )
 
-    def reviewer_deny_worker():
-        time.sleep(0.15)
-        approvals = client.get(f"/api/v1/runs/{run_id}/approvals").json()
-        assert len(approvals) >= 1
-        approval_id = approvals[0]["id"]
+    def reviewer_deny_worker() -> None:
+        approval_id = wait_for_approval(client, run_id)["id"]
         res = client.post(
             f"/api/v1/approvals/{approval_id}/deny",
             json={"resolution_reason": "Archive file must be preserved."},
         )
         assert res.status_code == 200
 
-    thread = threading.Thread(target=reviewer_deny_worker)
-    thread.start()
-
-    result = loop.run()
-    thread.join()
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        review = workers.submit(reviewer_deny_worker)
+        try:
+            result = loop.run()
+        finally:
+            review.result(timeout=10)
 
     assert result.status == "COMPLETED"
     assert result.decisions == ["HOLD"]
