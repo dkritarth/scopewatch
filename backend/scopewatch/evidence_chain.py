@@ -6,16 +6,19 @@ What this is
 ------------
 A per-run append-only hash chain that lets an operator prove that a list of
 exported evidence events still has the same order and content it had when it
-was recorded, and that every action's recorded lifecycle is one the gateway
-may legally produce (``evidence before effect``, ``no decision, no
-execution``). Per action the verifier checks that:
+was recorded, and checks recorded lifecycle rules (``evidence before effect``,
+``no decision, no execution``). Event types must match the gateway's catalog
+exactly. ``RUN_COMPLETED`` and ``SYSTEM_ERROR`` close the run; only repeated
+close/fail events and expiry of already-pending approvals may follow them.
+Per action the verifier checks that:
 
 - execution is authorised: a prior ``POLICY_ALLOWED``, or a prior
   ``POLICY_HELD`` followed by ``APPROVAL_GRANTED``. ``POLICY_DENIED`` permits
   no execution events at all;
 - there is exactly one policy decision (a second one cannot relax the first);
-- ``APPROVAL_GRANTED`` follows a ``POLICY_HELD``, happens at most once, and
-  never after the approval was denied or expired;
+- ``APPROVAL_GRANTED`` follows a ``POLICY_HELD`` and ``APPROVAL_REQUESTED``
+  for that action, happens at most once, and never after the approval was
+  denied or expired. A granted approval cannot later be denied or expired;
 - there is at most one ``EXECUTION_STARTED`` and at most one terminal
   execution event (``EXECUTION_SUCCEEDED`` / ``EXECUTION_FAILED``), and
   nothing starts after a terminal event.
@@ -95,6 +98,20 @@ APPROVAL_CLOSED_EVENT_TYPES = frozenset(
         "APPROVAL_DENIED",
         "APPROVAL_EXPIRED",
     }
+)
+
+# Kept local so the offline verifier remains stdlib-only. A regression test
+# compares this catalog with models.EventType to catch drift.
+RUN_TERMINAL_EVENT_TYPES = frozenset({"RUN_COMPLETED", "SYSTEM_ERROR"})
+KNOWN_EVENT_TYPES = (
+    DECISION_EVENT_TYPES
+    | EXECUTION_EVENT_TYPES
+    | APPROVAL_CLOSED_EVENT_TYPES
+    | RUN_TERMINAL_EVENT_TYPES
+    | frozenset({
+        "RUN_CREATED", "ACTION_REQUESTED", "APPROVAL_REQUESTED", "APPROVAL_GRANTED",
+        "REASONING_AUDIT_COMPLETED", "REASONING_AUDIT_FAILED",
+    })
 )
 
 
@@ -187,7 +204,7 @@ class VerificationResult:
     ok: bool
     first_bad_seq: Optional[int]
     reason: str
-    code: str  # OK | BAD_SEQ | BAD_PREV | BAD_HASH | RUN_MISMATCH | FORK | ORDERING_VIOLATION | TRUNCATED
+    code: str  # OK | BAD_SEQ | BAD_PREV | BAD_HASH | RUN_MISMATCH | FORK | UNKNOWN_EVENT_TYPE | ORDERING_VIOLATION | TRUNCATED
     head_hash: str
     checked: int
 
@@ -203,6 +220,7 @@ class _ActionLifecycle:
     """What the chain has recorded so far for one action_id."""
 
     decision: Optional[str] = None  # POLICY_ALLOWED | POLICY_HELD | POLICY_DENIED
+    approval_requested: bool = False
     approval: Optional[str] = None  # None | "GRANTED" | "CLOSED"
     started: bool = False
     terminal: bool = False
@@ -213,13 +231,13 @@ def _lifecycle_violation(
 ) -> Optional[str]:
     """Apply ``rec`` to its action's lifecycle; return a reason if illegal.
 
-    Only records with an ``action_id`` take part, except execution events,
-    which must always name their action.
+    Only records with an ``action_id`` take part, except execution and grant
+    events, which must always name their action.
     """
     etype = rec.event_type
     if rec.action_id is None:
-        if etype in EXECUTION_EVENT_TYPES:
-            return f"EXECUTION event {etype} has no action_id"
+        if etype in EXECUTION_EVENT_TYPES or etype == "APPROVAL_GRANTED":
+            return f"event {etype} has no action_id"
         return None
 
     aid = rec.action_id
@@ -232,6 +250,10 @@ def _lifecycle_violation(
                 f"after {state.decision}; a decision is recorded once"
             )
         state.decision = etype
+        return None
+
+    if etype == "APPROVAL_REQUESTED":
+        state.approval_requested = True
         return None
 
     if etype == "APPROVAL_GRANTED":
@@ -249,10 +271,14 @@ def _lifecycle_violation(
                 f"APPROVAL_GRANTED for action {aid!r} after its approval "
                 f"was denied or expired"
             )
+        if not state.approval_requested:
+            return f"APPROVAL_GRANTED for action {aid!r} without a prior APPROVAL_REQUESTED"
         state.approval = "GRANTED"
         return None
 
     if etype in APPROVAL_CLOSED_EVENT_TYPES:
+        if state.approval == "GRANTED":
+            return f"{etype} for action {aid!r} after APPROVAL_GRANTED; an approval resolves once"
         if state.approval is None:
             state.approval = "CLOSED"
         return None
@@ -299,7 +325,9 @@ def verify_records(
     3. run_id consistency
     4. prev linkage
     5. record_hash recomputation (tamper)
-    6. per-action lifecycle (see module docstring): authorised execution
+    6. exact event-type catalog (unknown types are rejected)
+    7. run terminal ordering, preserving pending approval expiry
+    8. per-action lifecycle (see module docstring): authorised execution
        only, one decision, single-use approval, at most one execution
 
     Then, if all records pass, compares against ``expected_head`` /
@@ -344,6 +372,7 @@ def verify_records(
     run_ref = expected_run_id if expected_run_id is not None else recs[0].run_id
     seen_prev: dict[str, int] = {}
     actions: dict[str, _ActionLifecycle] = {}
+    run_terminal: Optional[str] = None
     prev_hash = GENESIS_HASH
 
     for idx, rec in enumerate(recs):
@@ -434,8 +463,35 @@ def verify_records(
                 checked=idx,
             )
 
-        # 6. per-action lifecycle
-        violation = _lifecycle_violation(rec, actions)
+        # 6. exact event catalog; never normalise unknown spellings.
+        if rec.event_type not in KNOWN_EVENT_TYPES:
+            return VerificationResult(
+                ok=False,
+                first_bad_seq=rec.seq,
+                reason=f"unknown event type at seq={rec.seq}: {rec.event_type!r}",
+                code="UNKNOWN_EVENT_TYPE",
+                head_hash=recs[-1].record_hash,
+                checked=idx,
+            )
+
+        # 7. terminal runs accept only repeated close/fail records and expiry
+        # of approvals already pending at closure (the reconciler can do this).
+        violation = None
+        if run_terminal is not None and rec.event_type not in RUN_TERMINAL_EVENT_TYPES:
+            state = actions.get(rec.action_id) if rec.action_id is not None else None
+            pending_expiry = (
+                rec.event_type == "APPROVAL_EXPIRED"
+                and state is not None
+                and state.decision == "POLICY_HELD"
+                and state.approval_requested
+                and state.approval is None
+            )
+            if not pending_expiry:
+                violation = f"{rec.event_type} after terminal run event {run_terminal}"
+
+        # 8. per-action lifecycle
+        if violation is None:
+            violation = _lifecycle_violation(rec, actions)
         if violation is not None:
             return VerificationResult(
                 ok=False,
@@ -446,6 +502,8 @@ def verify_records(
                 checked=idx,
             )
 
+        if rec.event_type in RUN_TERMINAL_EVENT_TYPES:
+            run_terminal = rec.event_type
         prev_hash = rec.record_hash
 
     head = recs[-1].record_hash
@@ -720,6 +778,8 @@ __all__ = [
     "EXECUTION_EVENT_TYPES",
     "TERMINAL_EXECUTION_EVENT_TYPES",
     "APPROVAL_CLOSED_EVENT_TYPES",
+    "KNOWN_EVENT_TYPES",
+    "RUN_TERMINAL_EVENT_TYPES",
     "ChainRecord",
     "VerificationResult",
     "EvidenceChain",
