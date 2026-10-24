@@ -97,6 +97,28 @@ def _audit_error_code(exc: BaseException) -> str:
     return AuditErrorCode.AUDIT_ERROR.value
 
 
+def _execution_event_result(
+    receipt: ExecutionReceipt,
+) -> Optional[dict[str, Any]]:
+    """Project a receipt result into reviewer-visible execution evidence.
+
+    Read receipts return the full text to the calling agent, but evidence
+    events need only the existing preview and metadata.  Copy before removing
+    the content so the stored receipt and API response remain unchanged.
+    """
+    if receipt.sanitized_result is None:
+        return None
+
+    result = dict(receipt.sanitized_result)
+    if receipt.operation == "read_text":
+        content = result.pop("content", None)
+        if isinstance(content, str):
+            result["content_sha256"] = hashlib.sha256(
+                content.encode("utf-8")
+            ).hexdigest()
+    return result
+
+
 # Values that explicitly disable the reasoning audit. Everything else, known or
 # not, leaves the audit enabled, so a typo in a hosted .env cannot silently
 # remove the gateway's headline control (issue #192).
@@ -1327,7 +1349,7 @@ capture_token: Optional[str] = None,
                             turn_id=action.turn_id,
                             details={
                                 "status": receipt.status.value,
-                                "result": receipt.sanitized_result,
+                                "result": _execution_event_result(receipt),
                                 "error_code": receipt.error_code,
                             },
                         )
@@ -1367,7 +1389,7 @@ capture_token: Optional[str] = None,
                             turn_id=action.turn_id,
                             details={
                                 "status": receipt.status.value,
-                                "result": receipt.sanitized_result,
+                                "result": _execution_event_result(receipt),
                                 "error_code": receipt.error_code,
                             },
                         )
@@ -1400,7 +1422,7 @@ capture_token: Optional[str] = None,
                         turn_id=action.turn_id,
                         details={
                             "status": receipt.status.value,
-                            "result": receipt.sanitized_result,
+                            "result": _execution_event_result(receipt),
                             "error_code": receipt.error_code,
                         },
                     )
@@ -1794,7 +1816,7 @@ capture_token: Optional[str] = None,
                             execution_receipt_id=receipt.id,
                             details={
                                 "status": receipt.status.value,
-                                "result": receipt.sanitized_result,
+                                "result": _execution_event_result(receipt),
                                 "error_code": receipt.error_code,
                             },
                         )
@@ -1849,7 +1871,7 @@ capture_token: Optional[str] = None,
                             execution_receipt_id=receipt.id,
                             details={
                                 "status": receipt.status.value,
-                                "result": receipt.sanitized_result,
+                                "result": _execution_event_result(receipt),
                                 "error_code": receipt.error_code,
                             },
                         )
@@ -1897,7 +1919,7 @@ capture_token: Optional[str] = None,
                         execution_receipt_id=receipt.id,
                         details={
                             "status": receipt.status.value,
-                            "result": receipt.sanitized_result,
+                            "result": _execution_event_result(receipt),
                             "error_code": receipt.error_code,
                         },
                     )
