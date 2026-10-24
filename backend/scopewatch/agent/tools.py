@@ -13,6 +13,7 @@ demo/SCENARIOS.md for the scripted vs mock-agent (replay) vs live distinction.
 
 import json
 import os
+import time
 from typing import Any, Optional
 import httpx
 
@@ -335,8 +336,7 @@ class GatewayDispatcher:
     def complete_run(self, run_id: str) -> Run:
         """Mark run as COMPLETED via POST /api/v1/runs/{run_id}/complete."""
         url = f"/api/v1/runs/{run_id}/complete"
-        headers = self._mutating_headers()
-        resp = self._client.post(url, headers=headers)
+        resp = self._post_terminal(url)
         if resp.status_code != 200:
             raise RuntimeError(
                 f"Failed to complete run '{run_id}' (HTTP {resp.status_code}): {resp.text}"
@@ -346,11 +346,29 @@ class GatewayDispatcher:
     def fail_run(self, run_id: str, reason: str = "") -> Optional[Run]:
         """Mark run as FAILED via POST /api/v1/runs/{run_id}/fail if supported."""
         url = f"/api/v1/runs/{run_id}/fail"
-        headers = self._mutating_headers()
-        resp = self._client.post(url, params={"reason": reason}, headers=headers)
+        resp = self._post_terminal(url, params={"reason": reason})
         if resp.status_code == 200:
             return Run.model_validate(resp.json())
         return None
+
+    def _post_terminal(self, url: str, **kwargs: Any) -> httpx.Response:
+        """Wait for an already-dispatched approval before closing the run.
+
+        The gateway owns the execution deadline. A loop budget expiring cannot
+        cancel its effect or permit a terminal event ahead of its receipt.
+        Retry only the gateway's explicit in-flight refusal.
+        """
+        while True:
+            resp = self._client.post(url, headers=self._mutating_headers(), **kwargs)
+            if resp.status_code != 409:
+                return resp
+            try:
+                error = resp.json()["error"]["code"]
+            except (ValueError, KeyError, TypeError):
+                return resp
+            if error != "APPROVED_ACTION_IN_FLIGHT":
+                return resp
+            time.sleep(0.05)
 
     def record_prompt_version(self, run_id: str, prompt_version: str) -> Optional[Run]:
         """Record the prompt version for the run via PATCH /api/v1/runs/{run_id}."""
