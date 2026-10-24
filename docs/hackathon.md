@@ -31,7 +31,7 @@ Status key: **done** (evidence linked), **open-work** (agent issue in flight), *
   - [x] Coding benchmark scenarios (`demo/scenarios/10_fix_auth_test.json`, `11_secret_read.json`, `12_readme_injection.json`, `13_network_exfil.json`; fixture `demo/coding-workspace/`; `--coding` path in `scripts/run_demo.sh` + `scripts/seed_demo.py`)
 
 - [ ] **Milestone M3: Hosting and submission** (in flight 2026-10-24)
-  - [x] Deployment artifacts — done (issue #42, PR #79): `deploy/` with compose, Caddyfile, edge gate, `RUNBOOK.md`, smoke script, and `deploy/test_compose_layout.py` wired into `./scripts/validate.sh`
+  - [x] Deployment artifacts — done (issue #42, PR #79): `deploy/` with compose, Caddyfile, `RUNBOOK.md`, smoke script, and `deploy/test_compose_layout.py` plus `deploy/test_demo_enforcement.py` run by `./scripts/validate.sh`. The separate edge gate was removed by #274; the gateway is now the only demo enforcement layer (`docs/operations/demo-guards.md`)
   - [x] Project website and replay demo — done (PR #272): `site/`, deployed to https://dkritarth.github.io/scopewatch/ by `.github/workflows/pages.yml` (run 40024256435 succeeded 2026-10-23). It is a static replay of decisions recorded through the gateway with the offline **mock** provider (`scripts/export_site_demo.py`), not a hosted gateway and not live Nemotron output
   - [x] README judge path — done (issue #216, PR #243): screenshot, site and judge-runbook links, mock run, Nebius live command with the `UNAVAILABLE` provenance caveat, dated held-out table
   - [ ] Nebius AI Cloud VM provision — PENDING-HUMAN (issue #43, needs a Nebius account and money; target before 2026-10-28). No VM is provisioned, so no hosted URL exists yet and none is claimed in the submission package
