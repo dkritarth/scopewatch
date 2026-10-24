@@ -2,8 +2,10 @@
 """Offline verifier for Scopewatch tamper-evident evidence chains.
 
 Reads a JSONL chain exported by ``EvidenceChain.export_jsonl`` (one canonical
-record per line) and verifies hash linkage, sequence continuity, and
-DECISION-before-EXECUTION ordering.
+record per line) and verifies hash linkage, sequence continuity, and each
+action's recorded lifecycle: execution only after POLICY_ALLOWED or after
+POLICY_HELD plus APPROVAL_GRANTED, one decision per action, single-use
+approvals, and at most one execution per action (issue #190).
 
 Usage:
     PYTHONPATH=backend python3 scripts/verify_evidence_chain.py chain.jsonl
