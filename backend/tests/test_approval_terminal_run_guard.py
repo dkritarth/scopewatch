@@ -11,6 +11,7 @@ No network, no docker. Uses the svc_env fixture style from test_bypass.py.
 """
 
 import asyncio
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1167,6 +1168,54 @@ def test_pr67_c2_complete_refused_while_approved_action_in_flight(
     assert events.count("RUN_COMPLETED") == 1
     assert events[-1] == "RUN_COMPLETED"
     assert events.index("EXECUTION_SUCCEEDED") < events.index("RUN_COMPLETED")
+
+
+def test_complete_refused_while_allowed_action_in_flight(
+    svc_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import scopewatch.service as service_module
+    from scopewatch.evidence_chain import build_chain_from_events
+
+    service: ScopewatchService = svc_env["service"]
+    run = svc_env["run"]
+    entered, release = threading.Event(), threading.Event()
+    real_execute = service_module.execute_action
+
+    def gated_execute(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=10), "test never released the executor"
+        return real_execute(*args, **kwargs)
+
+    monkeypatch.setattr(service_module, "execute_action", gated_execute)
+    result: dict = {}
+
+    def submit() -> None:
+        try:
+            result["action"] = asyncio.run(service.submit_action(
+                run.id,
+                SubmitActionRequest(tool="workspace", operation="read_text", resource="invoices/approved/vendor-a.txt"),
+            ))
+        except Exception as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=submit)
+    thread.start()
+    try:
+        assert entered.wait(timeout=10), "allowed action never reached the executor"
+        with pytest.raises(ScopewatchAPIError) as exc_info:
+            service.complete_run(run.id)
+        assert exc_info.value.code == "APPROVED_ACTION_IN_FLIGHT"
+        assert exc_info.value.status_code == 409
+        assert "RUN_COMPLETED" not in [e.event_type.value for e in service.get_events(run.id)]
+    finally:
+        release.set()
+        thread.join(timeout=30)
+    assert not thread.is_alive()
+    assert "error" not in result, result
+    service.complete_run(run.id)
+    events = service.get_events(run.id)
+    assert events[-1].event_type.value == "RUN_COMPLETED"
+    assert build_chain_from_events(run.id, events).verify().ok
 
 
 # --- API-level getters after rejection --------------------------------------
