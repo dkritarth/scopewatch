@@ -12,6 +12,7 @@ FAILED on TOCTOU swap) with no secret bytes in any receipt.
 
 from datetime import datetime, timezone
 from pathlib import Path
+import os
 import uuid
 
 import pytest
@@ -914,6 +915,28 @@ def test_compat2_symlink_loop_policy_never_raises(
     """
     (compat2_workspace / "outputs" / "loop-a").symlink_to("loop-b")
     (compat2_workspace / "outputs" / "loop-b").symlink_to("loop-a")
+    decision = evaluate_policy(
+        _read_action(compat2_run, "outputs/loop-a"), compat2_run, compat2_workspace
+    )
+    assert decision.outcome == PolicyOutcome.DENY
+
+
+def test_compat2_symlink_loop_denied_when_resolve_does_not_raise(
+    compat2_workspace: Path,
+    compat2_run: Run,
+    local_backend: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same loop, with ``Path.resolve`` behaving as on Python 3.13.
+
+    3.13 returns the looping link unresolved instead of raising; this
+    patch makes CI (pinned to 3.12) run the policy the 3.13 way.
+    """
+    (compat2_workspace / "outputs" / "loop-a").symlink_to("loop-b")
+    (compat2_workspace / "outputs" / "loop-b").symlink_to("loop-a")
+    monkeypatch.setattr(
+        Path, "resolve", lambda self, strict=False: Path(os.path.realpath(self))
+    )
     decision = evaluate_policy(
         _read_action(compat2_run, "outputs/loop-a"), compat2_run, compat2_workspace
     )
