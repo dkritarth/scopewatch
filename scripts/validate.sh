@@ -48,6 +48,11 @@ echo "     Checking Docker build context exclusions..."
 "${PYTHON}" "${REPO_ROOT}/scripts/check_dockerignore.py"
 echo "  ✓ Docker build context excludes secrets and keeps every COPY source"
 
+# 1c. Documentation consistency guard: links, model IDs, stale claims, and secrets (#217).
+echo "     Checking documentation links, model IDs, stale claims, and secrets..."
+"${PYTHON}" "${REPO_ROOT}/scripts/check_docs_links.py"
+echo "  ✓ Documentation links, model IDs, claims, and secrets verified"
+
 # 2. Run backend pytest suite
 echo ""
 echo "[2/7] Running backend pytest suite..."
