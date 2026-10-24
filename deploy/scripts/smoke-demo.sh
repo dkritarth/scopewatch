@@ -4,7 +4,7 @@
 # Checks, against a running stack (local compose or the VM):
 #   1. Health + static dashboard load WITHOUT any token.
 #   2. Run creation WITHOUT the token returns 401 in the flat
-#      {"error", "message"} envelope the gate and the gateway share.
+#      {"error", "message"} envelope returned by the gateway.
 #   3. Run creation WITH the token succeeds (and cleans up after itself).
 #   4. (Optional, destructive to budgets) --exhaust-budget also verifies the
 #      daily-budget refusal path by pointing at a throwaway stack with
@@ -14,10 +14,10 @@
 #   ./scripts/smoke-demo.sh [base-url] [demo-token]
 #   ./scripts/smoke-demo.sh --exhaust-budget [base-url] [demo-token]
 #
-# Default base URL = the gate's loopback-published port (compose.yaml maps
-# 127.0.0.1:8080:8080), so with no arguments this runs on the VM host against
-# the local stack. Against the public site pass it explicitly:
+# Default URL uses Caddy's published HTTP port for DOMAIN=http://localhost.
+# For a TLS deployment pass the public URL explicitly:
 #   ./scripts/smoke-demo.sh https://demo.example.com "$TOKEN"
+# HTTP_HOST_PORT overrides the default port, as it does in compose.yaml.
 #
 # The token falls back to $DEMO_TOKEN from the environment (set if you sourced
 # deploy/.env). It is never echoed: only error codes from refusals print.
@@ -28,16 +28,14 @@ if [[ "${1:-}" == "--exhaust-budget" ]]; then
   EXHAUST=1
   shift
 fi
-BASE="${1:-http://127.0.0.1:8080}"
+BASE="${1:-http://localhost:${HTTP_HOST_PORT:-80}}"
 TOKEN="${2:-${DEMO_TOKEN:-}}"
 
 pass() { echo "  PASS: $1"; }
 fail() { echo "  FAIL: $1" >&2; exit 1; }
 
-# Both enforcement layers (deploy/gate/gate.py and the gateway's own demo
-# guards) refuse in the flat {"error": "<code>", "message": "..."} envelope
-# since #107. Assert the shape and the code together rather than grepping for a
-# substring, so a shape regression fails here instead of in the browser.
+# The gateway refuses in the flat {"error", "message"} envelope. Check both
+# the shape and code so a regression fails here instead of in the browser.
 assert_refusal() {
   local file="$1" want_error="$2" label="$3"
   python3 - "${file}" "${want_error}" <<'PY' || fail "${label}: body is not the flat demo-guard envelope"
@@ -52,7 +50,7 @@ PY
 
 echo "Smoke test against ${BASE}"
 
-# 1. Health without token (through the gate).
+# 1. Health without token (through Caddy).
 CODE="$(curl -sS -o /tmp/smoke-health.json -w '%{http_code}' "${BASE}/api/v1/health")"
 [[ "${CODE}" == "200" ]] || fail "health returned ${CODE}"
 grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' /tmp/smoke-health.json || fail "health body not ok"

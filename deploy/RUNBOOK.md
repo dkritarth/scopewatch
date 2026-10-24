@@ -14,68 +14,49 @@ and paste. Time estimate: ~30 minutes plus DNS propagation.
 ```
 internet --443/80--> caddy (automatic TLS, Caddyfile)
                         |
-                        v  (compose `public` network)
-                      gate :8080  (deploy/gate/gate.py, stdlib only)
-                        |  enforces: demo token (401), per-IP rate limit,
-                        |  concurrent-run cap, per-run turn cap, daily budget
                         v  (compose `internal` network, no published ports)
-                    gateway :8000 (FastAPI + static reviewer dashboard)
-                        |  SCOPEWATCH_EXECUTOR=local by default (no Docker
-                        |  socket anywhere); `remote` selects the
-                        |  executor-runner sidecar on its own egress-less
-                        |  `executor-runner` network
+                    gateway :8000 (FastAPI + reviewer dashboard)
+                        |  demo token, rate limit, concurrency and turn caps,
+                        |  daily request budgets, per-profile token metering
+                        |  local executor by default; optional remote runner
+                        |  on the separate egress-less `executor-runner` network
                         v
               volumes: scopewatch-data (/data/sqlite),
-                       scopewatch-workspace (the pristine scenario fixture),
-                       scopewatch-run-workspaces (/runs, one dir per run)
-              egress: HTTPS to the model provider (Nebius/OpenRouter) only
+                       scopewatch-workspace (synthetic scenario fixture),
+                       scopewatch-run-workspaces (/runs, one directory per run)
+              gateway egress: model provider calls
 ```
 
 Key properties:
 
-- The gateway has **no Docker socket, no docker CLI, no published ports**.
-  The only inbound path from the internet is `caddy -> gate -> gateway`. The
-  gate additionally binds `127.0.0.1:8080` on the VM host for the operator's
-  own verify commands; that binding is loopback-only.
-- Public reads (`GET /api/v1/health`, dashboard, run/approval/event reads)
-  need **no token** so judges can browse. Every mutating `/api/*` call needs
-  the `X-Demo-Token` header (otherwise **401**). The gate validates this
-  header, then forwards it over the private Compose network so the gateway's
-  native demo guard can validate the same request independently.
-- Both layers refuse in the same envelope,
-  `{"error": "<code>", "message": "<sentence>"}`. Their *policies* still
-  differ — see "Gate vs gateway: what is still duplicated" below.
-- Gate budgets/caps are in-memory in a **single** gate replica. Restarting
-  the gate resets counters (documented, accepted for a demo).
-- Budget accounting is a **conservative proxy** (run/action counts per UTC
-  day), not true token metering — the gate cannot see model tokens from
-  HTTP alone. Native per-profile token metering is a filed follow-up (see
-  "Known limits and follow-ups"). With `mock` profiles no model calls happen
-  at all, so scripted scenarios always work.
-- **Every run owns a workspace copy** (`scopewatch-run-workspaces` at `/runs`,
-  one directory per run id). `scopewatch-workspace` is the copy *source* and is
-  never written, so two runs cannot read or overwrite each other's output and
-  the scenario baseline stays pristine. See "Per-run workspaces" below — the
-  gateway's `read_only: true` root means this volume is not optional.
+- The gateway has no Docker socket, Docker CLI, or published ports. Its only
+  public ingress is `caddy -> gateway`. Caddy replaces incoming untrusted
+  `X-Forwarded-For` headers; the gateway uses that header for per-IP limits.
+- Reads of health, the dashboard, runs, approvals, and events are public.
+  Every mutating `/api/*` request requires `X-Demo-Token`, otherwise `401`.
+  Compose requires a non-empty `DEMO_TOKEN`, so a missing token cannot
+  accidentally enable the gateway's local-development mode. The container
+  entrypoint also rejects whitespace-only tokens before seeding or serving.
+- Demo guard refusals use `{"error": "<code>", "message": "<sentence>"}`.
+  Malformed numeric controls refuse new runs/actions with `503` and
+  `demo_guard_misconfigured`. On a fresh volume, invalid limits can also
+  prevent offline scenario seeding and stop startup, which fails closed.
+- Run one gateway replica. Rate windows, daily request counts, and turn
+  counts are in memory and reset on restart. Concurrency uses real SQLite
+  run rows. Per-profile model token metering is separate from request counts;
+  see [demo guards](../docs/operations/demo-guards.md) for configuration.
+- Every run owns a workspace copy under `/runs`. The scenario workspace is
+  the copy source, so concurrent runs cannot overwrite each other's files.
 
-### Gate vs gateway: what is still duplicated
+### Enforcement decision, issue #155
 
-The gate and `backend/scopewatch/demo_guards.py` are two implementations of the
-same idea, kept deliberately separate in this PR because removing the gate is a
-design decision, not a task (#107). Recorded honestly:
-
-| Aspect | Gate (`deploy/gate/gate.py`) | Gateway (`backend/scopewatch/demo_guards.py`) |
-| --- | --- | --- |
-| Refusal envelope | flat `{"error", "message"}` | flat `{"error", "message"}` — **aligned in #107** |
-| Misconfigured numerics | falls back to the default value (**fail open**) | refuses new runs/actions with `503` (**fail closed**) |
-| Misconfiguration code | `gate_misconfigured` | `demo_guard_misconfigured` |
-| Budget basis | HTTP call counts, plus one `GET /api/v1/runs` poll | real run state from SQLite, plus per-profile model tokens |
-| Token validation | first line of defence, forwards the header | re-validates every forwarded request |
-
-Consequence: the gate can let traffic through with a cap that the gateway would
-have refused, and it cannot see actual token spend. A client must treat the two
-as one policy only for the envelope, not for the limits. Unifying them is
-tracked as a follow-up, not fixed here.
+Use the gateway's native guards as the single enforcement layer. They have
+real run state and model token usage, so a second HTTP counting policy adds
+no reliable information. Caddy handles TLS, compression, and proxying only.
+All limits and refusal codes come from `backend/scopewatch/demo_guards.py`
+and the gateway token ledger. Existing VM deployments should run
+`docker compose up -d --build --remove-orphans` when updating to this stack
+so obsolete containers stop too. No volume names change.
 
 ## 1. Provision the VM
 
@@ -119,7 +100,7 @@ Set at minimum:
 
 | Variable | Value |
 | --- | --- |
-| `DOMAIN` | your DNS name, e.g. `demo.example.com` (`localhost` = local dry-run, plain HTTP) |
+| `DOMAIN` | your DNS name, e.g. `demo.example.com` (`http://localhost` = local dry-run, plain HTTP) |
 | `DEMO_TOKEN` | long random string for judges: `python3 -c "import secrets;print(secrets.token_urlsafe(32))"` |
 | `SCOPEWATCH_AGENT_PROFILE` / `SCOPEWATCH_AUDITOR_PROFILE` | `mock` for a zero-cost scripted demo, or `nebius-demo` for live NVIDIA Nemotron via Nebius |
 | `NEBIUS_API_KEY` | only when using `nebius-demo`; paste the key into `.env` on the VM, never into git/chat |
@@ -140,37 +121,20 @@ Rules:
 ```bash
 cd scopewatch/deploy
 docker compose up -d --build
-docker compose ps            # all three services "running (healthy)"
+docker compose ps            # gateway healthy, caddy running
 ```
 
-Then check each layer. Which address answers depends on what you are allowed
-to reach, so pick the column that matches your situation:
+Check the public path using the configured domain:
 
-| Check | On the VM host | From any machine |
-| --- | --- | --- |
-| Gate liveness | `curl -fsS http://127.0.0.1:8080/healthz` | `curl -fsS https://<DOMAIN>/healthz` |
-| Gateway health through the gate | `curl -fsS http://127.0.0.1:8080/api/v1/health` | `curl -fsS https://<DOMAIN>/api/v1/health` |
-| Gateway, bypassing the gate | `docker compose exec gateway python -c "..."` (full command below) | not reachable, by design |
+```bash
+curl -fsS https://<DOMAIN>/api/v1/health
+# Local dry-run only, configured with DOMAIN=http://localhost:
+curl -fsS http://localhost:80/api/v1/health
+```
 
-The right-hand column needs DNS already pointing at the VM. Health is a public
-read, so none of these need the token.
-
-Why the VM-host commands work (this is what #107 fixed):
-
-- The gate publishes **one** port, `127.0.0.1:8080:8080`, in `compose.yaml`.
-  The `127.0.0.1:` prefix is load-bearing: the binding is on the loopback
-  interface, so the gate answers on the VM and nothing else can reach it from
-  the internet. The public path is still `caddy -> gate -> gateway`.
-- The gateway publishes **no** ports at all, on purpose: the gate is its only
-  inbound path. Check it from inside its own container with
-  `docker compose exec`. The runbook used to tell you to curl
-  `127.0.0.1:8000`, which nothing ever bound.
-- `curl http://127.0.0.1:8080/api/v1/health` reaches the *gateway's* health
-  endpoint through the gate. Reads are public, so it needs no token, and it
-  proves the gate-to-gateway path rather than just a live gate process.
-- Never widen that mapping to `"8080:8080"`. It would expose the gate directly
-  and let a client skip Caddy's TLS and `X-Forwarded-For` handling, which the
-  gate trusts for per-IP rate limiting.
+Caddy publishes ports 80 and 443. The gateway publishes no host port.
+The HTTPS check needs working DNS and TLS; the local check uses Caddy's
+explicit HTTP site. Health is public and needs no token.
 
 The gateway-direct check, spelled out:
 
@@ -194,11 +158,9 @@ for that page load only, is never written to browser storage, and is sent only
 as `X-Demo-Token` on mutating requests. The shell equivalent is the
 `curl -H "X-Demo-Token: $TOKEN"` form in section 4.
 
-Auto-restart: every service has `restart: unless-stopped` plus `healthcheck`s,
-so the stack survives VM reboots (with Docker set to start on boot, which the
-`docker-ce` package does by default) and crashed containers are restarted
-automatically. `caddy` depends on a healthy `gate`, which depends on a healthy
-`gateway` — unhealthy dependencies are not routed to.
+Both services use `restart: unless-stopped`. Caddy waits for a healthy
+gateway at startup. Compose dependency checks govern startup only; they do
+not remove an upstream that becomes unhealthy later.
 
 ### Per-run workspaces (issue #117)
 
@@ -323,67 +285,57 @@ curl -sS -X POST $BASE/api/v1/runs -H 'Content-Type: application/json' \
 # PASS lines for: health, dashboard, 401, authed 201 + cleanup.
 ```
 
-Both enforcement layers answer in the same envelope,
-`{"error": "<code>", "message": "<plain sentence>"}`, so one parser handles a
-refusal whether the gate or the gateway's own demo guard produced it. That is
-the only place the two layers are aligned: their numerics still differ (see
-"Known limits and follow-ups").
+Demo guard refusals use one envelope,
+`{"error": "<code>", "message": "<plain sentence>"}`.
+The smoke script defaults to `http://localhost:80`, Caddy's published HTTP
+port, for a local dry-run with `DOMAIN=http://localhost`. For a TLS deployment,
+pass its public HTTPS URL explicitly, as above. An overridden `HTTP_HOST_PORT`
+also changes the script's default port.
 
-On the VM host, `./scripts/smoke-demo.sh http://127.0.0.1:8080 "$TOKEN"` hits
-the loopback-published gate. `./scripts/smoke-demo.sh` with no arguments does
-exactly that, so the script's default now works.
-
-Budget-exhaustion check (proves the cost guard refuses with a clear message).
-Do this against a THROWAWAY project so the judging budgets, evidence volume,
-and host ports of the live stack are untouched. Run it from `scopewatch/deploy`
-— a scratch copy of the repository is no longer needed, because every volume,
-network, and host port is now scoped to the project name (issue #201).
-
-The three port overrides are what let both stacks be up at once: the throwaway
-gate takes 18080 instead of the live gate's loopback 8080, and Caddy's 80/443
-are moved off as well. `COMPOSE_PROJECT_NAME` is what scopes the named volumes
-and networks; export it *and* pass `-p` so the two cannot disagree.
+Budget-exhaustion check. Use a throwaway project so the live judging budgets,
+evidence volume, and ports are untouched. Run from `scopewatch/deploy`.
+Export both `COMPOSE_PROJECT_NAME` and `-p` to keep named resources isolated.
+Caddy's HTTP port is 18000 and its HTTPS port is 18443 in this project.
+The explicit `http://localhost` site requests no certificate.
 
 ```bash
 # From scopewatch/deploy, with TOKEN set as in section 4:
 (
   set -euo pipefail
-  export COMPOSE_PROJECT_NAME=budgetcheck DOMAIN=localhost
-  export GATE_HOST_PORT=18080 HTTP_HOST_PORT=18000 HTTPS_HOST_PORT=18443
-  export DEMO_MAX_RUNS_PER_DAY=1                 # throwaway budget only
+  export COMPOSE_PROJECT_NAME=budgetcheck DOMAIN=http://localhost
+  export DEMO_TOKEN="$TOKEN"
+  export HTTP_HOST_PORT=18000 HTTPS_HOST_PORT=18443
+  export DEMO_MAX_RUNS_PER_DAY=200              # allow offline first-start seeding
   export SCOPEWATCH_AGENT_PROFILE=mock SCOPEWATCH_AUDITOR_PROFILE=mock
-  # Isolated resources: every volume/network is budgetcheck-*, not the live
-  # scopewatch-demo-*. Inspect with the same command without --quiet.
   docker compose -p budgetcheck config --quiet
-  # Cleanup runs on success AND on failure, so a failed check leaves nothing up.
   trap 'docker compose -p budgetcheck down -v' EXIT
-  # Gateway + gate only: no Caddy, so no certificate is requested.
-  docker compose -p budgetcheck up -d --build --wait gateway gate
-  ./scripts/smoke-demo.sh --exhaust-budget "http://127.0.0.1:${GATE_HOST_PORT}" "$TOKEN"
+  docker compose -p budgetcheck up -d --build --wait gateway caddy
+  # Recreate after seeding. The marker prevents reseeding; the new gateway
+  # starts with empty in-memory counters and this one-run budget.
+  export DEMO_MAX_RUNS_PER_DAY=1
+  docker compose -p budgetcheck up -d --wait gateway
+  ./scripts/smoke-demo.sh --exhaust-budget "http://localhost:${HTTP_HOST_PORT}" "$TOKEN"
   # want: 201 for the first run, then 429 + budget_exhausted + clear message
 )
 ```
 
-The smoke test reaches the **throwaway** gate on 18080, so the live gate on
-8080 keeps its own budget counters and its own evidence. Verify the isolation
-before you start, if you want to see it:
+The smoke test reaches only the throwaway Caddy on port 18000. Inspect the
+isolated names and ports before starting if needed:
 
 ```bash
-COMPOSE_PROJECT_NAME=budgetcheck GATE_HOST_PORT=18080 HTTP_HOST_PORT=18000 \
+COMPOSE_PROJECT_NAME=budgetcheck DOMAIN=http://localhost HTTP_HOST_PORT=18000 \
   HTTPS_HOST_PORT=18443 docker compose -p budgetcheck config | grep -E 'name:|published:'
-# want: only budgetcheck-* volumes and networks, and ports 18080/18000/18443
+# want: only budgetcheck-* volumes and networks, and ports 18000/18443
 ```
 
-To inspect what the live project still owns (read-only, safe while it runs):
+Inspect the live project without changing it:
 
 ```bash
 docker compose -p scopewatch-demo config | grep -E 'name:|published:'
 ```
 
-Do not run this step against a project name already in use, and do not run
-`down -v` without `-p budgetcheck`: that is how the live data volume gets
-removed. `DEMO_MAX_RUNS_PER_DAY=1` lives in the subshell only, so the live
-stack's cap is unchanged.
+Use a project name that is not already in use. Cleanup always names
+`-p budgetcheck`; omitting it could remove the live data volume.
 
 Rate-limit check (optional): create runs in a tight loop from one IP with the
 token; after `DEMO_RATE_LIMIT_RUNS_PER_MIN_PER_IP` creations you get `429`
@@ -395,7 +347,7 @@ actions to one run; the excess gets `429 turn_cap`.
 ```bash
 cd scopewatch/deploy
 docker compose ps                       # health + restart status
-docker compose logs -f gate gateway     # live logs (tokens are never logged)
+docker compose logs -f gateway     # live logs (tokens are never logged)
 docker compose logs --since 1h caddy    # TLS/access issues
 ```
 
@@ -423,13 +375,13 @@ Rotate the demo token (e.g. it leaked into a screenshot):
 cd scopewatch/deploy
 python3 -c "import secrets;print(secrets.token_urlsafe(32))"  # new value
 nano .env            # replace DEMO_TOKEN
-docker compose up -d gateway gate   # both validators load the new token
+docker compose up -d gateway   # the validator loads the new token
 # Old token stops working immediately; update the testing instructions.
 ```
 
 Rotate a provider key: same flow — edit `.env`, then
-`docker compose up -d gateway gate` (gateway recreates; in-flight runs live
-in the persistent volume, gate budgets reset).
+`docker compose up -d gateway`. The gateway recreates, runs stay in the
+persistent volume, and in-memory request counters reset.
 
 ## 6. Executor isolation decision and residual risk
 
@@ -439,15 +391,15 @@ mounting the Docker socket into anything the agent can reach.
 Decision for this stack:
 
 - **Default to `SCOPEWATCH_EXECUTOR=local` and mount no socket anywhere.**
-  `deploy/compose.yaml`, both Dockerfiles, and the Caddyfile contain zero
+  `deploy/compose.yaml`, the gateway Dockerfile, and the Caddyfile contain zero
   host daemon-control-socket mounts. This runbook spells that filename as
   `docker[.]sock` rather than embedding the literal token (verify:
-  `grep -R "docker[.]sock" deploy/compose.yaml deploy/Dockerfile deploy/gate/ deploy/Caddyfile`
+  `grep -R "docker[.]sock" deploy/compose.yaml deploy/Dockerfile deploy/Caddyfile`
   returns nothing — the only mentions in `deploy/` are these explanatory
   paragraphs), and the gateway image
   has no docker CLI. The agent's actions execute in-process in the
-  unprivileged gateway container, confined to the synthetic `/workspace`
-  volume with workspace-containment checks in code, under `read_only: true`,
+  unprivileged gateway container, confined to its synthetic `/runs` workspace
+  copy with workspace-containment checks in code, under `read_only: true`,
   `cap_drop: ALL`, `no-new-privileges`, a 256-process limit, and 1 GB RAM.
   `remote` is selectable from the deploy `.env` (it is no longer pinned in
   `environment:`, which used to override the env file), but only with the
@@ -469,18 +421,13 @@ Residual risks you accept by running this demo:
    (no-new-privs, dropped caps, read-only rootfs) — not by a second
    container. Mitigation: synthetic workspace only, no host mounts, no
    credentials in the container except provider keys in env.
-2. Gate budgets are count-based proxies, not token metering; a pathological
-   run could burn more tokens than its action count suggests. Mitigation:
-   low daily caps + turn cap + provider-side spend alerts (set these in the
-   Nebius console).
+2. Run/action caps do not measure model spend. Configure the gateway
+   per-profile token budgets too, plus provider-side spend alerts in the
+   Nebius console.
 3. Reads are public (dashboard browsing without a token) — acceptable because
    all demo content is synthetic; do not paste real data into the demo.
-4. Single gate replica holds budgets in memory; do not `--scale gate`.
-5. The gate binds `127.0.0.1:8080` on the host so the runbook verify commands
-   work. Anything running **on the VM** can reach the gate directly and set
-   `X-Forwarded-For`, so per-IP rate limiting does not apply to host-local
-   traffic. Acceptable: that traffic already has host access. Keep the
-   `127.0.0.1:` prefix; widening it exposes the gate to the internet.
+4. The single gateway replica holds request counters in memory. Restarting
+   resets these counters; do not scale the gateway without shared accounting.
 
 ## 7. Cost guard recap
 
@@ -488,8 +435,8 @@ Residual risks you accept by running this demo:
   refused as `429 budget_exhausted` with a plain-language message.
 - `mock` profiles make zero model calls — scripted judging never spends.
 - Live judging (`nebius-demo`) spends per agent/auditor call; keep caps low
-  and set a Nebius budget alert. True per-profile token metering is a
-  follow-up (below).
+  and set a Nebius budget alert. Configure
+  `SCOPEWATCH_DAILY_TOKEN_BUDGET_NEBIUS_DEMO` for native token metering.
 
 ## 8. Teardown after 2026-12-15
 
@@ -508,30 +455,18 @@ cd ~ && rm -rf scopewatch                   # remove repo + any local .env
 Verify: `https://<DOMAIN>/` no longer resolves/loads; provider key revoked
 in the Nebius console.
 
-## Known limits and follow-ups (filed from #42)
+## Known limits
 
-- Gateway-native demo-token auth (401/429 in `backend/scopewatch/app.py`).
-- Gateway-native per-profile daily TOKEN metering + run refusal with a clear
-  message (replacing the gate's count proxy).
-- Remote-executor hook + socket-holding `executor-runner` sidecar
-  (unlocks `SCOPEWATCH_EXECUTOR=docker` without a socket in the gateway).
-- Optional: shared-state (Redis) gate for multi-replica budgets.
-- The gate and the gateway demo guards still implement the same controls twice,
-  with different numerics and different fail-open/fail-closed behaviour. Decide
-  whether to delete the gate or to make it a thin token-checking proxy; tracked
-  as a follow-up from #107, not fixed here.
+- Request limits use in-memory state. Restarting resets them, and multiple
+  gateway replicas need shared accounting before they can enforce one cap.
+- Token metering needs explicit per-profile budgets. Its default is unlimited;
+  use `SCOPEWATCH_TOKEN_BUDGET_STORE` for persistence across restarts.
+- The optional executor-runner deployment requires its own credentials and
+  Compose fragment. See [executor operations](../docs/operations/docker-executor.md).
 
-## What was NOT verified by the author
+## Deployment verification limits
 
-- No Nebius VM was available: `docker compose up`, real TLS issuance, and
-  the Caddyfile were reviewed but not executed end to end.
-- No live provider keys: live-model spend was never exercised; only `mock`.
-- Browser check of the dashboard through Caddy was not performed.
-- #107's port and envelope changes were checked two ways: a real gate process
-  and a real demo-mode gateway were run locally and the whole
-  `smoke-demo.sh` script passed against them, and
-  `deploy/test_compose_layout.py` asserts that no runbook command curls a port
-  compose does not publish. `docker compose config` was NOT run (no Docker
-  daemon on the machine that made the change), so the loopback bind itself and
-  these commands are still unproven against a real VM.
-If you hit anything, file an issue with the failing command + output.
+Structural tests check the service graph, published ports, and the documented
+throwaway budget-check procedure. A real VM is still needed to verify binding,
+TLS issuance, the dashboard through Caddy, and live-provider token spend.
+All automated provider fixtures are synthetic and use mock transports.

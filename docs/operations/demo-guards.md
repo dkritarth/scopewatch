@@ -4,15 +4,15 @@ The gateway enforces public-demo controls itself, so they hold for every
 deployment. All values below are synthetic placeholders — never commit real
 tokens or keys.
 
-> Hosted-stack note: the current `deploy/compose.yaml` keeps the `deploy/gate`
-> sidecar for edge rate and count limits. The gate validates mutating requests
-> and forwards `X-Demo-Token` over the private Compose network. The gateway
-> validates the same token again and applies its native guards and token
-> metering. Other deployments may omit the sidecar and use these gateway
-> controls directly. Since #107 both layers refuse in the same flat
-> `{"error": "<code>", "message": "..."}` envelope; their numerics still
-> differ, so treat them as one policy only for the envelope. The gate is
-> published on `127.0.0.1:8080` for the operator's own runbook checks.
+The hosted stack routes `Caddy -> gateway` directly. Caddy handles TLS and
+proxying; the gateway alone enforces demo tokens, caps, request budgets, and
+per-profile token budgets. Compose requires `DEMO_TOKEN` and publishes only
+Caddy's ports 80 and 443. The hosted entrypoint rejects whitespace-only
+tokens before startup, so they cannot select local-development mode. See [the deployment decision](../../deploy/RUNBOOK.md#enforcement-decision-issue-155).
+
+Run one gateway replica. Rate windows, request budgets, and turn counts live
+in memory and reset on restart. Concurrency counts real run rows in SQLite.
+Token metering can persist separately through `SCOPEWATCH_TOKEN_BUDGET_STORE`.
 
 ## Demo mode (#76)
 
@@ -29,7 +29,9 @@ behaves exactly as before (local development and tests).
 | `DEMO_MAX_ACTIONS_PER_DAY` (alias `DEMO_DAILY_ACTION_BUDGET`) | `5000` | Action submissions per UTC day; `429 {"error": "budget_exhausted"}`. |
 
 Fail-closed: a malformed `DEMO_*` numeric refuses new runs/actions with
-`503 {"error": "demo_guard_misconfigured"}` while health and reads stay up.
+`503 {"error": "demo_guard_misconfigured"}` while health and reads stay up on a running gateway. On an empty deployment
+volume, the same invalid limits may stop offline scenario seeding and prevent
+startup. Neither case admits new work.
 Guard denials never echo tokens, keys, prompts, traces, or provider bodies.
 
 ### Discovery and the reviewer dashboard
