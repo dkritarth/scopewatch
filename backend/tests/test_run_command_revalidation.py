@@ -150,6 +150,27 @@ def test_helper_detects_swap_to_blocked_target(
     assert reason_code == ReasonCode.BLOCKED_PATH
 
 
+def test_helper_rejects_symlink_loop_at_dispatch(
+    swap_workspace: Path, swap_run: Run, docker_backend: None
+) -> None:
+    """A post-decision swap to a symlink loop fails closed, never raises.
+
+    Python 3.13 stopped raising on loops in non-strict ``Path.resolve()``;
+    the staged check must still refuse the loop on every version.
+    """
+    action = _cat_action(swap_run)
+    assert evaluate_policy(action, swap_run, swap_workspace).outcome == PolicyOutcome.ALLOW
+    (swap_workspace / "link").unlink()
+    (swap_workspace / "link").symlink_to("loop")
+    (swap_workspace / "loop").symlink_to("link")
+    denial = revalidate_run_command_in_workspace(
+        action, swap_run.task_scope, swap_workspace
+    )
+    assert denial is not None
+    reason_code, _explanation, _rule = denial
+    assert reason_code == ReasonCode.MALFORMED_REQUEST
+
+
 def test_helper_rejects_mutated_unallowlisted_prefix(
     swap_workspace: Path, swap_run: Run, docker_backend: None
 ) -> None:
