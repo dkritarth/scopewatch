@@ -20,7 +20,10 @@ internet --443/80--> caddy (automatic TLS, Caddyfile)
                         |  concurrent-run cap, per-run turn cap, daily budget
                         v  (compose `internal` network, no published ports)
                     gateway :8000 (FastAPI + static reviewer dashboard)
-                        |  SCOPEWATCH_EXECUTOR=local (no Docker socket anywhere)
+                        |  SCOPEWATCH_EXECUTOR=local by default (no Docker
+                        |  socket anywhere); `remote` selects the
+                        |  executor-runner sidecar on its own egress-less
+                        |  `executor-runner` network
                         v
               volumes: scopewatch-data (/data/sqlite),
                        scopewatch-workspace (the pristine scenario fixture),
@@ -250,9 +253,14 @@ The sidecar deliberately does **not** mount `scopewatch-workspace`. It holds the
 Docker socket and runs as root; giving it write access to the pristine fixture
 buys nothing and reopens what the per-run copies exist to prevent.
 
-Note that `deploy/compose.yaml` still pins `SCOPEWATCH_EXECUTOR=local`, so the
-sidecar is not part of the demo stack today (section 6). The contract above
-matters for the day that fragment is merged.
+`SCOPEWATCH_EXECUTOR` is an operator choice, defaulted to `local` in
+`deploy/compose.yaml` and overridable in the deploy `.env`. Selecting `remote`
+means merging the sidecar fragment (`deploy/executor-runner/README.md`), which
+puts the runner on its own `internal: true` `executor-runner` network that the
+gateway also joins — that network is why the gateway keeps its provider egress
+(issue #202). With `local` (the shipped default) the sidecar is not part of the
+demo stack today (section 6); the contract above matters for the day the
+fragment is merged.
 
 `backend/tests/test_run_workspaces_deployment.py` asserts this layout from the
 compose files and exercises it against a simulated read-only container root. It
@@ -326,17 +334,56 @@ the loopback-published gate. `./scripts/smoke-demo.sh` with no arguments does
 exactly that, so the script's default now works.
 
 Budget-exhaustion check (proves the cost guard refuses with a clear message).
-Do this against a THROWAWAY stack so judging budgets are untouched:
+Do this against a THROWAWAY project so the judging budgets, evidence volume,
+and host ports of the live stack are untouched. Run it from `scopewatch/deploy`
+— a scratch copy of the repository is no longer needed, because every volume,
+network, and host port is now scoped to the project name (issue #201).
+
+The three port overrides are what let both stacks be up at once: the throwaway
+gate takes 18080 instead of the live gate's loopback 8080, and Caddy's 80/443
+are moved off as well. `COMPOSE_PROJECT_NAME` is what scopes the named volumes
+and networks; export it *and* pass `-p` so the two cannot disagree.
 
 ```bash
-# On the VM, in a scratch copy:
-cp -r scopewatch /tmp/budget-check && cd /tmp/budget-check/deploy
-printf '\nDEMO_MAX_RUNS_PER_DAY=1\n' >> .env   # keep the same DEMO_TOKEN
-DOMAIN=localhost docker compose -p budgetcheck up -d --build
-./scripts/smoke-demo.sh --exhaust-budget http://127.0.0.1:8080 "$TOKEN"
-# want: ... 201 for the first run, then 429 + budget_exhausted + clear message
-docker compose -p budgetcheck down -v   # throwaway volumes deleted
+# From scopewatch/deploy, with TOKEN set as in section 4:
+(
+  set -euo pipefail
+  export COMPOSE_PROJECT_NAME=budgetcheck DOMAIN=localhost
+  export GATE_HOST_PORT=18080 HTTP_HOST_PORT=18000 HTTPS_HOST_PORT=18443
+  export DEMO_MAX_RUNS_PER_DAY=1                 # throwaway budget only
+  export SCOPEWATCH_AGENT_PROFILE=mock SCOPEWATCH_AUDITOR_PROFILE=mock
+  # Isolated resources: every volume/network is budgetcheck-*, not the live
+  # scopewatch-demo-*. Inspect with the same command without --quiet.
+  docker compose -p budgetcheck config --quiet
+  # Cleanup runs on success AND on failure, so a failed check leaves nothing up.
+  trap 'docker compose -p budgetcheck down -v' EXIT
+  # Gateway + gate only: no Caddy, so no certificate is requested.
+  docker compose -p budgetcheck up -d --build --wait gateway gate
+  ./scripts/smoke-demo.sh --exhaust-budget "http://127.0.0.1:${GATE_HOST_PORT}" "$TOKEN"
+  # want: 201 for the first run, then 429 + budget_exhausted + clear message
+)
 ```
+
+The smoke test reaches the **throwaway** gate on 18080, so the live gate on
+8080 keeps its own budget counters and its own evidence. Verify the isolation
+before you start, if you want to see it:
+
+```bash
+COMPOSE_PROJECT_NAME=budgetcheck GATE_HOST_PORT=18080 HTTP_HOST_PORT=18000 \
+  HTTPS_HOST_PORT=18443 docker compose -p budgetcheck config | grep -E 'name:|published:'
+# want: only budgetcheck-* volumes and networks, and ports 18080/18000/18443
+```
+
+To inspect what the live project still owns (read-only, safe while it runs):
+
+```bash
+docker compose -p scopewatch-demo config | grep -E 'name:|published:'
+```
+
+Do not run this step against a project name already in use, and do not run
+`down -v` without `-p budgetcheck`: that is how the live data volume gets
+removed. `DEMO_MAX_RUNS_PER_DAY=1` lives in the subshell only, so the live
+stack's cap is unchanged.
 
 Rate-limit check (optional): create runs in a tight loop from one IP with the
 token; after `DEMO_RATE_LIMIT_RUNS_PER_MIN_PER_IP` creations you get `429`
@@ -391,7 +438,7 @@ mounting the Docker socket into anything the agent can reach.
 
 Decision for this stack:
 
-- **Pin `SCOPEWATCH_EXECUTOR=local` and mount no socket anywhere.**
+- **Default to `SCOPEWATCH_EXECUTOR=local` and mount no socket anywhere.**
   `deploy/compose.yaml`, both Dockerfiles, and the Caddyfile contain zero
   host daemon-control-socket mounts. This runbook spells that filename as
   `docker[.]sock` rather than embedding the literal token (verify:
@@ -402,15 +449,18 @@ Decision for this stack:
   unprivileged gateway container, confined to the synthetic `/workspace`
   volume with workspace-containment checks in code, under `read_only: true`,
   `cap_drop: ALL`, `no-new-privileges`, a 256-process limit, and 1 GB RAM.
+  `remote` is selectable from the deploy `.env` (it is no longer pinned in
+  `environment:`, which used to override the env file), but only with the
+  sidecar fragment merged in — see below.
 - **Why not mount the socket into the gateway?** The socket is root on the
   host; anything the agent's HTTP traffic can reach (the gateway) must never
   hold it — a policy or approval bug would become a host takeover.
 - **Path to full container isolation:** a dedicated `executor-runner`
-  sidecar that ALONE holds the socket (or a rootless daemon) on the internal
-  network, with the gateway calling it only with policy-approved digests.
-  That needs a gateway-side remote-executor hook, which is a filed follow-up
-  (see below) owned by the executor thread — it is deliberately NOT
-  half-built here.
+  sidecar that ALONE holds the socket (or a rootless daemon) on its own
+  egress-less `executor-runner` network, with the gateway calling it only
+  with policy-approved digests. The fragment exists
+  (`deploy/executor-runner/compose.executor-runner.yaml`);
+  the demo stack ships without it, so the shipped deployment stays on `local`.
 
 Residual risks you accept by running this demo:
 

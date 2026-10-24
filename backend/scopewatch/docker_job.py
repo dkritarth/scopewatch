@@ -57,7 +57,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 # Pinned base image digest (Debian bookworm slim Python). Single pin for both
 # sides; the gateway and the runner previously repeated this string verbatim,
@@ -88,7 +88,7 @@ RUN_COMMAND_OUTPUT_LIMIT = 64 * 1024
 # Container output caps. These must stay equal to the gateway config values in
 # ``backend/scopewatch/config.py``; they are restated here because the runner
 # cannot import gateway config, and the cross-test pins them together.
-MAX_READ_BYTES = 256 * 1024  # 256 KiB
+MAX_READ_BYTES = 64 * 1024  # 64 KiB
 MAX_WRITE_BYTES = 64 * 1024  # 64 KiB
 
 
@@ -260,7 +260,7 @@ def helper_code() -> str:
         "                return\n"
         "            content = resolved.read_text(encoding='utf-8', errors='replace')\n"
         "            preview = content[:500] if len(content) > 500 else content\n"
-        "            print(json.dumps({'status': 'EXECUTED', 'result': {'operation': 'read_text', 'resource': resource, 'byte_count': size, 'preview': preview, 'truncated': len(content) > 500}, 'error_code': None}))\n"
+        "            print(json.dumps({'status': 'EXECUTED', 'result': {'operation': 'read_text', 'resource': resource, 'byte_count': size, 'content': content, 'preview': preview, 'truncated': False}, 'error_code': None}))\n"
         "            return\n"
         "        elif op == 'write_text':\n"
         "            content = args.get('content', '')\n"
@@ -421,8 +421,20 @@ def replace_link(src_link: Path, dest: Path) -> None:
     dest.symlink_to(os.readlink(src_link))
 
 
-def sync_copy_back(workspace_copy: Path, workspace_root: Path) -> None:
+def sync_copy_back(
+    workspace_copy: Path,
+    workspace_root: Path,
+    blocked_paths: Iterable[str] = (),
+) -> list[str]:
     """Copy container-modified files back to the host workspace.
+
+    Returns the sorted relative paths that were refused (issue #183): any
+    entry whose requested name falls under a ``blocked_paths`` prefix, and any
+    directory whose *resolved host destination* is blocked or lies outside
+    ``workspace_root`` (a host-side alias such as ``alias -> secrets`` would
+    otherwise be written through). A refused directory is skipped as a whole.
+    Refusal skips the entry instead of failing the receipt, so the container's
+    legitimate writes still land; the caller reports the refused list.
 
     Symlink-tolerant (issue #80): the previous
     ``shutil.copytree(..., symlinks=True, dirs_exist_ok=True)`` raised
@@ -436,23 +448,50 @@ def sync_copy_back(workspace_copy: Path, workspace_root: Path) -> None:
     container deletes are not propagated). Special files (sockets, fifos,
     devices) are skipped rather than copied.
     """
+    blocked = normalize_blocked_paths(blocked_paths)
     staged = Path(workspace_copy)
     dest_root = Path(workspace_root)
+    resolved_root = dest_root.resolve()
+    refused: set[str] = set()
     for dirpath, dirnames, filenames in os.walk(staged, followlinks=False):
         staged_dir = Path(dirpath)
         rel = staged_dir.relative_to(staged)
-        dest_dir = dest_root / rel if str(rel) != "." else dest_root
+        rel_parts = () if str(rel) == "." else rel.parts
+        dest_dir = dest_root.joinpath(*rel_parts)
+        # Resolved-destination check: a directory on the host may be a link
+        # the staged copy never had (it was excluded at staging, or created
+        # since). Writing below it would follow the link onto its target.
+        if rel_parts and not _dest_dir_allowed(dest_dir, resolved_root, blocked):
+            refused.add("/".join(rel_parts))
+            dirnames[:] = []
+            continue
         dest_dir.mkdir(parents=True, exist_ok=True)
         for name in list(dirnames):
+            if _is_blocked((*rel_parts, name), blocked):
+                refused.add("/".join((*rel_parts, name)))
+                dirnames.remove(name)
+                continue
             src_entry = staged_dir / name
             # Symlink-to-dir appears in dirnames when followlinks=False;
             # replicate the link itself and never descend into it (the walk
             # already refuses to follow, so no pruning is needed).
             if src_entry.is_symlink():
+                if _contains_blocked((*rel_parts, name), blocked):
+                    # Replacing this host directory with a link would rmtree
+                    # the blocked paths below it (#183 review).
+                    refused.add("/".join((*rel_parts, name)))
+                    continue
                 replace_link(src_entry, dest_dir / name)
             else:
                 (dest_dir / name).mkdir(parents=True, exist_ok=True)
         for name in filenames:
+            if _is_blocked((*rel_parts, name), blocked) or _contains_blocked(
+                (*rel_parts, name), blocked
+            ):
+                # A file or link where the host has an ancestor of a blocked
+                # path would replace (rmtree) that directory: refuse it.
+                refused.add("/".join((*rel_parts, name)))
+                continue
             src_entry = staged_dir / name
             dest_entry = dest_dir / name
             if src_entry.is_symlink():
@@ -468,6 +507,7 @@ def sync_copy_back(workspace_copy: Path, workspace_root: Path) -> None:
                 shutil.copy2(src_entry, dest_entry)
             # Else: socket/fifo/device or vanished mid-walk; skip (fail
             # closed on the file, not on the whole receipt).
+    return sorted(refused)
 
 
 def make_world_accessible(root: Path) -> None:
@@ -496,22 +536,150 @@ def make_world_accessible(root: Path) -> None:
             )
 
 
-def stage_workspace_copy(workspace_root: Path) -> tuple[Path, Path]:
+def stage_workspace_copy(
+    workspace_root: Path, blocked_paths: Iterable[str] = ()
+) -> tuple[Path, Path]:
     """Copy the workspace to a temp staging dir and open it to the container.
 
     Returns ``(staging_root, workspace_copy)``; the caller owns cleanup of
     ``staging_root``. Cleans up after itself and re-raises on copy/chmod
     failure, so a failed staging never leaves a world-writable tree behind.
+
+    ``blocked_paths`` (issue #183) is the run's ``task_scope.blocked_paths``.
+    Every entry under a blocked prefix is left out of the copy, judged both by
+    its name in the workspace and, for symlinks, by the target it resolves
+    to. Before #183 the whole tree was copied, so any allowlisted command that
+    runs workspace code (pytest collecting ``conftest.py``) could open a
+    blocked file and return its content in the receipt. After copying, every
+    blocked path is checked to be absent from the copy; if one is present, or
+    ``blocked_paths`` is malformed, or it blocks the workspace root itself,
+    staging raises :class:`StagingScopeError` (an ``OSError``) — fail closed.
     """
+    blocked = normalize_blocked_paths(blocked_paths)
+    if any(not prefix for prefix in blocked):
+        raise StagingScopeError("blocked_paths covers the whole workspace")
+    source = Path(workspace_root)
+    resolved_source = source.resolve()
     staging_root = Path(tempfile.mkdtemp(prefix="scopewatch-run-"))
     try:
         workspace_copy = staging_root / "workspace"
-        shutil.copytree(workspace_root, workspace_copy, symlinks=True)
+        ignore = _blocked_ignore(source, resolved_source, blocked) if blocked else None
+        shutil.copytree(source, workspace_copy, symlinks=True, ignore=ignore)
+        for prefix in blocked:
+            if os.path.lexists(workspace_copy.joinpath(*prefix)):
+                raise StagingScopeError("blocked path present in staged copy")
         make_world_accessible(workspace_copy)
     except Exception:
         shutil.rmtree(staging_root, ignore_errors=True)
         raise
     return staging_root, workspace_copy
+
+
+class StagingScopeError(OSError):
+    """Staging could not guarantee blocked paths stay out of the copy (#183)."""
+
+
+def normalize_blocked_paths(blocked_paths: Any) -> tuple[tuple[str, ...], ...]:
+    """Normalize ``task_scope.blocked_paths`` into segment tuples.
+
+    Same normalization the policy engine applies to scope paths
+    (``scopewatch.path_access.normalize_relative_path``): backslashes become
+    ``/``, and empty and ``"."`` segments are dropped, so ``"./secrets/"`` and
+    ``"secrets"`` match identically. Restated here because this module is
+    stdlib-only and cannot import the gateway. An empty tuple means the
+    workspace root. Anything that is not an iterable of strings raises
+    :class:`StagingScopeError`, so a malformed scope fails closed instead of
+    silently excluding nothing.
+    """
+    if blocked_paths is None:
+        return ()
+    if isinstance(blocked_paths, (str, bytes)) or not isinstance(
+        blocked_paths, (list, tuple, set, frozenset)
+    ):
+        raise StagingScopeError("blocked_paths must be a list of strings")
+    normalized = []
+    for item in blocked_paths:
+        if not isinstance(item, str):
+            raise StagingScopeError("blocked_paths must be a list of strings")
+        raw = item.strip().replace("\\", "/")
+        normalized.append(tuple(part for part in raw.split("/") if part and part != "."))
+    return tuple(normalized)
+
+
+def _is_blocked(parts: tuple[str, ...], blocked: tuple[tuple[str, ...], ...]) -> bool:
+    """True when ``parts`` is a blocked prefix or below one."""
+    return any(parts[: len(prefix)] == prefix for prefix in blocked)
+
+
+def _contains_blocked(parts: tuple[str, ...], blocked: tuple[tuple[str, ...], ...]) -> bool:
+    """True when ``parts`` is a strict ancestor of some blocked prefix.
+
+    Copy-back must never replace such a directory with a link or a file:
+    removing it would delete the blocked paths below it on the host.
+    """
+    return any(
+        len(prefix) > len(parts) and prefix[: len(parts)] == parts for prefix in blocked
+    )
+
+
+def _relative_parts(path: Path, root: Path) -> Optional[tuple[str, ...]]:
+    try:
+        return path.relative_to(root).parts
+    except ValueError:
+        return None
+
+
+def _blocked_ignore(
+    source: Path, resolved_source: Path, blocked: tuple[tuple[str, ...], ...]
+):
+    """``copytree`` ignore callback that drops blocked entries.
+
+    An entry is dropped when its requested name is blocked, or when it is a
+    symlink whose resolved target lands on a blocked path inside the
+    workspace. A link that cannot be resolved is dropped too (fail closed on
+    the entry). Non-link entries need no resolution: ``symlinks=True`` never
+    descends through a link, so every directory walked is a real one.
+    """
+
+    def ignore(dirpath: str, names: list[str]) -> set[str]:
+        rel = _relative_parts(Path(dirpath), source)
+        if rel is None:
+            # copytree only ever walks below ``source``; anything else is a
+            # bug, so refuse to copy the directory's contents at all.
+            return set(names)
+        dropped = set()
+        for name in names:
+            parts = (*rel, name)
+            if _is_blocked(parts, blocked):
+                dropped.add(name)
+                continue
+            entry = Path(dirpath) / name
+            if entry.is_symlink():
+                try:
+                    target = Path(os.path.realpath(entry))
+                except (OSError, RuntimeError, ValueError):
+                    dropped.add(name)
+                    continue
+                target_rel = _relative_parts(target, resolved_source)
+                if target_rel is not None and _is_blocked(target_rel, blocked):
+                    dropped.add(name)
+        return dropped
+
+    return ignore
+
+
+def _dest_dir_allowed(
+    dest_dir: Path, resolved_root: Path, blocked: tuple[tuple[str, ...], ...]
+) -> bool:
+    """Copy-back may write into ``dest_dir`` only if it resolves in scope."""
+    try:
+        resolved = dest_dir.resolve()
+    except (OSError, RuntimeError):
+        return False
+    rel = _relative_parts(resolved, resolved_root)
+    if rel is None:
+        return False
+    return not _is_blocked(rel, blocked)
 
 
 def best_effort_remove(container_name: str) -> None:
