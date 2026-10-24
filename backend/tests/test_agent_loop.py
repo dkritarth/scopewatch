@@ -11,6 +11,7 @@ Tests:
 """
 
 import ast
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -33,7 +34,7 @@ from scopewatch.agent.tools import (
 from scopewatch.app import create_app
 from scopewatch.models import ReasonCode, ReasoningProvenance, RunStatus
 from scopewatch.providers.client import ChatResult, MockProviderClient
-from scopewatch.schemas import TaskScope
+from scopewatch.schemas import ActionResponse, ExecutionReceipt, TaskScope
 
 
 # Synthetic capture credential for tests (#116). Never a real secret: it only
@@ -273,6 +274,21 @@ def create_test_run(
     )
     assert resp.status_code == 201, resp.text
     return resp.json()["id"]
+
+
+def wait_for_approval(
+    client: TestClient, run_id: str, timeout_s: float = 5.0,
+) -> dict[str, Any]:
+    """Wait for the gateway to persist a HOLD, with a bounded failure."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        response = client.get(f"/api/v1/runs/{run_id}/approvals")
+        assert response.status_code == 200, response.text
+        approvals = response.json()
+        if approvals:
+            return approvals[0]
+        assert time.monotonic() < deadline, "HOLD approval was not created"
+        time.sleep(0.01)
 
 
 # ---------------- End-to-End & Decision Tests ----------------
@@ -593,27 +609,159 @@ def test_scripted_hold_approved_lifecycle(test_env: dict[str, Any]) -> None:
         poll_interval_s=0.05,
     )
 
-    def reviewer_approval_worker():
-        # Wait a short moment for the approval to be created in the gateway
-        time.sleep(0.15)
-        approvals = client.get(f"/api/v1/runs/{run_id}/approvals").json()
-        assert len(approvals) >= 1
-        approval_id = approvals[0]["id"]
+    def reviewer_approval_worker() -> None:
+        approval_id = wait_for_approval(client, run_id)["id"]
         res = client.post(
             f"/api/v1/approvals/{approval_id}/approve",
             json={"resolution_reason": "Authorized cleanup."},
         )
         assert res.status_code == 200
 
-    thread = threading.Thread(target=reviewer_approval_worker)
-    thread.start()
-
-    result = loop.run()
-    thread.join()
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        review = workers.submit(reviewer_approval_worker)
+        try:
+            result = loop.run()
+        finally:
+            review.result(timeout=10)
 
     assert result.status == "COMPLETED"
     assert result.decisions == ["HOLD"]
     assert "reviewer approval" in result.final_response
+
+
+@pytest.mark.parametrize("resource", ["invoices/approved/vendor-a.txt", "invoices/approved/missing.txt"])
+@pytest.mark.parametrize("lifecycle", ["complete", "review_timeout", "wall_timeout"])
+@pytest.mark.parametrize("include_result", [True, False])
+def test_approved_action_waits_for_stored_receipt(
+    test_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    resource: str,
+    lifecycle: str,
+    include_result: bool,
+) -> None:
+    """APPROVED is in flight; only a stored receipt can resume the model."""
+    import scopewatch.service as service_module
+
+    client = test_env["client"]
+    run_id = create_test_run(client, requires_approval=["read_text"])
+    release = threading.Event()
+    polled_in_flight = threading.Event()
+    execute = service_module.execute_action
+    fail_refused = threading.Event()
+    post = client.post
+
+    def observed_post(url: str, *args: Any, **kwargs: Any) -> Any:
+        response = post(url, *args, **kwargs)
+        if url == f"/api/v1/runs/{run_id}/fail" and response.status_code == 409:
+            fail_refused.set()
+        return response
+
+    monkeypatch.setattr(client, "post", observed_post)
+
+    def gated_execute(*args: Any, **kwargs: Any) -> ExecutionReceipt:
+        assert release.wait(10), "executor gate was not released"
+        receipt = execute(*args, **kwargs)
+        if not include_result:
+            receipt.sanitized_result = None
+        return receipt
+
+    monkeypatch.setattr(service_module, "execute_action", gated_execute)
+
+    class ObservedDispatcher(GatewayDispatcher):
+        in_flight_polls = 0
+
+        def get_action(self, run_id: str, action_id: str) -> ActionResponse:
+            action = super().get_action(run_id, action_id)
+            if action.execution_receipt is None:
+                self.in_flight_polls += 1
+                if self.in_flight_polls >= 2:
+                    polled_in_flight.set()
+            return action
+
+    dispatcher = ObservedDispatcher(base_url="http://testserver", http_client=client)
+    provider = MockProviderClient()
+    provider.enqueue(ChatResult(
+        content="Read the approved invoice.", model="mock-model", profile="mock",
+        tool_calls=[{
+            "id": "gated-read", "type": "function",
+            "function": {"name": "read_text", "arguments": json.dumps({"path": resource})},
+        }],
+    ))
+    provider.enqueue(ChatResult(
+        content="Finished reviewing the tool result.", tool_calls=[],
+        model="mock-model", profile="mock",
+    ))
+    loop = AgentLoop(
+        run_id=run_id, provider_client=provider, dispatcher=dispatcher,
+        approval_timeout_s=5, poll_interval_s=0.01,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        loop_result = workers.submit(loop.run)
+        try:
+            approval = wait_for_approval(client, run_id)
+            approval_id = approval["id"]
+            action_id = approval["action_request_id"]
+            review = workers.submit(
+                client.post, f"/api/v1/approvals/{approval_id}/approve", json={},
+            )
+            assert polled_in_flight.wait(5), "loop stopped polling before execution finished"
+            assert not loop_result.done(), "loop returned during approved execution"
+            action = client.get(f"/api/v1/runs/{run_id}/actions/{action_id}").json()
+            assert action["approval_request"]["status"] == "APPROVED"
+            assert action["execution_receipt"] is None
+            for operation in ("complete", "fail"):
+                blocked = client.post(f"/api/v1/runs/{run_id}/{operation}")
+                assert blocked.status_code == 409
+                assert blocked.json()["error"]["code"] == "APPROVED_ACTION_IN_FLIGHT"
+            if lifecycle == "review_timeout":
+                loop.approval_timeout_s = 0
+                polled_in_flight.clear()
+                assert polled_in_flight.wait(5), "review timeout interrupted approved dispatch"
+                assert not loop_result.done()
+            elif lifecycle == "wall_timeout":
+                fail_refused.clear()
+                loop.wall_clock_timeout_s = 0
+                assert fail_refused.wait(5), "wall timeout did not attempt to fail the run"
+                assert not loop_result.done(), "loop returned before failure could be recorded"
+        finally:
+            release.set()
+        assert review.result(timeout=10).status_code == 200
+        result = loop_result.result(timeout=10)
+
+    expected_status = "FAILED" if lifecycle == "wall_timeout" else "COMPLETED"
+    assert result.status == expected_status, result.error
+    assert result.decisions == ["HOLD"]
+    action = client.get(f"/api/v1/runs/{run_id}/actions/{action_id}").json()
+    assert action["approval_request"]["status"] == "CONSUMED"
+    receipt = action["execution_receipt"]
+    feedback = [json.loads(m["content"]) for m in result.messages if m.get("role") == "tool"]
+    if lifecycle == "wall_timeout":
+        assert feedback == []
+        assert "Wall clock timeout" in result.error
+    elif resource.endswith("missing.txt"):
+        assert len(feedback) == 1
+        assert receipt["status"] == "FAILED"
+        assert feedback[0]["status"] == "FAILED"
+        assert feedback[0]["error_code"] == receipt["error_code"]
+        if include_result:
+            assert feedback[0]["error"] == receipt["sanitized_result"]["error"]
+    else:
+        assert len(feedback) == 1
+        assert receipt["status"] == "EXECUTED"
+        if include_result:
+            assert feedback[0] == receipt["sanitized_result"]
+            assert feedback[0]["content"] == "Vendor A: Amount $1,250.00\n"
+        else:
+            assert feedback[0] == {"status": "EXECUTED"}
+    assert client.get(f"/api/v1/runs/{run_id}").json()["status"] == expected_status
+    events = client.get(f"/api/v1/runs/{run_id}/events").json()
+    event_types = [event["event_type"] for event in events]
+    execution_event = "EXECUTION_FAILED" if receipt["status"] == "FAILED" else "EXECUTION_SUCCEEDED"
+    assert event_types.index("APPROVAL_GRANTED") < event_types.index("EXECUTION_STARTED")
+    assert event_types.index("EXECUTION_STARTED") < event_types.index(execution_event)
+    terminal_event = "SYSTEM_ERROR" if lifecycle == "wall_timeout" else "RUN_COMPLETED"
+    assert event_types.index(execution_event) < event_types.index(terminal_event)
 
 
 def test_scripted_hold_denied_lifecycle(test_env: dict[str, Any]) -> None:
@@ -665,22 +813,20 @@ def test_scripted_hold_denied_lifecycle(test_env: dict[str, Any]) -> None:
         poll_interval_s=0.05,
     )
 
-    def reviewer_deny_worker():
-        time.sleep(0.15)
-        approvals = client.get(f"/api/v1/runs/{run_id}/approvals").json()
-        assert len(approvals) >= 1
-        approval_id = approvals[0]["id"]
+    def reviewer_deny_worker() -> None:
+        approval_id = wait_for_approval(client, run_id)["id"]
         res = client.post(
             f"/api/v1/approvals/{approval_id}/deny",
             json={"resolution_reason": "Archive file must be preserved."},
         )
         assert res.status_code == 200
 
-    thread = threading.Thread(target=reviewer_deny_worker)
-    thread.start()
-
-    result = loop.run()
-    thread.join()
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        review = workers.submit(reviewer_deny_worker)
+        try:
+            result = loop.run()
+        finally:
+            review.result(timeout=10)
 
     assert result.status == "COMPLETED"
     assert result.decisions == ["HOLD"]

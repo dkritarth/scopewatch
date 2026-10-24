@@ -981,11 +981,22 @@ def test_pr67_c2_fail_completed_run_flips_to_failed(svc_env: dict) -> None:
 def test_pr67_c2_race_complete_vs_resolve_single_winner(svc_env: dict) -> None:
     """Race smoke: complete_run vs resolve_approval from 2 threads.
 
-    Accepts either winner but asserts exactly one wins and data stays
-    consistent: a receipt exists iff the approval is CONSUMED, and a
-    rejected resolve leaves the approval PENDING on a COMPLETED run.
+    Exactly three interleavings are legal, and each must leave consistent
+    evidence (a receipt exists iff the approval is CONSUMED):
+
+    1. Complete first: resolve gets RUN_NOT_ACTIVE, approval stays PENDING,
+       no receipt, run COMPLETED.
+    2. Resolve fully first (approval CONSUMED): complete then succeeds,
+       run COMPLETED after the execution evidence.
+    3. Complete lands while the approved action is mid-dispatch (#187 guard,
+       window widened by #245's to_thread): complete is refused with 409
+       APPROVED_ACTION_IN_FLIGHT, the run is NOT closed, the execution
+       finishes, and the documented retry then completes the run.
+
     Uses threads with a start barrier (WAL + 10s busy timeout serializes
     the writers); documents which outcome occurred via the assertion path.
+    Outcome 3 is forced deterministically in
+    test_pr67_c2_complete_refused_while_approved_action_in_flight (#262).
     """
     service: ScopewatchService = svc_env["service"]
     run = svc_env["run"]
@@ -1002,6 +1013,8 @@ def test_pr67_c2_race_complete_vs_resolve_single_winner(svc_env: dict) -> None:
         try:
             service.complete_run(run.id)
             outcomes["complete"] = "ok"
+        except ScopewatchAPIError as exc:
+            outcomes["complete"] = f"api:{exc.code}"
         except Exception as exc:  # noqa: BLE001 - recorded, asserted below
             outcomes["complete"] = f"error:{type(exc).__name__}:{exc}"
 
@@ -1026,32 +1039,134 @@ def test_pr67_c2_race_complete_vs_resolve_single_winner(svc_env: dict) -> None:
     t1.join(timeout=30)
     t2.join(timeout=30)
     assert not t1.is_alive() and not t2.is_alive(), "race threads hung"
-    assert outcomes.get("complete") == "ok", f"complete_run crashed: {outcomes}"
+
+    complete_outcome = outcomes.get("complete")
+    resolve_outcome = outcomes.get("resolve")
+    assert (complete_outcome, resolve_outcome) in (
+        ("ok", "api:RUN_NOT_ACTIVE"),  # 1. complete won
+        ("ok", "ok"),  # 2. resolve fully won
+        ("api:APPROVED_ACTION_IN_FLIGHT", "ok"),  # 3. complete hit mid-dispatch
+    ), f"unexpected race outcome: {outcomes}"
+
+    if complete_outcome == "api:APPROVED_ACTION_IN_FLIGHT":
+        # The refused complete must not have closed the run or written a
+        # terminal event; the execution then finished on an open run.
+        mid_run = service.get_run(run.id)
+        assert mid_run.status not in (RunStatus.COMPLETED, RunStatus.FAILED)
+        assert "RUN_COMPLETED" not in [
+            e.event_type.value for e in service.get_events(run.id)
+        ]
+        # The documented contract: retry once the execution finishes.
+        service.complete_run(run.id)
 
     action = service.get_action(run.id, action_id)
     final_run = service.get_run(run.id)
-    resolve_outcome = outcomes.get("resolve")
-    assert resolve_outcome in ("ok", "api:RUN_NOT_ACTIVE"), (
-        f"unexpected resolve outcome: {outcomes}"
-    )
+    events = [e.event_type.value for e in service.get_events(run.id)]
+    # Every branch ends with the run COMPLETED and RUN_COMPLETED as the last
+    # (and only) terminal event: nothing is recorded after the run closes.
+    assert final_run.status == RunStatus.COMPLETED
+    assert events.count("RUN_COMPLETED") == 1
+    assert events[-1] == "RUN_COMPLETED"
     if resolve_outcome == "ok":
-        # Resolve won (possibly before complete overwrote the status):
-        # approval consumed and a receipt exists; run is ACTIVE or COMPLETED.
+        # Resolve won the dispatch: approval consumed, receipt exists, and
+        # the execution evidence precedes the run's terminal event.
         assert action.approval_request is not None
         assert action.approval_request.status == ApprovalStatus.CONSUMED
         assert action.execution_receipt is not None
         assert action.execution_receipt.status == ExecutionStatus.EXECUTED
-        assert final_run.status in (RunStatus.ACTIVE, RunStatus.COMPLETED)
+        assert events.index("EXECUTION_SUCCEEDED") < events.index("RUN_COMPLETED")
     else:
         # Complete won: approval still PENDING, no receipt, run COMPLETED.
         assert action.approval_request is not None
         assert action.approval_request.status == ApprovalStatus.PENDING
         assert action.execution_receipt is None
         assert final_run.status == RunStatus.COMPLETED
-    # Consistency invariant holds in both branches: no receipt without CONSUMED.
+    # Consistency invariant holds in every branch: no receipt without CONSUMED.
     assert (action.execution_receipt is None) == (
         action.approval_request.status != ApprovalStatus.CONSUMED
     )
+
+
+def test_pr67_c2_complete_refused_while_approved_action_in_flight(
+    svc_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deterministic outcome 3 of the race above (#262).
+
+    Holds the approved action inside the executor, calls complete_run, and
+    checks the run is not closed mid-dispatch (#187): 409
+    APPROVED_ACTION_IN_FLIGHT, no terminal event, execution evidence still
+    lands on the open run, and the documented retry then completes it.
+    """
+    import scopewatch.service as service_module
+
+    service: ScopewatchService = svc_env["service"]
+    run = svc_env["run"]
+    res = _submit_hold(svc_env)
+    assert res.approval_request is not None
+    approval_id = res.approval_request.id
+    action_id = res.action_request.id
+
+    entered = threading.Event()
+    release = threading.Event()
+    real_execute = service_module.execute_action
+
+    def gated_execute(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=10), "test never released the executor"
+        return real_execute(*args, **kwargs)
+
+    monkeypatch.setattr(service_module, "execute_action", gated_execute)
+
+    resolve_outcome: dict = {}
+
+    def do_resolve() -> None:
+        try:
+            asyncio.run(
+                service.resolve_approval(approval_id, approve=True, resolved_by="racer-1")
+            )
+            resolve_outcome["resolve"] = "ok"
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            resolve_outcome["resolve"] = f"error:{type(exc).__name__}:{exc}"
+
+    t = threading.Thread(target=do_resolve)
+    t.start()
+    try:
+        assert entered.wait(timeout=10), "approved action never reached the executor"
+
+        with pytest.raises(ScopewatchAPIError) as exc_info:
+            service.complete_run(run.id)
+        assert exc_info.value.code == "APPROVED_ACTION_IN_FLIGHT"
+        assert exc_info.value.status_code == 409
+
+        # The refusal changed nothing: run still open, no terminal event,
+        # approval still APPROVED (not consumed), no receipt yet.
+        assert service.get_run(run.id).status not in (RunStatus.COMPLETED, RunStatus.FAILED)
+        events_mid = [e.event_type.value for e in service.get_events(run.id)]
+        assert "RUN_COMPLETED" not in events_mid
+        assert events_mid[-1] == "EXECUTION_STARTED"
+        action_mid = service.get_action(run.id, action_id)
+        assert action_mid.approval_request.status == ApprovalStatus.APPROVED
+        assert action_mid.execution_receipt is None
+    finally:
+        release.set()
+        t.join(timeout=30)
+    assert not t.is_alive(), "resolve thread hung"
+    assert resolve_outcome.get("resolve") == "ok", resolve_outcome
+
+    action = service.get_action(run.id, action_id)
+    assert action.approval_request.status == ApprovalStatus.CONSUMED
+    assert action.execution_receipt is not None
+    assert action.execution_receipt.status == ExecutionStatus.EXECUTED
+    assert service.get_run(run.id).status == RunStatus.ACTIVE
+
+    # Retry, as the 409 tells the caller to: now the run closes, after the
+    # execution evidence, with exactly one terminal event.
+    closed, _ = service.complete_run(run.id)
+    assert closed.status == RunStatus.COMPLETED
+    events = [e.event_type.value for e in service.get_events(run.id)]
+    assert events.count("RUN_COMPLETED") == 1
+    assert events[-1] == "RUN_COMPLETED"
+    assert events.index("EXECUTION_SUCCEEDED") < events.index("RUN_COMPLETED")
 
 
 # --- API-level getters after rejection --------------------------------------
