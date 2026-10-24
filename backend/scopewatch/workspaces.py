@@ -48,12 +48,15 @@ Two properties this module guarantees to its callers rather than inheriting
 from the environment (#172, #173), both found by the second-pass review of
 #117:
 
-- **A symlink loop fails closed as a documented error.** ``Path.resolve()``
-  raises ``RuntimeError`` for ELOOP and ``OSError`` for everything else, so
-  ``resolve`` catches both and every other resolution failure arrives as a
-  ``RunWorkspaceError`` — a 503 on the service path, the runner's structured
-  refusal on the sidecar. Nothing here can escape as an unhandled 500 or a
-  dropped connection.
+- **A symlink loop fails closed as a documented error.** On Python 3.12
+  ``Path.resolve()`` raises ``RuntimeError`` for ELOOP and ``OSError`` for
+  everything else, so ``resolve`` catches both and every other resolution
+  failure arrives as a ``RunWorkspaceError`` — a 503 on the service path, the
+  runner's structured refusal on the sidecar. Nothing here can escape as an
+  unhandled 500 or a dropped connection. Python 3.13 returns a looping link
+  unresolved instead of raising, so there a looping stored workspace path can
+  come back as the workspace; it still fails closed, because the policy
+  engine's loop-aware ``_resolve`` then DENYs every action against it.
 - **The run workspace is writable because it is a run workspace.** ``copytree``
   copies the source's permission bits onto every directory it copies, so the
   copy used to inherit the fixture's mode. A run workspace's mode is now set
@@ -362,9 +365,11 @@ class RunWorkspaceManager:
         A symlink loop on either path fails closed as a
         :class:`RunWorkspaceError`, not as a ``RuntimeError``: ``resolve()``
         raises ``RuntimeError`` for ELOOP and ``OSError`` for everything else
-        it can hit, so both are caught here (#172). This matches the four
-        ``resolve()`` guards in ``policy.py``, which already handle both; only
-        ``except OSError`` left a loop escaping as an unhandled 500.
+        it can hit, so both are caught here (#172). The policy engine handles
+        both the same way; only ``except OSError`` left a loop escaping as an
+        unhandled 500. On Python 3.13 ``resolve()`` no longer raises for a
+        loop (see the module docstring), and policy's ``_resolve`` is what
+        keeps such a workspace failing closed.
         """
         if stored_path:
             candidate = Path(stored_path)
