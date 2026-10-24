@@ -21,6 +21,7 @@ from scopewatch.path_access import (
     scoped_path_reason,
 )
 from scopewatch.models import (
+    RUN_COMMAND_ALLOWED_FLAGS,
     RUN_COMMAND_METACHARACTERS,
     PolicyOutcome,
     ReasonCode,
@@ -336,6 +337,20 @@ def _argv_matches_prefix(argv: list[str], prefixes: list[list[str]]) -> bool:
     return _match_prefix_len(argv, prefixes) > 0
 
 
+def _allowed_flags_for(prefix: list[str]) -> tuple[str, ...]:
+    """Return the declared option allowlist for a matched command prefix.
+
+    Fails closed: a prefix the scope allows but the rule set has never
+    audited accepts no options at all, so an unknown option name denies
+    instead of sliding through to the path rules (V1 gap 6).
+    """
+    key = tuple(prefix)
+    for known_prefix, flags in RUN_COMMAND_ALLOWED_FLAGS:
+        if key == known_prefix:
+            return flags
+    return ()
+
+
 def _check_run_command_path(
     value: str,
     *,
@@ -509,11 +524,12 @@ def revalidate_run_command_in_workspace(
 
     Defence in depth for the Docker executor (issue #68): re-derives the
     argv from the action (never a shell), re-checks the allowlist prefix,
-    re-applies the lexical path rules rooted at the staged copy, and
-    additionally verifies every path-bearing argument and the cwd resolve
-    to in-bounds, non-blocked targets. Returns a denial triple on the
-    first violation, else None. Never raises for malformed input: every
-    failure mode returns a denial so dispatch fails closed.
+    re-applies the flag allowlist (default-deny options) and the lexical
+    path rules rooted at the staged copy, and additionally verifies every
+    path-bearing argument and the cwd resolve to in-bounds, non-blocked
+    targets. Returns a denial triple on the first violation, else None.
+    Never raises for malformed input: every failure mode returns a denial
+    so dispatch fails closed.
     """
     arguments = action.arguments or {}
     raw_command = arguments.get("command")
@@ -573,7 +589,19 @@ def revalidate_run_command_in_workspace(
             "RULE_RUN_COMMAND_MALFORMED_PATH",
         )
 
+    # Same default-deny flag rule as the policy path (R7), so a scope or
+    # allowlist drift cannot re-widen the option surface at dispatch.
+    allowed_flags = _allowed_flags_for(argv[:matched_len])
     for item in argv[matched_len:]:
+        if item.startswith("-"):
+            option = item.split("=", 1)[0]
+            if option not in allowed_flags:
+                return (
+                    ReasonCode.COMMAND_NOT_ALLOWED,
+                    f"Option '{option}' is not in the allowlist for this command "
+                    "at dispatch.",
+                    "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
+                )
         candidates = [item]
         if "=" in item:
             candidates.append(item.split("=", 1)[1])
@@ -637,8 +665,9 @@ def _evaluate_run_command(
     """Deterministically evaluate a run_command action (issue #36).
 
     Order: docker-only gate, argument extraction, scope operation gate,
-    metacharacter rejection, shlex parsing, allowlist prefix match, argument
-    path rules, cwd validation, approval hold, else allow.
+    metacharacter rejection, shlex parsing, allowlist prefix match, flag
+    allowlist (default-deny), argument path rules, cwd validation,
+    approval hold, else allow.
     """
 
     def deny(reason_code: ReasonCode, explanation: str, matched_rule: str) -> PolicyDecision:
@@ -748,10 +777,22 @@ def _evaluate_run_command(
             "RULE_COMMAND_NOT_ALLOWED",
         )
 
-    # R7: path-like arguments use the existing path rules. Only the
-    # post-prefix arguments are checked; flag values after '=' are checked
-    # as well so '--output=/abs/path' cannot smuggle an absolute path.
+    # R7: options are default-deny. A post-prefix token starting with '-'
+    # must name an option declared for the matched command prefix (the flag
+    # allowlist, closing V1 gap 6), so behavioural flags with no path
+    # signal (``--maxfail``, ``-x``, ``-q``, ``--tb``, ``-p``, ...) can no
+    # longer ride through; allowed options still pass through the path
+    # rules below, so '--rootdir=/abs' keeps its path denial.
+    allowed_flags = _allowed_flags_for(argv[:matched_len])
     for item in argv[matched_len:]:
+        if item.startswith("-"):
+            option = item.split("=", 1)[0]
+            if option not in allowed_flags:
+                return deny(
+                    ReasonCode.COMMAND_NOT_ALLOWED,
+                    f"Option '{option}' is not in the allowlist for this command.",
+                    "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
+                )
         candidates = [item]
         if "=" in item:
             candidates.append(item.split("=", 1)[1])

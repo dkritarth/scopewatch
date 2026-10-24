@@ -95,3 +95,9 @@ fi
 echo ""
 echo "[7/7] Running clean-room demo scenario verification..."
 "${REPO_ROOT}/scripts/verify_scenario.sh"
+
+# 8. Docs link/claim consistency check (#46)
+echo ""
+echo "[8/8] Running docs link and env-var consistency checker..."
+"${PYTHON}" "${REPO_ROOT}/scripts/check_docs_links.py"
+echo "  ✓ Docs links, model IDs, URLs, claims, and secrets all clean."
