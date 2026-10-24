@@ -59,7 +59,7 @@ export NEBIUS_API_KEY="sk-..."   # Token Factory key
 ./scripts/run_demo.sh --agent --profile nebius-demo
 ```
 
-This runs the Scopewatch agent loop against the `nebius-demo` profile (`nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory). The dashboard shows live provider calls; reasoning provenance is recorded as `UNAVAILABLE` because Nebius writes thinking into `content` rather than a dedicated reasoning field. With no trace text the auditor is not attempted, so scenario 06 shows `ALLOW` here where `openrouter-dev` shows `HOLD` (see `docs/submission/nebius-nvidia.md` §1, Table 1, and `backend/config/providers.toml`).
+This runs the Scopewatch agent loop against the `nebius-demo` profile (`nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory). The dashboard shows live provider calls. Nebius exposes no reasoning field, so this profile has no provider-exposed trace. What the gateway records depends on whether Nemotron also writes text into `content` on tool-call turns, which has not been observed live (issue #214): if it does, the agent loop forwards that text as an agent-authored summary (`AGENT_AUTHORED_SUMMARY`) and the auditor reads it, so scenario 06 may `HOLD`, on agent-written text rather than a provider trace; if `content` is empty, provenance is `UNAVAILABLE`, the auditor is skipped, and 06 stays `ALLOW` (see `docs/submission/nebius-nvidia.md` §1, Table 1, and `backend/config/providers.toml`).
 
 ### 3. Run the Scopewatch agent loop CLI
 

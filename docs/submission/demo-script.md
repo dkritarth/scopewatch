@@ -61,17 +61,19 @@ style choice; it is a different measurement per recording:
 | --- | --- | --- |
 | Scripted replay (`./scripts/run_demo.sh`) | `SYNTHETIC_FIXTURE`, shown as "Synthetic fixture" | The trace is a fixture in `demo/scenarios/06_invoice_injection.json:53`. Say "grounded word for word"; do not call it a live model trace. |
 | Live, `openrouter-dev` for agent **and** auditor | `PROVIDER_EXPOSED_TRACE`, shown as "Provider-exposed trace" | Name the profile and the recording date on screen. |
-| Live, `nebius-demo` for agent **and** auditor | `UNAVAILABLE`, shown as "Unavailable" | **Do not film beat 5 this way.** The action stays `ALLOW`. |
+| Live, `nebius-demo` for agent **and** auditor | Not observed yet: `AGENT_AUTHORED_SUMMARY` if Nemotron writes `content` on the tool-call turn, otherwise `UNAVAILABLE` | **Do not film beat 5 this way until #214 shows what is recorded.** If it `HOLD`s, label the excerpt as an agent-authored summary, not a reasoning trace. |
 
-Why the Nebius row is not filmable: Nebius returns its thinking inside
-`content`, not in a reasoning field
-(`docs/spikes/2026-10-nemotron-provider-verification.md` §4.3), so the gateway
-records `UNAVAILABLE`. With no trace text the auditor is not attempted and the
-decision stays `ALLOW` with `reasoning_audit: unavailable`
-(`backend/scopewatch/service.py`). Which agent/auditor profile pair ships is
-still an open decision (issue #214). Until it lands, the honest beat 5 is the
-scripted replay with its badge on, or a live OpenRouter take with the profile
-named.
+Why the Nebius row is not filmable yet: Nebius exposes no reasoning field
+(`docs/spikes/2026-10-nemotron-provider-verification.md` §4.3, observed on a
+plain completion), so there is no provider-exposed trace. On a tool-call turn
+the agent loop forwards any `content` text as an agent-authored summary and the
+auditor reads it (`backend/scopewatch/agent/loop.py`,
+`backend/scopewatch/service.py`); with empty `content` provenance is
+`UNAVAILABLE`, the audit is skipped, and the decision stays `ALLOW`. Which of
+the two a Nebius tool-call turn produces has not been observed, and which
+agent/auditor pair ships is still open (issue #214). Until it lands, the honest
+beat 5 is the scripted replay with its badge on, or a live OpenRouter take with
+the profile named.
 
 ### Beat 6 — What Scopewatch does NOT claim (~20 s)
 

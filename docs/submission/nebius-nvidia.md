@@ -71,16 +71,20 @@ runs are directly comparable:
 | | `nebius-demo` (Nebius) | `openrouter-dev` (OpenRouter) |
 | --- | --- | --- |
 | Model served | `nvidia/Nemotron-3_5-Lightning` | `nvidia/nemotron-3.5-lightning` |
-| Reasoning field observed | `message.reasoning` and `message.reasoning_content` both present and **`None`**; thinking written into `content` | non-empty `message.reasoning`, including on tool-call turns |
-| Recorded provenance | **`UNAVAILABLE`** | **`PROVIDER_EXPOSED_TRACE`** (with capture credential) |
+| Reasoning field observed | on a plain completion, `message.reasoning` and `message.reasoning_content` both present and **`None`**; thinking written into `content` | non-empty `message.reasoning`, including on tool-call turns |
+| Recorded provenance | no provider trace; `AGENT_AUTHORED_SUMMARY` if tool-call turns carry `content` text, else `UNAVAILABLE` (not yet observed, #214) | **`PROVIDER_EXPOSED_TRACE`** (with capture credential) |
 | Held-out accuracy (2026-10-03) | 79.2% | 87.5% |
 | Held-out latency p50 | 619 ms | 2,372 ms |
 
 Consequence, stated plainly because it changes the demo: Nebius exposes no
-reasoning field, so a Nebius-backed run records no trace, the auditor is not
-attempted, and a reasoning-escalated `HOLD` cannot be produced on that profile.
-The same model through OpenRouter does produce one. Which pair ships is still
-an open decision (issue #214), and this package does not pre-empt it.
+reasoning field, so a Nebius-backed run has no provider-exposed trace. If
+Nemotron also writes text into `content` on tool-call turns, the gateway records
+it as an agent-authored summary and the auditor reads it, so a
+reasoning-escalated `HOLD` can happen, but on agent-written text. If `content`
+is empty, provenance is `UNAVAILABLE`, the auditor is skipped, and the action
+stays `ALLOW`. Neither outcome has been observed live. The same model through
+OpenRouter does expose a trace. Which pair ships is still an open decision
+(issue #214), and this package does not pre-empt it.
 
 `mock` (`mock-rules-auditor`, no network, no key) is what CI runs; its 93.8% is
 a rule-matcher structural check, not model accuracy.
@@ -94,11 +98,12 @@ a rule-matcher structural check, not model accuracy.
 - **Why this model:** Nebius lists it as the recommended serverless replacement
   for the Llama and Hermes instruct models withdrawn 2026-08-31, so it is the
   current NVIDIA open model on the platform rather than a deprecated one.
-- **Observed limitation:** Nebius does not expose a reasoning field in these
-  calls, so Scopewatch records reasoning as `UNAVAILABLE` on this profile
-  rather than parsing thinking out of `content`. That is the honest reading and
-  the one ADR-0001 requires; it is also the reason the demo's reasoning beat is
-  not filmed on `nebius-demo` (issue #214 owns the profile decision).
+- **Observed limitation:** on a plain completion Nebius exposed no reasoning
+  field, so this profile has no provider-exposed trace, and Scopewatch never
+  promotes thinking found in `content` to one (ADR-0001). Text in `content` on
+  a tool-call turn is forwarded only as an agent-authored summary; whether
+  Nemotron writes any there has not been observed. That is why the demo's
+  reasoning beat is not filmed on `nebius-demo` until issue #214 settles it.
 - **License — not confirmed in this repository.** An earlier draft of this file
   claimed the model was dual-governed by the NVIDIA Open Model License Agreement
   *and* a second, Meta-derived community license. That claim was inherited from
