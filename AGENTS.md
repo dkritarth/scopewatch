@@ -46,6 +46,7 @@ These are the ideas Scopewatch is about. Code that breaks one is a bug, even if 
 | `frontend/` | Dependency-free HTML, CSS, and JavaScript dashboard, with unit and Playwright tests |
 | `demo/` | Synthetic workspaces and scenario files |
 | `poc/` | Experiments and prototypes. Each gets its own folder with a README (see [poc/README.md](poc/README.md)) |
+| `site/` | Project website (GitHub Pages): landing page and a replay of recorded invoice-scenario decisions (`scripts/export_site_demo.py`) |
 | `scripts/` | `run_demo.sh`, `validate.sh`, `seed_demo.py`; `scripts/agents/` holds backlog and worktree helpers |
 | `docs/` | Architecture, decisions (`adr/`), ideas, spikes, agent playbook, hackathon checklist ([index](docs/README.md)) |
 | `.agents/roles/` | Role specs for agent threads (see below) |
