@@ -11,7 +11,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +19,56 @@ import { chromium } from "playwright";
 
 // Synthetic credential for this test process only. Never a real demo token.
 const DEMO_TOKEN = "browser-test-demo-token-not-real";
+
+function createUnhealthyGatewayExecutable({ ignoreSigterm = false } = {}) {
+  const repoRoot = mkdtempSync(join(tmpdir(), "scopewatch-unhealthy-gateway-"));
+  const pythonBin = join(repoRoot, ".venv", "bin", "python");
+  const readyPath = join(repoRoot, "gateway.ready");
+  mkdirSync(join(repoRoot, ".venv", "bin"), { recursive: true });
+  writeFileSync(
+    pythonBin,
+    `#!/usr/bin/env node
+const { writeFileSync } = require("node:fs");
+${ignoreSigterm ? 'process.on("SIGTERM", () => {});' : ""}
+writeFileSync(${JSON.stringify(readyPath)}, "ready");
+setInterval(() => {}, 1_000);
+`,
+    "utf-8",
+  );
+  chmodSync(pythonBin, 0o755);
+
+  return { repoRoot, readyPath };
+}
+
+function isProcessRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function terminateProcess(proc, graceMs = 2_000) {
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
+
+  const exited = new Promise((resolve) => proc.once("exit", resolve));
+  proc.kill("SIGTERM");
+
+  let graceTimer;
+  const graceExpired = new Promise((resolve) => {
+    graceTimer = setTimeout(resolve, graceMs);
+    graceTimer.unref?.();
+  });
+  await Promise.race([exited, graceExpired]);
+  clearTimeout(graceTimer);
+
+  if (proc.exitCode === null && proc.signalCode === null) {
+    proc.kill("SIGKILL");
+    await exited;
+  }
+}
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -30,7 +80,7 @@ function getFreePort() {
   });
 }
 
-async function startGateway(repoRoot, { demoMode }) {
+async function startGateway(repoRoot, { demoMode, onSpawn = () => {} }) {
   const tmpDir = mkdtempSync(join(tmpdir(), "scopewatch-demo-auth-"));
   const workspacePath = join(tmpDir, "workspace");
   mkdirSync(join(workspacePath, "invoices", "approved"), { recursive: true });
@@ -62,9 +112,11 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
       ...(demoMode ? { DEMO_TOKEN } : { DEMO_TOKEN: "" }),
     },
   });
+  onSpawn(proc);
 
   let healthy = false;
-  for (let i = 0; i < 40; i++) {
+  const startupDeadline = Date.now() + 30_000;
+  while (Date.now() < startupDeadline) {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/api/v1/health`);
       if (res.ok) {
@@ -76,9 +128,93 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     }
     await new Promise((r) => setTimeout(r, 200));
   }
+
+  if (!healthy) await terminateProcess(proc);
   assert.equal(healthy, true, "gateway failed to become healthy");
   return { port, proc };
 }
+
+test("gateway startup polling continues beyond the old eight-second attempt cap (#263)", { timeout: 5000 }, async () => {
+  const fixture = createUnhealthyGatewayExecutable();
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalDateNow = Date.now;
+  let now = 0;
+  let attempts = 0;
+  let proc;
+
+  globalThis.fetch = async () => {
+    if (!existsSync(fixture.readyPath)) {
+      await new Promise(setImmediate);
+      return { ok: false };
+    }
+    now += 200;
+    attempts += 1;
+    return { ok: attempts === 41 };
+  };
+  globalThis.setTimeout = (callback) => {
+    queueMicrotask(callback);
+    return 0;
+  };
+  Date.now = () => now;
+
+  try {
+    await startGateway(fixture.repoRoot, {
+      demoMode: true,
+      onSpawn: (child) => {
+        proc = child;
+      },
+    });
+    assert.equal(attempts, 41, "startup must not stop at the old 40-attempt cap");
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    Date.now = originalDateNow;
+    if (proc) await terminateProcess(proc);
+  }
+});
+
+test("failed gateway startup force-kills and reaps a child that ignores SIGTERM (#263)", { timeout: 5000 }, async () => {
+  const fixture = createUnhealthyGatewayExecutable({ ignoreSigterm: true });
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalDateNow = Date.now;
+  let now = 0;
+  let proc;
+
+  globalThis.fetch = async () => {
+    if (!existsSync(fixture.readyPath)) {
+      await new Promise(setImmediate);
+      return { ok: false };
+    }
+    now += 1_000;
+    throw new Error("synthetic gateway is still unavailable");
+  };
+  globalThis.setTimeout = (callback) => {
+    queueMicrotask(callback);
+    return 0;
+  };
+  Date.now = () => now;
+
+  try {
+    await assert.rejects(
+      startGateway(fixture.repoRoot, {
+        demoMode: true,
+        onSpawn: (child) => {
+          proc = child;
+        },
+      }),
+      /gateway failed to become healthy/,
+    );
+    assert.ok(proc, "the synthetic gateway must have started");
+    assert.equal(isProcessRunning(proc.pid), false, "failed startup must not leave the gateway process running");
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    Date.now = originalDateNow;
+    if (proc && isProcessRunning(proc.pid)) await terminateProcess(proc);
+  }
+});
 
 test("hosted demo: mutations need a reviewer token, reads never carry one", { timeout: 60000 }, async () => {
   const repoRoot = join(import.meta.dirname, "..", "..", "..");
@@ -194,7 +330,7 @@ test("hosted demo: mutations need a reviewer token, reads never carry one", { ti
     assert.deepEqual(pageErrors, [], "no uncaught page errors");
   } finally {
     if (browser) await browser.close();
-    proc.kill("SIGTERM");
+    await terminateProcess(proc);
   }
 });
 
@@ -246,6 +382,6 @@ test("a gateway without demo mode never asks for a token (#115)", { timeout: 600
     assert.equal(await page.locator("#reviewer-access-panel").isVisible(), false);
   } finally {
     if (browser) await browser.close();
-    proc.kill("SIGTERM");
+    await terminateProcess(proc);
   }
 });

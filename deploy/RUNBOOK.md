@@ -334,17 +334,56 @@ the loopback-published gate. `./scripts/smoke-demo.sh` with no arguments does
 exactly that, so the script's default now works.
 
 Budget-exhaustion check (proves the cost guard refuses with a clear message).
-Do this against a THROWAWAY stack so judging budgets are untouched:
+Do this against a THROWAWAY project so the judging budgets, evidence volume,
+and host ports of the live stack are untouched. Run it from `scopewatch/deploy`
+— a scratch copy of the repository is no longer needed, because every volume,
+network, and host port is now scoped to the project name (issue #201).
+
+The three port overrides are what let both stacks be up at once: the throwaway
+gate takes 18080 instead of the live gate's loopback 8080, and Caddy's 80/443
+are moved off as well. `COMPOSE_PROJECT_NAME` is what scopes the named volumes
+and networks; export it *and* pass `-p` so the two cannot disagree.
 
 ```bash
-# On the VM, in a scratch copy:
-cp -r scopewatch /tmp/budget-check && cd /tmp/budget-check/deploy
-printf '\nDEMO_MAX_RUNS_PER_DAY=1\n' >> .env   # keep the same DEMO_TOKEN
-DOMAIN=localhost docker compose -p budgetcheck up -d --build
-./scripts/smoke-demo.sh --exhaust-budget http://127.0.0.1:8080 "$TOKEN"
-# want: ... 201 for the first run, then 429 + budget_exhausted + clear message
-docker compose -p budgetcheck down -v   # throwaway volumes deleted
+# From scopewatch/deploy, with TOKEN set as in section 4:
+(
+  set -euo pipefail
+  export COMPOSE_PROJECT_NAME=budgetcheck DOMAIN=localhost
+  export GATE_HOST_PORT=18080 HTTP_HOST_PORT=18000 HTTPS_HOST_PORT=18443
+  export DEMO_MAX_RUNS_PER_DAY=1                 # throwaway budget only
+  export SCOPEWATCH_AGENT_PROFILE=mock SCOPEWATCH_AUDITOR_PROFILE=mock
+  # Isolated resources: every volume/network is budgetcheck-*, not the live
+  # scopewatch-demo-*. Inspect with the same command without --quiet.
+  docker compose -p budgetcheck config --quiet
+  # Cleanup runs on success AND on failure, so a failed check leaves nothing up.
+  trap 'docker compose -p budgetcheck down -v' EXIT
+  # Gateway + gate only: no Caddy, so no certificate is requested.
+  docker compose -p budgetcheck up -d --build --wait gateway gate
+  ./scripts/smoke-demo.sh --exhaust-budget "http://127.0.0.1:${GATE_HOST_PORT}" "$TOKEN"
+  # want: 201 for the first run, then 429 + budget_exhausted + clear message
+)
 ```
+
+The smoke test reaches the **throwaway** gate on 18080, so the live gate on
+8080 keeps its own budget counters and its own evidence. Verify the isolation
+before you start, if you want to see it:
+
+```bash
+COMPOSE_PROJECT_NAME=budgetcheck GATE_HOST_PORT=18080 HTTP_HOST_PORT=18000 \
+  HTTPS_HOST_PORT=18443 docker compose -p budgetcheck config | grep -E 'name:|published:'
+# want: only budgetcheck-* volumes and networks, and ports 18080/18000/18443
+```
+
+To inspect what the live project still owns (read-only, safe while it runs):
+
+```bash
+docker compose -p scopewatch-demo config | grep -E 'name:|published:'
+```
+
+Do not run this step against a project name already in use, and do not run
+`down -v` without `-p budgetcheck`: that is how the live data volume gets
+removed. `DEMO_MAX_RUNS_PER_DAY=1` lives in the subshell only, so the live
+stack's cap is unchanged.
 
 Rate-limit check (optional): create runs in a tight loop from one IP with the
 token; after `DEMO_RATE_LIMIT_RUNS_PER_MIN_PER_IP` creations you get `429`
