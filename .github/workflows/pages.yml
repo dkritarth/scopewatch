@@ -1,0 +1,62 @@
+name: Project website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'demo/scenarios/**'
+      - 'demo/workspace/**'
+      - 'backend/scopewatch/**'
+      - 'scripts/export_site_demo.py'
+      - 'scripts/seed_demo.py'
+      - '.github/workflows/pages.yml'
+  pull_request:
+    paths:
+      - 'site/**'
+      - 'scripts/export_site_demo.py'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+      - run: python -m pip install --require-hashes -r backend/requirements.lock
+      # The demo page replays what the real gateway records. Regenerate it and
+      # fail if the committed copy has drifted from the current gateway.
+      - name: Check recorded demo data is current
+        run: |
+          python scripts/export_site_demo.py --out /tmp/demo-data.json
+          diff -u site/assets/demo-data.json /tmp/demo-data.json || (echo "site/assets/demo-data.json is stale. Run: python3 scripts/export_site_demo.py"; exit 1)
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

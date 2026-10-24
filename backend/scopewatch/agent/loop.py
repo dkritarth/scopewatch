@@ -208,6 +208,9 @@ class AgentLoop:
         total_tool_calls = 0
         recorded_actions: list[ActionResponse] = []
         recorded_decisions: list[str] = []
+        # Holds whose approval poll timed out (#187): the run can still
+        # complete, but its summary must not claim those actions executed.
+        unresolved_holds = 0
 
         system_prompt = build_system_prompt(self.task_description)
         messages: list[dict[str, Any]] = [
@@ -335,6 +338,14 @@ class AgentLoop:
                 # If no tool calls produced, task is finished
                 if not chat_result.tool_calls:
                     self.dispatcher.complete_run(self.run_id)
+                    final_response = chat_result.content
+                    if unresolved_holds:
+                        final_response = (
+                            f"{final_response or ''}\n\n[Gateway note: "
+                            f"{unresolved_holds} held action(s) received no "
+                            "review before the approval timeout and were not "
+                            "executed.]"
+                        )
                     return AgentRunResult(
                         run_id=self.run_id,
                         status="COMPLETED",
@@ -342,7 +353,7 @@ class AgentLoop:
                         total_tool_calls=total_tool_calls,
                         actions=recorded_actions,
                         decisions=recorded_decisions,
-                        final_response=chat_result.content,
+                        final_response=final_response,
                         messages=messages,
                         prompt_version=self.prompt_version,
                     )
@@ -412,6 +423,14 @@ class AgentLoop:
                             if receipt and receipt.sanitized_result is not None
                             else {"status": "EXECUTED"}
                         )
+                        # Issue #197: reads that are truncated without content are refused with an explicit error
+                        if isinstance(result_data, dict) and result_data.get("operation") == "read_text":
+                            if result_data.get("truncated") and "content" not in result_data:
+                                result_data = {
+                                    "status": "FAILED",
+                                    "error": f"File read was truncated ({result_data.get('byte_count', 0)} bytes). Reads above the bound are refused.",
+                                    "error_code": "OVERSIZED_FILE",
+                                }
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call_id,
@@ -508,6 +527,7 @@ class AgentLoop:
                             time.sleep(self.poll_interval_s)
 
                         if not resolved:
+                            unresolved_holds += 1
                             tool_content = json.dumps({
                                 "status": "TIMEOUT",
                                 "explanation": f"Approval timed out after {self.approval_timeout_s}s waiting for review.",

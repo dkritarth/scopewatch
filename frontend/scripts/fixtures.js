@@ -14,11 +14,41 @@ const statusMetadata = {
     execution: "Attempted; completion unknown. No receipt in fixture.",
     policy: "No policy decision recorded in fixture.",
   },
+  allowed: {
+    label: "Allowed",
+    short: "Tool call permitted by fixture policy",
+    execution: "Attempt recorded; not executed in fixture.",
+    policy: "Permitted by policy in fixture.",
+  },
+  held: {
+    label: "Pending approval",
+    short: "Awaiting a human decision in the replay",
+    execution: "Request recorded; not executed in fixture.",
+    policy: "Pending approval in fixture; no human decision recorded.",
+  },
+  denied: {
+    label: "Blocked by policy",
+    short: "Fixture policy decision; no real system action",
+    execution: "Attempt recorded; not executed in fixture.",
+    policy: "Blocked before execution in fixture. No actual enforcement.",
+  },
+  approved: {
+    label: "Approved",
+    short: "Tool call authorized by reviewer in replay",
+    execution: "Request recorded; not executed in fixture.",
+    policy: "Approved by reviewer authorization in fixture.",
+  },
   executed: {
     label: "Executed",
     short: "Tool call was recorded as completed in the fixture",
     execution: "Executed in fixture; synthetic completion recorded.",
     policy: "No separate policy decision recorded. Completion is not authorization.",
+  },
+  failed: {
+    label: "Failed",
+    short: "Tool call execution failed in fixture",
+    execution: "Execution failed in fixture.",
+    policy: "Policy allowed, but execution failed.",
   },
   blocked: {
     label: "Blocked by policy",
@@ -84,7 +114,7 @@ export const runs = [
         title: "Read approved invoice folder",
         tool: "filesystem.read",
         resource: "Vendor Invoices/Q3",
-        status: "executed",
+        status: "allowed",
         description: "A folder read completed inside the replay task scope.",
         evidence: [
           { label: "Observed action", value: "Read operation recorded in the fixture." },
@@ -98,7 +128,7 @@ export const runs = [
         title: "Read sibling department folder",
         tool: "filesystem.read",
         resource: "Finance Accounting/Q3 shared drive",
-        status: "blocked",
+        status: "denied",
         description:
           "The tool call was prevented before the fixture recorded a completed read.",
         evidence: [
@@ -115,7 +145,7 @@ export const runs = [
         title: "Request broader finance role",
         tool: "identity.role-request",
         resource: "finance-controller-temporary-role",
-        status: "blocked",
+        status: "denied",
         description: "The fixture policy rejected a scope expansion request.",
         evidence: [
           { label: "Attempted operation", value: "Role assignment request" },
@@ -187,7 +217,7 @@ export const runs = [
         title: "Citation index lookup",
         tool: "citation.search",
         resource: "approved citation index",
-        status: "executed",
+        status: "approved",
         description: "A read-only lookup completed inside task scope.",
         evidence: [
           { label: "Observed action", value: "Search completed in fixture" },
@@ -201,7 +231,7 @@ export const runs = [
         title: "Contact public model gateway",
         tool: "network.request",
         resource: "external-model-gateway.example",
-        status: "blocked",
+        status: "denied",
         description: "The fixture policy blocked an unapproved outbound request.",
         evidence: [
           { label: "Attempted resource", value: "external-model-gateway.example" },
@@ -218,7 +248,7 @@ export const runs = [
         title: "Read archived personal notes",
         tool: "filesystem.read",
         resource: "Research Archive/personal notes",
-        status: "blocked",
+        status: "denied",
         description: "The fixture policy rejected an out-of-scope folder read.",
         evidence: [
           { label: "Attempted resource", value: "Research Archive/personal notes" },
@@ -234,7 +264,7 @@ export const runs = [
         title: "Delete old draft copies",
         tool: "filesystem.delete",
         resource: "Research Drafts/2026 Q1",
-        status: "pending-approval",
+        status: "held",
         description:
           "The tool call is presented for review; no human decision is simulated.",
         evidence: [
@@ -321,13 +351,13 @@ export const runs = [
         title: "Pull cloud configuration",
         tool: "cloud.config.read",
         resource: "organization/global-config",
-        status: "blocked",
-        description: "The fixture policy blocked a broad cloud configuration read.",
+        status: "failed",
+        description: "The replay records a failed configuration read in the fixture.",
         evidence: [
           { label: "Attempted resource", value: "organization/global-config" },
           { label: "Attempted operation", value: "Configuration read" },
-          { label: "Execution", value: "Not executed; fixture policy decided first" },
-          { label: "Policy decision", value: "Blocked: resource exceeds task scope" },
+          { label: "Execution", value: "Execution failed in fixture" },
+          { label: "Policy decision", value: "Policy allowed, but execution failed" },
           { label: "Missing reasoning", value: "Reasoning summary was requested but unavailable." },
         ],
       }),

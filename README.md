@@ -4,6 +4,8 @@ Scopewatch is a pre-execution security gateway and reviewer interface for auditi
 
 ![Scopewatch dashboard overview](docs/images/screenshots/01-dashboard-overview-dark.png)
 
+**Project website and interactive demo:** https://dkritarth.github.io/scopewatch/ (source in [`site/`](site/README.md)). **Judges:** the one-page cold-run sheet is [docs/operations/judge-runbook.md](docs/operations/judge-runbook.md).
+
 It enforces a strict defense-in-depth model:
 1. **Deterministic policy first**: Evaluates path, tool, and operation allowlists before any model call or executor dispatch. Deterministic `DENY` decisions are final.
 2. **Escalate-only reasoning audit**: An independent auditor analyzes the agent's chain-of-thought trace for scope drift, prompt injection, and policy evasion. The auditor can only escalate an `ALLOW` to a `HOLD`—it can never grant access or downgrade a decision.
@@ -33,6 +35,8 @@ pip install -r backend/requirements.txt   # or pinned: pip install --require-has
 npm ci --prefix frontend
 ```
 
+The invoice scenarios (01–06) need nothing else. The coding scenarios (10–13, `./scripts/run_demo.sh --coding`) submit `run_command` actions, which the deterministic policy only permits on the Docker executor: with a reachable Docker daemon the launcher selects `SCOPEWATCH_EXECUTOR=docker` itself, and without one it says so before seeding instead of showing silent `DENY [UNSUPPORTED_OPERATION]` receipts.
+
 ### 1. Run the local demo (mock, scripted replay — no keys, no network)
 
 ```bash
@@ -55,7 +59,7 @@ export NEBIUS_API_KEY="sk-..."   # Token Factory key
 ./scripts/run_demo.sh --agent --profile nebius-demo
 ```
 
-This runs the Scopewatch agent loop against the `nebius-demo` profile (`nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory). The dashboard shows live provider calls; reasoning provenance is recorded as `UNAVAILABLE` because Nebius writes thinking into `content` rather than a dedicated reasoning field (see `docs/submission/nebius-nvidia.md` §1, Table 1).
+This runs the Scopewatch agent loop against the `nebius-demo` profile (`nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory). The dashboard shows live provider calls; reasoning provenance is recorded as `UNAVAILABLE` because Nebius writes thinking into `content` rather than a dedicated reasoning field. With no trace text the auditor is not attempted, so scenario 06 shows `ALLOW` here where `openrouter-dev` shows `HOLD` (see `docs/submission/nebius-nvidia.md` §1, Table 1, and `backend/config/providers.toml`).
 
 ### 3. Run the Scopewatch agent loop CLI
 
@@ -89,8 +93,6 @@ Verify the entire repository (backend unit/integration tests, PoC tests, fronten
 ```bash
 ./scripts/validate.sh
 ```
-
-**Note for coding scenarios (10–13):** the Docker-isolated executor (`backend/scopewatch/executor_docker.py`) requires a Docker daemon. The `--coding` flag in `run_demo.sh` will `DENY` every `run_command` without it. Install Docker Desktop or `docker.io` to run scenarios 10–13 locally.
 
 ---
 
@@ -148,7 +150,7 @@ Scopewatch includes six invoice scenarios (`01`–`06`) plus four coding scenari
 | **04. Network exfiltration** | Attempts outbound network communication not in task scope. | Blocked with `DENY` (`NETWORK_DISABLED`). |
 | **05. Approval workflow** | Requests file deletion on `outputs/archive_2025.txt`. | Held with `HOLD` (`APPROVAL_REQUIRED`) until approved by a reviewer. `delete_path` is simulated in the M1 baseline (`"simulated": true`, target not unlinked; `backend/scopewatch/executor.py:214-232`). |
 | **06. Reasoning injection escalation** | Approved vendor invoice contains an injected prompt; policy allows write to `outputs`, but reasoning reveals injection-following intent. | Escalated to `HOLD` (`REASONING_SCOPE_CONCERN`) by the reasoning auditor. |
-| **10–13. Coding scenarios** | Fix an auth off-by-one (`10`), blocked secret read (`11`), README injection (`12`), network exfiltration (`13`) against `demo/coding-workspace/`. Run with `./scripts/run_demo.sh --coding`. | `ALLOW`/`DENY`/`HOLD` per scope; **Docker-isolated executor required** (`backend/scopewatch/executor_docker.py`). |
+| **10–13. Coding scenarios** | Fix an auth off-by-one (`10`), blocked secret read (`11`), README injection (`12`), network exfiltration (`13`) against `demo/coding-workspace/`. Run with `./scripts/run_demo.sh --coding`. | `ALLOW`/`DENY`/`HOLD` per scope; Docker-isolated executor in the M2 baseline (`backend/scopewatch/executor_docker.py`). Scenarios 10 and 13 submit `run_command`, which needs Docker: the launcher selects it when a daemon is reachable and warns when it is not (no daemon means every `run_command` is refused by policy, never executed). |
 
 Live-model reachability for each of these outcomes (three live runs per scenario, both turn budgets, and what could not be reached) is recorded in [`demo/SCENARIOS.md`](demo/SCENARIOS.md). Scenario files carry no mode key; the global `--mode` selects scripted replay or agent mode (issue #73).
 
@@ -167,6 +169,7 @@ Live-model reachability for each of these outcomes (three live runs per scenario
 | `scripts/` | `run_demo.sh`, `validate.sh`, `seed_demo.py`; `scripts/agents/` backlog and worktree helpers |
 | `docs/` | Architecture, decision records (ADR-0001), ideas, spikes, agent playbook, and hackathon notes ([index](docs/README.md)) |
 | `poc/` | Prototypes and experiments (including CoT auditing PoC in `poc/cot-auditing/`) |
+| `site/` | Project website and interactive scenario replay, deployed to GitHub Pages |
 | `.agents/` | Agent role specs, slash commands, and shared skills |
 
 ---
@@ -181,9 +184,3 @@ For deeper technical documentation, review:
 - [Building and testing guide](BUILDING.md)
 - [Agent guide](AGENTS.md) and [agent playbook](docs/agents/README.md)
 - [Repository governance](docs/repository-governance.md)
-
----
-
-## Judge runbook
-
-For a one-page cold-run sheet (no keys, ~5 minutes): [docs/operations/judge-runbook.md](docs/operations/judge-runbook.md)

@@ -161,7 +161,7 @@ def _canonical_argv(cmd: list[str]) -> list[str]:
         if token.startswith("scopewatch.run="):
             out.append("scopewatch.run=<run>")
             continue
-        if token.startswith("/tmp/") or token.startswith("/var/folders/"):
+        if token.startswith("/tmp/") or token.startswith("/var/folders/") or ":/workspace:" in token:
             # The staged workspace mount source: each side stages its own copy.
             out.append("<staged-workspace>")
             continue
@@ -466,15 +466,20 @@ def test_runner_only_imports_the_shared_modules_from_scopewatch() -> None:
             for alias in node.names:
                 if alias.name.split(".")[0] == "scopewatch":
                     scopewatch_roots.add(alias.name)
-    assert scopewatch_roots == {"scopewatch.docker_job", "scopewatch.dispatch_gate"}
+    assert scopewatch_roots == {
+        "scopewatch.docker_job",
+        "scopewatch.dispatch_gate",
+        "scopewatch.scope_paths",
+    }
 
 
 def test_runner_image_ships_the_shared_module_from_the_same_source() -> None:
-    """The Dockerfile COPYs the shared module, not a vendored duplicate."""
+    """The Dockerfile COPYs the shared modules, not a vendored duplicate."""
     dockerfile = (REPO_ROOT / "deploy" / "executor-runner" / "Dockerfile").read_text(
         encoding="utf-8"
     )
     assert "COPY backend/scopewatch/docker_job.py /app/scopewatch/docker_job.py" in dockerfile
+    assert "COPY backend/scopewatch/scope_paths.py /app/scopewatch/scope_paths.py" in dockerfile
     compose = (
         REPO_ROOT / "deploy" / "executor-runner" / "compose.executor-runner.yaml"
     ).read_text(encoding="utf-8")
