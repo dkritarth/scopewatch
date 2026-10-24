@@ -1,25 +1,13 @@
 # Scopewatch hosted-demo stack (issue #42).
 #
-# Traffic path: internet -> caddy (TLS) -> gate (edge token, rate limit,
-# caps, budget) -> gateway (native token + guards, internal only) -> sqlite
-# + workspace volumes.
+# Traffic path: internet -> caddy (TLS) -> gateway (demo token, caps,
+# daily request budgets and per-profile token metering) -> SQLite/workspaces.
 #
-# SECURITY DESIGN (read before changing):
-# * The gateway NEVER gets the Docker socket. No `volumes: [/var/run/...]`
-#   exists anywhere in this file ON PURPOSE. The gateway container cannot
-#   start sibling containers at all: the image has no docker CLI and the
-#   daemon socket is not mounted. Executor mode is pinned to `local`
-#   (SCOPEWATCH_EXECUTOR=local) until the socket-holding executor-runner
-#   sidecar lands (follow-up issue from #42; see RUNBOOK.md "Executor
-#   isolation decision and residual risk").
-# * The gateway is on the INTERNAL network only. The only inbound path from
-#   the internet is caddy -> gate. Even if the agent could reach the
-#   gateway, it still could not reach a container runtime.
-# * Secrets (DEMO_TOKEN, NEBIUS_API_KEY, ...) arrive only via the env_file
-#   on the VM. They are never baked into images and never committed.
-# * Gate enforcement state is in-memory; run ONE gate replica (no scale
-#   directive below). Scaling the gate without shared state would multiply
-#   every budget/cap.
+# The gateway publishes no ports and has no Docker socket or Docker CLI.
+# Caddy is its only public ingress. The optional executor-runner fragment
+# isolates the socket on a separate network; local execution is the default.
+# Secrets arrive via VM env files, never through images or committed files.
+# Run ONE gateway replica: request counters live in memory and reset on restart.
 
 name: scopewatch-demo
 
@@ -35,6 +23,16 @@ services:
       - path: .env
         required: false
     environment:
+      # Required even when the rest of the gateway uses native defaults:
+      # without a token, native guards intentionally enter local-dev mode.
+      DEMO_TOKEN: ${DEMO_TOKEN:?Set DEMO_TOKEN in the VM env file (see deploy/.env.example).}
+      # Shell overrides must reach the gateway, including throwaway smoke
+      # checks. Malformed values pass through for native fail-closed parsing.
+      DEMO_MAX_CONCURRENT_RUNS: ${DEMO_MAX_CONCURRENT_RUNS:-5}
+      DEMO_MAX_TURNS_PER_RUN: ${DEMO_MAX_TURNS_PER_RUN:-40}
+      DEMO_RATE_LIMIT_RUNS_PER_MIN_PER_IP: ${DEMO_RATE_LIMIT_RUNS_PER_MIN_PER_IP:-${DEMO_RATE_LIMIT_PER_MIN:-6}}
+      DEMO_MAX_RUNS_PER_DAY: ${DEMO_MAX_RUNS_PER_DAY:-${DEMO_DAILY_RUN_BUDGET:-200}}
+      DEMO_MAX_ACTIONS_PER_DAY: ${DEMO_MAX_ACTIONS_PER_DAY:-${DEMO_DAILY_ACTION_BUDGET:-5000}}
       # NOT pinned any more (issue #202): it used to be the literal `local`,
       # which `environment:` applies over `env_file:`, so setting
       # SCOPEWATCH_EXECUTOR=remote in the VM .env did nothing and the sidecar
@@ -126,67 +124,16 @@ services:
       retries: 3
       start_period: 20s
 
-  gate:
-    build:
-      context: ..
-      dockerfile: deploy/gate/Dockerfile
-    image: scopewatch-demo-gate:42
-    env_file:
-      - path: ../.env
-        required: false
-      - path: .env
-        required: false
-    environment:
-      GATE_UPSTREAM: http://gateway:8000
-      GATE_PORT: 8080
-      DEMO_TOKEN: ${DEMO_TOKEN:?Set DEMO_TOKEN in the VM env file (see deploy/.env.example).}
-      DEMO_MAX_CONCURRENT_RUNS: ${DEMO_MAX_CONCURRENT_RUNS:-5}
-      DEMO_MAX_TURNS_PER_RUN: ${DEMO_MAX_TURNS_PER_RUN:-40}
-      DEMO_RATE_LIMIT_RUNS_PER_MIN_PER_IP: ${DEMO_RATE_LIMIT_RUNS_PER_MIN_PER_IP:-6}
-      DEMO_MAX_RUNS_PER_DAY: ${DEMO_MAX_RUNS_PER_DAY:-200}
-      DEMO_MAX_ACTIONS_PER_DAY: ${DEMO_MAX_ACTIONS_PER_DAY:-5000}
-    networks:
-      - internal
-      - public
-    depends_on:
-      gateway:
-        condition: service_healthy
-    restart: unless-stopped
-    read_only: true
-    tmpfs:
-      - /tmp
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    pids_limit: 128
-    mem_limit: 256m
-    healthcheck:
-      test: ["CMD", "python", "-c",
-             "import sys,urllib.request,json;d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=4));sys.exit(0 if d.get('status')=='ok' else 1)"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    ports:
-      # Loopback-only publish, added by #107 so the runbook's verify commands
-      # work as written: `curl -fsS http://127.0.0.1:8080/healthz` from the VM
-      # host. `127.0.0.1:` is load-bearing — it is unreachable from the
-      # internet, so the public path is still caddy -> gate and nothing else.
-      # Do NOT widen this to "8080:8080": that would expose the gate directly
-      # and let clients skip Caddy's TLS and X-Forwarded-For handling.
-      # The gateway deliberately publishes nothing at all; check it with
-      # `docker compose exec gateway ...` (RUNBOOK section 3).
-      - "127.0.0.1:8080:8080"
-    # Do NOT add `deploy:` replicas/scale here: gate budgets live in memory.
-
   caddy:
     image: caddy:2-alpine
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp" # HTTP/3
+      # Host ports are parameterised so a SECOND project on the same VM (the
+      # throwaway budget-check stack in RUNBOOK section 4) can override them.
+      # The defaults are the live values, so the shipped stack is unchanged.
+      - "${HTTP_HOST_PORT:-80}:80"
+      - "${HTTPS_HOST_PORT:-443}:443"
+      - "${HTTPS_HOST_PORT:-443}:443/udp" # HTTP/3
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -195,8 +142,9 @@ services:
       DOMAIN: ${DOMAIN:?Set DOMAIN in the VM env file (see deploy/.env.example).}
     networks:
       - public
+      - internal
     depends_on:
-      gate:
+      gateway:
         condition: service_healthy
     restart: unless-stopped
     # Upstream caddy image defaults are kept (it binds 80/443 itself);
@@ -205,16 +153,23 @@ services:
     security_opt:
       - no-new-privileges:true
 
+# Resource names are project-scoped on purpose (issue #201). Compose scopes
+# resources to the project name only when the name is NOT fixed here; a fixed
+# top-level `name:` is shared by EVERY project on the host, which made the
+# runbook's throwaway budget-check stack (`-p budgetcheck`) mount the live
+# SQLite volume, collide on the live networks, and lose 80/443 to the
+# live listeners. `${COMPOSE_PROJECT_NAME:-scopewatch-demo}` keeps the shipped
+# names byte-identical for the live stack and gives any second project its own.
 networks:
   public:
-    name: scopewatch-demo-public
+    name: ${COMPOSE_PROJECT_NAME:-scopewatch-demo}-public
   internal:
-    name: scopewatch-demo-internal
+    name: ${COMPOSE_PROJECT_NAME:-scopewatch-demo}-internal
     # NOTE: this network is NOT marked `internal: true` on purpose: the
     # gateway needs HTTPS egress to the configured model provider
     # (Nebius/OpenRouter) for live agent/auditor calls. Inbound reachability
     # is still least-privilege: only caddy publishes host ports, and the
-    # gateway accepts traffic only from the gate (same internal network).
+    # gateway accepts public traffic only through Caddy on the same network.
     #
     # The executor-runner fragment used to redeclare THIS network with
     # `internal: true`, which silently removed the gateway's egress and made
@@ -223,21 +178,21 @@ networks:
   # Runner-only: the gateway and the executor-runner sidecar, nothing else.
   # The merged fragment marks it `internal: true`, so the socket-holding
   # container has no route out; the gateway keeps `internal` for egress.
-  # Not attached to caddy or the gate. The name is derived from the project
+  # Not attached to Caddy. The name is derived from the project
   # rather than pinned, so a second project (see RUNBOOK's throwaway
   # budget-check stack) cannot collide with the live one.
   executor-runner: {}
 
 volumes:
   scopewatch-data:
-    name: scopewatch-demo-data
+    name: ${COMPOSE_PROJECT_NAME:-scopewatch-demo}-data
   scopewatch-workspace:
-    name: scopewatch-demo-workspace
+    name: ${COMPOSE_PROJECT_NAME:-scopewatch-demo}-workspace
   # Per-run workspace copies (#117). Named so `down -v` reclaims them with the
   # rest of the demo state: nothing prunes per-run workspaces yet (#166).
   scopewatch-run-workspaces:
-    name: scopewatch-demo-run-workspaces
+    name: ${COMPOSE_PROJECT_NAME:-scopewatch-demo}-run-workspaces
   caddy-data:
-    name: scopewatch-demo-caddy-data
+    name: ${COMPOSE_PROJECT_NAME:-scopewatch-demo}-caddy-data
   caddy-config:
-    name: scopewatch-demo-caddy-config
+    name: ${COMPOSE_PROJECT_NAME:-scopewatch-demo}-caddy-config
