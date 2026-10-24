@@ -6,8 +6,23 @@ What this is
 ------------
 A per-run append-only hash chain that lets an operator prove that a list of
 exported evidence events still has the same order and content it had when it
-was recorded, and that every EXECUTION event for an action was preceded by a
-policy DECISION event for that same action (``evidence before effect``).
+was recorded, and that every action's recorded lifecycle is one the gateway
+may legally produce (``evidence before effect``, ``no decision, no
+execution``). Per action the verifier checks that:
+
+- execution is authorised: a prior ``POLICY_ALLOWED``, or a prior
+  ``POLICY_HELD`` followed by ``APPROVAL_GRANTED``. ``POLICY_DENIED`` permits
+  no execution events at all;
+- there is exactly one policy decision (a second one cannot relax the first);
+- ``APPROVAL_GRANTED`` follows a ``POLICY_HELD``, happens at most once, and
+  never after the approval was denied or expired;
+- there is at most one ``EXECUTION_STARTED`` and at most one terminal
+  execution event (``EXECUTION_SUCCEEDED`` / ``EXECUTION_FAILED``), and
+  nothing starts after a terminal event.
+
+These are properties of the *recorded* events. They show the log is
+internally consistent with the gateway's rules, not that the executor
+actually behaved that way (see the limits below).
 
 Each record contains **digests only** -- never raw arguments, traces, or
 summaries -- so the chain itself leaks no secrets::
@@ -65,6 +80,20 @@ EXECUTION_EVENT_TYPES = frozenset(
         "EXECUTION_STARTED",
         "EXECUTION_SUCCEEDED",
         "EXECUTION_FAILED",
+    }
+)
+
+TERMINAL_EXECUTION_EVENT_TYPES = frozenset(
+    {
+        "EXECUTION_SUCCEEDED",
+        "EXECUTION_FAILED",
+    }
+)
+
+APPROVAL_CLOSED_EVENT_TYPES = frozenset(
+    {
+        "APPROVAL_DENIED",
+        "APPROVAL_EXPIRED",
     }
 )
 
@@ -169,6 +198,93 @@ def _coerce_record(item: Union[ChainRecord, Mapping[str, Any]]) -> ChainRecord:
     return ChainRecord.from_dict(item)
 
 
+@dataclass
+class _ActionLifecycle:
+    """What the chain has recorded so far for one action_id."""
+
+    decision: Optional[str] = None  # POLICY_ALLOWED | POLICY_HELD | POLICY_DENIED
+    approval: Optional[str] = None  # None | "GRANTED" | "CLOSED"
+    started: bool = False
+    terminal: bool = False
+
+
+def _lifecycle_violation(
+    rec: ChainRecord, actions: dict[str, _ActionLifecycle]
+) -> Optional[str]:
+    """Apply ``rec`` to its action's lifecycle; return a reason if illegal.
+
+    Only records with an ``action_id`` take part, except execution events,
+    which must always name their action.
+    """
+    etype = rec.event_type
+    if rec.action_id is None:
+        if etype in EXECUTION_EVENT_TYPES:
+            return f"EXECUTION event {etype} has no action_id"
+        return None
+
+    aid = rec.action_id
+    state = actions.setdefault(aid, _ActionLifecycle())
+
+    if etype in DECISION_EVENT_TYPES:
+        if state.decision is not None:
+            return (
+                f"second policy decision {etype} for action {aid!r} "
+                f"after {state.decision}; a decision is recorded once"
+            )
+        state.decision = etype
+        return None
+
+    if etype == "APPROVAL_GRANTED":
+        if state.decision != "POLICY_HELD":
+            found = state.decision or "no decision"
+            return (
+                f"APPROVAL_GRANTED for action {aid!r} without a prior "
+                f"POLICY_HELD (found {found}); approvals cannot override "
+                f"or replace a policy decision"
+            )
+        if state.approval == "GRANTED":
+            return f"second APPROVAL_GRANTED for action {aid!r}; approvals are single-use"
+        if state.approval == "CLOSED":
+            return (
+                f"APPROVAL_GRANTED for action {aid!r} after its approval "
+                f"was denied or expired"
+            )
+        state.approval = "GRANTED"
+        return None
+
+    if etype in APPROVAL_CLOSED_EVENT_TYPES:
+        if state.approval is None:
+            state.approval = "CLOSED"
+        return None
+
+    if etype not in EXECUTION_EVENT_TYPES:
+        return None
+
+    # Execution events: authorisation first.
+    if state.decision is None:
+        return f"EXECUTION for action {aid!r} without a prior DECISION event"
+    if state.decision == "POLICY_DENIED":
+        return f"{etype} for action {aid!r} after POLICY_DENIED; a deny permits no execution"
+    if state.decision == "POLICY_HELD" and state.approval != "GRANTED":
+        return (
+            f"{etype} for held action {aid!r} without a prior APPROVAL_GRANTED"
+        )
+
+    # Then at most one start and one terminal outcome.
+    if state.terminal:
+        return (
+            f"{etype} for action {aid!r} after its execution already "
+            f"finished; an action executes at most once"
+        )
+    if etype == "EXECUTION_STARTED":
+        if state.started:
+            return f"second EXECUTION_STARTED for action {aid!r}; an action executes at most once"
+        state.started = True
+    else:
+        state.terminal = True
+    return None
+
+
 def verify_records(
     records: Iterable[Union[ChainRecord, Mapping[str, Any]]],
     expected_run_id: Optional[str] = None,
@@ -183,7 +299,8 @@ def verify_records(
     3. run_id consistency
     4. prev linkage
     5. record_hash recomputation (tamper)
-    6. DECISION-before-EXECUTION ordering per action_id
+    6. per-action lifecycle (see module docstring): authorised execution
+       only, one decision, single-use approval, at most one execution
 
     Then, if all records pass, compares against ``expected_head`` /
     ``expected_length`` for truncation detection. A bare prefix verifies OK
@@ -226,7 +343,7 @@ def verify_records(
 
     run_ref = expected_run_id if expected_run_id is not None else recs[0].run_id
     seen_prev: dict[str, int] = {}
-    decided: set[str] = set()
+    actions: dict[str, _ActionLifecycle] = {}
     prev_hash = GENESIS_HASH
 
     for idx, rec in enumerate(recs):
@@ -317,35 +434,17 @@ def verify_records(
                 checked=idx,
             )
 
-        # 6. decision-before-execution ordering per action
-        if rec.event_type in DECISION_EVENT_TYPES and rec.action_id is not None:
-            decided.add(rec.action_id)
-        if rec.event_type in EXECUTION_EVENT_TYPES:
-            if rec.action_id is None:
-                return VerificationResult(
-                    ok=False,
-                    first_bad_seq=rec.seq,
-                    reason=(
-                        f"ordering violation at seq={rec.seq}: "
-                        f"EXECUTION event {rec.event_type} has no action_id"
-                    ),
-                    code="ORDERING_VIOLATION",
-                    head_hash=recs[-1].record_hash,
-                    checked=idx,
-                )
-            if rec.action_id not in decided:
-                return VerificationResult(
-                    ok=False,
-                    first_bad_seq=rec.seq,
-                    reason=(
-                        f"ordering violation at seq={rec.seq}: "
-                        f"EXECUTION for action {rec.action_id!r} "
-                        f"without a prior DECISION event"
-                    ),
-                    code="ORDERING_VIOLATION",
-                    head_hash=recs[-1].record_hash,
-                    checked=idx,
-                )
+        # 6. per-action lifecycle
+        violation = _lifecycle_violation(rec, actions)
+        if violation is not None:
+            return VerificationResult(
+                ok=False,
+                first_bad_seq=rec.seq,
+                reason=f"ordering violation at seq={rec.seq}: {violation}",
+                code="ORDERING_VIOLATION",
+                head_hash=recs[-1].record_hash,
+                checked=idx,
+            )
 
         prev_hash = rec.record_hash
 
@@ -619,6 +718,8 @@ __all__ = [
     "GENESIS_HASH",
     "DECISION_EVENT_TYPES",
     "EXECUTION_EVENT_TYPES",
+    "TERMINAL_EXECUTION_EVENT_TYPES",
+    "APPROVAL_CLOSED_EVENT_TYPES",
     "ChainRecord",
     "VerificationResult",
     "EvidenceChain",
