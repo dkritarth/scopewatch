@@ -99,6 +99,42 @@ def test_submit_allow_action(test_env, created_run_id: str) -> None:
     assert len(data["events"]) >= 4  # REQUESTED, ALLOWED, EXEC_START, EXEC_SUCCEEDED
 
 
+def test_read_text_keeps_content_in_receipt_but_not_event_details(
+    test_env, created_run_id: str
+) -> None:
+    """A read receipt serves the caller while its evidence event stores only metadata."""
+    client, _ = test_env
+    response = client.post(
+        f"/api/v1/runs/{created_run_id}/actions",
+        json={
+            "tool": "workspace",
+            "operation": "read_text",
+            "resource": "invoices/approved/vendor-a.txt",
+            "arguments": {},
+        },
+    )
+    assert response.status_code == 201
+    response_data = response.json()
+    receipt_result = response_data["execution_receipt"]["sanitized_result"]
+    assert receipt_result["content"] == "approved text"
+
+    events_response = client.get(f"/api/v1/runs/{created_run_id}/events")
+    assert events_response.status_code == 200
+    expected_event_result = {
+        "operation": "read_text",
+        "resource": "invoices/approved/vendor-a.txt",
+        "byte_count": 13,
+        "preview": "approved text",
+        "truncated": False,
+        "content_sha256": "5b45d3af2f796de0939d50e4fd38b7eb2eead1d4aef4c003ffb289b5b784441d",
+    }
+    for events in (response_data["events"], events_response.json()):
+        execution_event = next(
+            event for event in events if event["event_type"] == "EXECUTION_SUCCEEDED"
+        )
+        assert execution_event["details"]["result"] == expected_event_result
+
+
 def test_submit_deny_action(test_env, created_run_id: str) -> None:
     client, _ = test_env
     payload = {
@@ -153,6 +189,62 @@ def test_submit_hold_and_approve_lifecycle(test_env, created_run_id: str) -> Non
     )
     assert replay_resp.status_code == 409
     assert replay_resp.json()["error"]["code"] == "APPROVAL_ALREADY_RESOLVED"
+
+
+def test_approved_read_keeps_content_out_of_execution_event(test_env) -> None:
+    client, _ = test_env
+    run_response = client.post(
+        "/api/v1/runs",
+        json={
+            "name": "Approved Read",
+            "task_scope": {
+                "schema_version": "1",
+                "task_description": "Read an invoice after reviewer approval",
+                "allowed_paths": ["invoices/approved"],
+                "blocked_paths": ["invoices/private"],
+                "allowed_tools": ["workspace"],
+                "allowed_operations": [],
+                "allowed_network_destinations": [],
+                "requires_approval": ["read_text"],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        },
+    )
+    assert run_response.status_code == 201
+    run_id = run_response.json()["id"]
+
+    action_response = client.post(
+        f"/api/v1/runs/{run_id}/actions",
+        json={
+            "tool": "workspace",
+            "operation": "read_text",
+            "resource": "invoices/approved/vendor-a.txt",
+            "arguments": {},
+        },
+    )
+    assert action_response.status_code == 201
+    approval_id = action_response.json()["approval_request"]["id"]
+
+    approval_response = client.post(
+        f"/api/v1/approvals/{approval_id}/approve",
+        json={"resolution_reason": "Approved synthetic invoice read"},
+    )
+    assert approval_response.status_code == 200
+    approval_data = approval_response.json()
+    assert approval_data["execution_receipt"]["sanitized_result"]["content"] == "approved text"
+    execution_event = next(
+        event
+        for event in approval_data["events"]
+        if event["event_type"] == "EXECUTION_SUCCEEDED"
+    )
+    assert execution_event["details"]["result"] == {
+        "operation": "read_text",
+        "resource": "invoices/approved/vendor-a.txt",
+        "byte_count": 13,
+        "preview": "approved text",
+        "truncated": False,
+        "content_sha256": "5b45d3af2f796de0939d50e4fd38b7eb2eead1d4aef4c003ffb289b5b784441d",
+    }
 
 
 def test_submit_hold_and_deny_lifecycle(test_env, created_run_id: str) -> None:
