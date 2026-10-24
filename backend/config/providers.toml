@@ -92,12 +92,14 @@ max_retries = 3
 # valid JSON with 0 reasoning tokens. This is also the whole latency story here:
 # p50 619 ms on the held-out run.
 #
-# Known limit, and it is not a config problem: on Nebius, message.reasoning and
-# message.reasoning_content are both present and None, with the thinking written
-# into `content` instead. The gateway therefore records reasoning provenance as
-# UNAVAILABLE for this profile (ADR-0001 decision 5: text in `content` is not a
-# provider-exposed trace), and with no trace text the auditor is not attempted at
-# all -- so a nebius-demo run shows ALLOW where openrouter-dev shows HOLD. See
-# docs/evaluation.md, "Provider profiles: what each one exposes", and issue #214.
+# Known limit, and it is not a config problem: on a plain Nebius completion
+# (2026-10-03), message.reasoning and message.reasoning_content were both present
+# and None, with the thinking written into `content`. So this profile has no
+# provider-exposed trace (ADR-0001 decision 5: text in `content` is never one).
+# On tool-call turns the agent loop forwards any `content` text as an
+# agent-authored summary (AGENT_AUTHORED_SUMMARY), which the auditor does read;
+# with empty `content` provenance is UNAVAILABLE and the audit is skipped. Which
+# case a Nebius tool-call turn hits has not been observed (issue #214). See
+# docs/evaluation.md, "Provider profiles: what each one exposes".
 [profiles.nebius-demo.auditor_body.chat_template_kwargs]
 enable_thinking = false

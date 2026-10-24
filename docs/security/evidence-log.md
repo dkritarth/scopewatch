@@ -71,13 +71,45 @@ The verifier prints one JSON object. Key fields:
 | `BAD_SEQ` | Sequence gap, duplicate, or reorder at `first_bad_seq`. | Check for deleted or duplicated rows in the export. |
 | `FORK` | Two records claim the same `prev_hash` (branched history merged). | The export merged two histories; find which branch is canonical. |
 | `RUN_MISMATCH` | Mixed `run_id` values. | Export bug or merged runs; re-export per run. |
-| `ORDERING_VIOLATION` | `EXECUTION_*` for an action with no prior `POLICY_*` decision, or with no `action_id`. | **Serious**: evidence claims execution without a recorded decision. Check whether the decision row was deleted, or whether execution bypassed the gateway. Do not assume prevention worked. |
+| `UNKNOWN_EVENT_TYPE` | An event type does not exactly match the supported gateway catalog. Case changes, whitespace, and future unknown types are rejected. | Check the exporter and verifier versions. Do not normalise the event type and silently accept it. |
+| `ORDERING_VIOLATION` | An action's recorded lifecycle breaks a gateway rule: `EXECUTION_*` with no `action_id`, with no prior `POLICY_*` decision, after `POLICY_DENIED`, or after `POLICY_HELD` without `APPROVAL_GRANTED`; a second `POLICY_*` decision for the same action; `APPROVAL_GRANTED` without a prior `POLICY_HELD`, twice, or after `APPROVAL_DENIED`/`APPROVAL_EXPIRED`; a second `EXECUTION_STARTED`, a second terminal `EXECUTION_SUCCEEDED`/`EXECUTION_FAILED`, or any execution event after the terminal one. | **Serious**: the evidence claims something the gateway forbids (execution without authorisation, a relaxed decision, a reused approval, or double execution). Check whether rows were deleted, edited, or injected, or whether execution bypassed the gateway. Do not assume prevention worked. |
 | `TRUNCATED` | Valid prefix but head/length pin mismatch (suffix dropped or diverged). | Compare against the pinned copy; the missing suffix starts at `first_bad_seq`. |
 | `MALFORMED` / `FILE_NOT_FOUND` | Verifier could not read the file. | Operational issue, not tampering. Fix the pipeline. |
 
 General rule: **quarantine the export**, keep the pinned copy, and
 investigate write access to the DB and the export pipeline before trusting
 the dashboard for that run.
+
+### Run closure and approval ordering
+
+The verifier also returns `ORDERING_VIOLATION` for action activity after
+`RUN_COMPLETED` or `SYSTEM_ERROR`. The current gateway uses `SYSTEM_ERROR`
+for `fail_run`, so this event closes the run without inspecting a summary
+or payload. New requests, policy decisions, audit events, approval requests,
+grants, denials, and execution events cannot follow closure, even if they
+omit an action ID.
+
+Two gateway-produced sequences remain valid after closure:
+
+- Repeated `RUN_COMPLETED` or `SYSTEM_ERROR` records. The close API permits
+  repeated close/fail calls; these do not authorise further action activity.
+- `APPROVAL_EXPIRED` for an action whose `POLICY_HELD` and
+  `APPROVAL_REQUESTED` preceded closure and whose approval is still pending.
+  The expiry reconciler can close pending approvals on terminal runs.
+
+A grant must name an action and follow that action's `POLICY_HELD` and
+`APPROVAL_REQUESTED`. A request for another action cannot satisfy it.
+`APPROVAL_GRANTED` followed by `APPROVAL_EXPIRED` or `APPROVAL_DENIED` fails
+at the closing approval event, whether execution has started or not. The
+service resolves an approval once and records grant/start in one transaction;
+expiry reconciles pending approvals only. A later expiry is therefore
+contradictory evidence, not a valid change to the grant's authority.
+
+These checks use event types, action IDs, and sequence order. They do not
+inspect retained execution content or infer expiry from wall-clock time.
+Changing content retention changes payload digests, not lifecycle rules.
+Existing chains with only a terminal execution event still need authorisation
+but do not require `EXECUTION_STARTED`, as in the issue #190 verifier.
 
 ## 4. Limitations (read before relying on this)
 
