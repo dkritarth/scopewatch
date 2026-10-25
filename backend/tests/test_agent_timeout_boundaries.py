@@ -2,7 +2,9 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import sqlite3
 import threading
+import time
 from typing import Any
 
 import pytest
@@ -241,3 +243,45 @@ def test_timeout_wins_against_reviewer_with_stale_pending_read(
     assert action["execution_receipt"] is None
     events = client.get(f"/api/v1/runs/{run_id}/events").json()
     assert not any(event["event_type"] == "EXECUTION_STARTED" for event in events)
+
+
+def test_completion_retry_refreshes_deadline_budget_under_write_lock(
+    test_env: dict[str, Any],
+) -> None:
+    client = test_env["client"]
+    db_file = test_env["db_file"]
+    run_id = create_test_run(client, requires_approval=[])
+
+    provider = MockProviderClient()
+    provider.enqueue(ChatResult(content="Finished.", model="mock", profile="mock", tool_calls=[]))
+
+    class LockingDispatcher(GatewayDispatcher):
+        def complete_run(self, run_id, *, deadline=None):
+            holder = sqlite3.connect(str(db_file), timeout=10.0, isolation_level=None, check_same_thread=False)
+            holder.execute("PRAGMA busy_timeout = 10000")
+            acquired = threading.Event()
+
+            def grab():
+                holder.execute("BEGIN IMMEDIATE")
+                acquired.set()
+                time.sleep(0.6)
+                holder.execute("COMMIT")
+                holder.close()
+
+            grabber = threading.Thread(target=grab, daemon=True)
+            grabber.start()
+            assert acquired.wait(5)
+            try:
+                return super().complete_run(run_id, deadline=deadline)
+            finally:
+                grabber.join(10)
+
+    loop = AgentLoop(run_id=run_id, provider_client=provider, dispatcher=LockingDispatcher(http_client=client),
+                     wall_clock_timeout_s=0.25)
+    result = loop.run()
+    assert result.status == "FAILED"
+    assert "Wall clock timeout" in (result.error or "")
+    assert client.get(f"/api/v1/runs/{run_id}").json()["status"] == "FAILED"
+    events = client.get(f"/api/v1/runs/{run_id}/events").json()
+    kinds = [e["event_type"] for e in events]
+    assert "RUN_COMPLETED" not in kinds
