@@ -48,11 +48,13 @@ What deliberately does NOT live here
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import os
 import selectors
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
@@ -766,7 +768,25 @@ def best_effort_remove(container_name: str) -> None:
         pass
 
 
-_REAL_SUBPROCESS_RUN = subprocess.run
+def _terminate_process(proc: subprocess.Popen[Any]) -> None:
+    """Terminate or kill a subprocess and its process group cleanly."""
+    if hasattr(proc, "pid") and isinstance(proc.pid, int) and proc.pid > 0:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    else:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=1.0)
+    except Exception:
+        pass
 
 
 def run_docker_process(
@@ -779,35 +799,38 @@ def run_docker_process(
     """Execute a docker subprocess with bounded host memory streaming and cleanup.
 
     Streams stdout and stderr up to max_bytes using non-blocking I/O (selectors).
-    If output exceeds max_bytes, terminates/kills the process and raises OutputOverrunError.
-    If timeout expires, kills the process and raises subprocess.TimeoutExpired.
-    If subprocess_module has monkeypatched `run`, delegates to it and verifies bounds.
+    If output exceeds max_bytes, terminates/kills the process group and raises OutputOverrunError.
+    If timeout expires, kills the process group and raises subprocess.TimeoutExpired.
     """
     subproc = subprocess_module if subprocess_module is not None else subprocess
-    if getattr(subproc, "run", None) is not _REAL_SUBPROCESS_RUN:
-        proc = subproc.run(
+    popen_cls = getattr(subproc, "Popen", subprocess.Popen)
+
+    try:
+        proc = popen_cls(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=timeout,
+            start_new_session=True,
         )
-        stdout_bytes = proc.stdout if isinstance(proc.stdout, (bytes, bytearray)) else b""
-        stderr_bytes = proc.stderr if isinstance(proc.stderr, (bytes, bytearray)) else b""
-        if len(stdout_bytes) > max_bytes or len(stderr_bytes) > max_bytes:
-            raise OutputOverrunError(
-                f"Container output exceeded {max_bytes} byte limit."
-            )
-        return proc
+    except TypeError:
+        # Fallback if custom popen_cls does not accept start_new_session
+        proc = popen_cls(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
     sel = selectors.DefaultSelector()
     assert proc.stdout is not None and proc.stderr is not None
-    os.set_blocking(proc.stdout.fileno(), False)
-    os.set_blocking(proc.stderr.fileno(), False)
+    try:
+        os.set_blocking(proc.stdout.fileno(), False)
+    except (AttributeError, io.UnsupportedOperation, OSError):
+        pass
+    try:
+        os.set_blocking(proc.stderr.fileno(), False)
+    except (AttributeError, io.UnsupportedOperation, OSError):
+        pass
+
     sel.register(proc.stdout, selectors.EVENT_READ, data="out")
     sel.register(proc.stderr, selectors.EVENT_READ, data="err")
 
@@ -859,30 +882,22 @@ def run_docker_process(
         sel.close()
 
     if timed_out:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        try:
-            proc.wait(timeout=1.0)
-        except Exception:
-            pass
+        _terminate_process(proc)
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
     if overrun:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        try:
-            proc.wait(timeout=1.0)
-        except Exception:
-            pass
+        _terminate_process(proc)
         raise OutputOverrunError(
             f"Container output exceeded {max_bytes} byte limit."
         )
 
-    ret = proc.wait()
+    remaining = max(0.0, deadline - time.monotonic())
+    try:
+        ret = proc.wait(timeout=remaining)
+    except subprocess.TimeoutExpired:
+        _terminate_process(proc)
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
     return subprocess.CompletedProcess(
         cmd,
         ret,

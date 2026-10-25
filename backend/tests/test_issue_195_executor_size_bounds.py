@@ -16,6 +16,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
+from typing import Any, Optional
 import uuid
 
 import pytest
@@ -183,6 +185,107 @@ def test_run_docker_process_timeout_expired() -> None:
         run_docker_process(cmd, timeout=0.2)
 
 
+def test_run_docker_process_never_invokes_unbounded_subprocess_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: run_docker_process must never fall back to unbounded subprocess.run.
+
+    Ensures production execution does not branch to subprocess.run(stdout=PIPE, stderr=PIPE)
+    which would buffer the entire stream before checking bounds.
+    """
+    def _forbidden_run(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("Unbounded subprocess.run invoked! Must use bounded Popen streaming.")
+
+    monkeypatch.setattr(subprocess, "run", _forbidden_run)
+
+    # 1. Finite output within bound succeeds without calling subprocess.run
+    cmd_ok = [
+        sys.executable,
+        "-c",
+        "import sys; sys.stdout.write('A' * 2048); sys.stderr.write('B' * 512)",
+    ]
+    proc = run_docker_process(cmd_ok, timeout=5.0, max_bytes=4096)
+    assert proc.returncode == 0
+    assert proc.stdout == b"A" * 2048
+    assert proc.stderr == b"B" * 512
+
+    # 2. Finite output exceeding bound raises OutputOverrunError without calling subprocess.run
+    cmd_overrun = [
+        sys.executable,
+        "-c",
+        "import sys; sys.stdout.write('A' * 8192); sys.stdout.flush()",
+    ]
+    with pytest.raises(OutputOverrunError, match="exceeded"):
+        run_docker_process(cmd_overrun, timeout=5.0, max_bytes=1024)
+
+
+def test_run_docker_process_finite_child_overrun_and_process_cleanup() -> None:
+    """Exercise bounded Popen streaming semantics with finite synthetic child output.
+
+    Spawns a real child process that produces output in chunks and then sleeps.
+    Verifies that as soon as max_bytes is crossed, OutputOverrunError is raised and
+    the child process (and its process tree) is promptly killed.
+    """
+    cmd = [
+        sys.executable,
+        "-c",
+        (
+            "import sys, time\n"
+            "for _ in range(50):\n"
+            "    sys.stdout.write('Z' * 1024)\n"
+            "    sys.stdout.flush()\n"
+            "    time.sleep(0.01)\n"
+            "time.sleep(10.0)\n"
+        ),
+    ]
+    start = time.monotonic()
+    with pytest.raises(OutputOverrunError, match="exceeded"):
+        run_docker_process(cmd, timeout=5.0, max_bytes=8192)
+    elapsed = time.monotonic() - start
+    # Should terminate immediately upon exceeding 8192 bytes (around 8 chunks = ~0.08s), not wait 5s or 10s
+    assert elapsed < 3.0
+
+
+def test_run_docker_process_popen_streaming_interface_chunking() -> None:
+    """Test run_docker_process with a Popen-compatible streaming interface.
+
+    Verifies chunked non-blocking reads and prompt kill on overrun via an injected
+    Popen class with pipe streams.
+    """
+    class MockPopen:
+        def __init__(self, cmd: list[str], stdout=None, stderr=None, start_new_session=False, **kwargs: Any) -> None:
+            self.cmd = cmd
+            out_r, out_w = os.pipe()
+            err_r, err_w = os.pipe()
+            os.write(out_w, b"M" * 50_000)
+            os.close(out_w)
+            os.close(err_w)
+            self.stdout = os.fdopen(out_r, "rb", buffering=0)
+            self.stderr = os.fdopen(err_r, "rb", buffering=0)
+            self.pid = 999999
+            self.killed = False
+
+        def poll(self) -> Optional[int]:
+            return -9 if self.killed else None
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self, timeout: Optional[float] = None) -> int:
+            return -9 if self.killed else 0
+
+    class MockSubprocessModule:
+        Popen = MockPopen
+
+    with pytest.raises(OutputOverrunError, match="exceeded"):
+        run_docker_process(
+            ["dummy_cmd"],
+            timeout=5.0,
+            max_bytes=8192,
+            subprocess_module=MockSubprocessModule,
+        )
+
+
 def test_docker_executor_handles_stdout_overrun(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -309,6 +412,7 @@ def test_docker_executor_refuses_oversized_copyback(
             return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
         return subprocess.run(cmd, **kwargs)
 
+    monkeypatch.setattr(docker_mod, "run_docker_process", fake_run)
     monkeypatch.setattr(docker_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(docker_mod, "is_docker_available", lambda *a, **k: True)
     # Set small copy-back limit for test
@@ -440,6 +544,7 @@ def test_runner_refuses_oversized_copyback(
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload).encode(), stderr=b"")
         return subprocess.run(cmd, **kwargs)
 
+    monkeypatch.setattr(runner_mod, "run_docker_process", fake_run)
     monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(runner_mod, "MAX_COPY_BACK_BYTES", 500)
 

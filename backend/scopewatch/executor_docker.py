@@ -356,7 +356,6 @@ class DockerExecutor:
                     cmd,
                     timeout=job.host_timeout_s(self.timeout_s),
                     max_bytes=MAX_CONTAINER_OUTPUT_BYTES,
-                    subprocess_module=subprocess,
                 )
             except subprocess.TimeoutExpired:
                 _best_effort_remove(container_name)

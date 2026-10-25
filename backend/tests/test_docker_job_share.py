@@ -517,6 +517,8 @@ def _mock_docker_run(monkeypatch, module, container_write=None):
             return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
         return real_run(cmd, **kwargs)
 
+    if hasattr(module, "run_docker_process"):
+        monkeypatch.setattr(module, "run_docker_process", fake_run)
     monkeypatch.setattr(module.subprocess, "run", fake_run)
 
 

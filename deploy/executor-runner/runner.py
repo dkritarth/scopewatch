@@ -690,7 +690,6 @@ def handle_execute(
                 cmd,
                 timeout=job.host_timeout_s(DOCKER_TIMEOUT_S),
                 max_bytes=MAX_CONTAINER_OUTPUT_BYTES,
-                subprocess_module=subprocess,
             )
         except OutputOverrunError:
             best_effort_remove(container_name)
