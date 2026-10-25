@@ -8,7 +8,9 @@ can omit it, and so a decision built without going through the engine fails
 closed to "unknown" instead of claiming a revision that never ran.
 """
 
+import re
 import shlex
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Union
@@ -351,6 +353,18 @@ def _allowed_flags_for(prefix: list[str]) -> tuple[str, ...]:
     return ()
 
 
+def _is_pytest_prefix(prefix: list[str]) -> bool:
+    """Return True if the matched command prefix represents pytest."""
+    if not prefix:
+        return False
+    if len(prefix) == 1:
+        return Path(prefix[0]).name == "pytest"
+    if len(prefix) == 3 and prefix[1] == "-m" and prefix[2] == "pytest":
+        name = Path(prefix[0]).name
+        return bool(re.match(r"^python(\d+(\.\d+)?)?$", name)) or prefix[0] == sys.executable
+    return False
+
+
 def _check_run_command_flags(
     argv: list[str], matched_len: int, allowed_flags: tuple[str, ...]
 ) -> tuple[ReasonCode, str, str] | None:
@@ -358,9 +372,11 @@ def _check_run_command_flags(
 
     Closes the ``-o addopts=...`` override channel (V1 gap 6): ``-o`` is
     allowlisted for path/ini values, but ``addopts`` re-injects arbitrary
-    flags, so an ini override naming ``addopts`` is denied. Other override
-    channels are not on the allowlist at all.
+    flags, so an ini override naming ``addopts`` is denied when executing
+    pytest. Other override channels are not on the allowlist at all.
     """
+    prefix = argv[:matched_len]
+    is_pytest = _is_pytest_prefix(prefix)
     i = matched_len
     n = len(argv)
     while i < n:
@@ -381,15 +397,16 @@ def _check_run_command_flags(
                     i += 1
                 else:
                     value = ""
-                key = value.split("=", 1)[0].strip() if value else ""
-                if key.lower() == "addopts" or value.strip().lower().startswith(
-                    "addopts"
-                ):
-                    return (
-                        ReasonCode.COMMAND_NOT_ALLOWED,
-                        "Option '-o addopts=...' (ini override) is not allowed.",
-                        "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
-                    )
+                if is_pytest:
+                    key = value.split("=", 1)[0].strip() if value else ""
+                    if key.lower() == "addopts" or value.strip().lower().startswith(
+                        "addopts"
+                    ):
+                        return (
+                            ReasonCode.COMMAND_NOT_ALLOWED,
+                            "Option '-o addopts=...' (ini override) is not allowed.",
+                            "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
+                        )
         i += 1
     return None
 
