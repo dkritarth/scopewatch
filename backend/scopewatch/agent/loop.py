@@ -491,6 +491,11 @@ class AgentLoop:
                         while True:
                             if (time.monotonic() - start_time) >= self.wall_clock_timeout_s:
                                 err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s) while awaiting approval."
+                                if approval_id is not None:
+                                    try:
+                                        self.dispatcher.expire_approval(approval_id)
+                                    except Exception:
+                                        pass
                                 self.dispatcher.fail_run(self.run_id, reason=err)
                                 return AgentRunResult(
                                     run_id=self.run_id,

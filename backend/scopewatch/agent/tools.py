@@ -345,10 +345,7 @@ class GatewayDispatcher:
     def complete_run(self, run_id: str, *, deadline: Optional[float] = None) -> Run:
         """Mark run as COMPLETED via POST /api/v1/runs/{run_id}/complete."""
         url = f"/api/v1/runs/{run_id}/complete"
-        params: dict[str, Any] = {}
-        if deadline is not None:
-            params["deadline_budget"] = max(0.0, deadline - time.monotonic())
-        resp = self._post_terminal(url, deadline=deadline, params=params or None)
+        resp = self._post_terminal(url, deadline=deadline)
         if resp.status_code != 200:
             raise RuntimeError(
                 f"Failed to complete run '{run_id}' (HTTP {resp.status_code}): {resp.text}"
@@ -377,7 +374,13 @@ class GatewayDispatcher:
         while True:
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError("Wall clock timeout reached while completing run.")
-            resp = self._client.post(url, headers=self._mutating_headers(), **kwargs)
+            request_kwargs = dict(kwargs)
+            if deadline is not None:
+                base_params = kwargs.get("params")
+                params = dict(base_params) if isinstance(base_params, dict) else {}
+                params["deadline_budget"] = max(0.0, deadline - time.monotonic())
+                request_kwargs["params"] = params or None
+            resp = self._client.post(url, headers=self._mutating_headers(), **request_kwargs)
             if resp.status_code != 409:
                 return resp
             try:
