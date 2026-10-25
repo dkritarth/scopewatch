@@ -2,7 +2,9 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+import hmac
 import logging
+import os
 from pathlib import Path
 import re
 from typing import Any, Optional
@@ -25,11 +27,20 @@ from scopewatch.config import (
     DEFAULT_REVIEWER_IDENTITY,
     DEMO_REVIEWER_ID,
     ENABLE_HSTS,
+    REVIEWER_TOKEN,
     WORKSPACE_ROOT,
+    get_allow_demo_reset,
+    get_api_key,
+    get_cors_allow_credentials,
+    get_cors_allow_origins,
+    get_enable_hsts,
+    get_reviewer_identity,
+    get_reviewer_token,
     is_demo_mode,
     reviewer_token_expected,
+    validate_auth_configuration,
 )
-from scopewatch.db import init_db
+from scopewatch.db import db_transaction, init_db
 from scopewatch.demo_guards import (
     DemoGuardConfig,
     Decision,
@@ -110,6 +121,62 @@ def extract_reviewer_token(request: Request) -> Optional[str]:
     )
 
 
+def _active_cors_origins() -> list[str]:
+    import scopewatch.app as app_mod
+    val = getattr(app_mod, "CORS_ALLOW_ORIGINS", None)
+    if val:
+        return val if isinstance(val, list) else [v.strip() for v in str(val).split(",") if v.strip()]
+    return get_cors_allow_origins()
+
+
+def _active_cors_credentials() -> bool:
+    import scopewatch.app as app_mod
+    val = getattr(app_mod, "CORS_ALLOW_CREDENTIALS", None)
+    if val is not None and val is not False:
+        return bool(val)
+    return get_cors_allow_credentials()
+
+
+def _active_enable_hsts() -> bool:
+    import scopewatch.app as app_mod
+    val = getattr(app_mod, "ENABLE_HSTS", None)
+    if val:
+        return bool(val)
+    return get_enable_hsts()
+
+
+def _active_allow_demo_reset() -> bool:
+    import scopewatch.app as app_mod
+    val = getattr(app_mod, "ALLOW_DEMO_RESET", None)
+    if val:
+        return bool(val)
+    return get_allow_demo_reset()
+
+
+def _active_api_key() -> str:
+    import scopewatch.app as app_mod
+    val = getattr(app_mod, "API_KEY", None)
+    if val:
+        return str(val)
+    return get_api_key()
+
+
+def _active_reviewer_token() -> str:
+    import scopewatch.app as app_mod
+    val = getattr(app_mod, "REVIEWER_TOKEN", None)
+    if val:
+        return str(val)
+    return get_reviewer_token()
+
+
+def _active_reviewer_identity() -> str:
+    import scopewatch.app as app_mod
+    val = getattr(app_mod, "DEFAULT_REVIEWER_IDENTITY", None)
+    if val:
+        return str(val)
+    return get_reviewer_identity()
+
+
 def create_app(
     db_path: Path | str = DB_PATH,
     workspace_root: Path | str = WORKSPACE_ROOT,
@@ -118,6 +185,19 @@ def create_app(
     capture_token: Optional[str] = None,
     run_workspaces_root: Optional[Path | str] = None,
 ) -> FastAPI:
+    # Fail closed at startup if agent and reviewer credentials match
+    active_agent = _active_api_key()
+    active_rev = _active_reviewer_token()
+    demo_tok = os.environ.get("DEMO_TOKEN", "").strip()
+    if active_rev:
+        for a in (demo_tok, active_agent):
+            if a and hmac.compare_digest(a, active_rev):
+                raise ValueError(
+                    "Invalid authentication configuration: Agent credential and "
+                    "reviewer credential must be distinct."
+                )
+    validate_auth_configuration()
+
     actual_db_path = Path(db_path)
     actual_workspace_root = Path(workspace_root)
     init_db(actual_db_path)
@@ -128,6 +208,17 @@ def create_app(
         # Startup: ensure the database and workspace root this app was built
         # with exist. Use the paths given to create_app, never the module
         # defaults, so a scratch app does not touch repo state (#133).
+        c_agent = _active_api_key()
+        c_rev = _active_reviewer_token()
+        c_demo = os.environ.get("DEMO_TOKEN", "").strip()
+        if c_rev:
+            for a in (c_demo, c_agent):
+                if a and hmac.compare_digest(a, c_rev):
+                    raise ValueError(
+                        "Invalid authentication configuration: Agent credential and "
+                        "reviewer credential must be distinct."
+                    )
+        validate_auth_configuration()
         init_db(actual_db_path)
         actual_workspace_root.mkdir(parents=True, exist_ok=True)
         yield
@@ -142,11 +233,13 @@ def create_app(
     # CORS configuration (issue #185):
     # Only enable CORS middleware if explicit origins are configured.
     # Default is empty list: same-origin only, never wildcard with credentials.
-    if CORS_ALLOW_ORIGINS:
+    cors_origins = _active_cors_origins()
+    cors_creds = _active_cors_credentials()
+    if cors_origins:
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=CORS_ALLOW_ORIGINS,
-            allow_credentials=CORS_ALLOW_CREDENTIALS,
+            allow_origins=cors_origins,
+            allow_credentials=cors_creds,
             allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
             allow_headers=["*"],
         )
@@ -168,7 +261,7 @@ def create_app(
         response = await call_next(request)
         # HSTS - only when explicitly enabled or under HTTPS, never on local plain HTTP
         is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
-        if ENABLE_HSTS or (is_https and not is_demo_mode()):
+        if _active_enable_hsts() or (is_https and not is_demo_mode()):
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         # CSP - restrict sources without unsafe-inline in script-src
         response.headers["Content-Security-Policy"] = (
@@ -212,7 +305,8 @@ def create_app(
                     origin_netloc == host
                     or origin_base == request_base
                 )
-                is_allowed_cors = origin in CORS_ALLOW_ORIGINS or origin_base in CORS_ALLOW_ORIGINS
+                active_cors_origins = _active_cors_origins()
+                is_allowed_cors = origin in active_cors_origins or origin_base in active_cors_origins
 
                 if not (is_same_origin or is_allowed_cors):
                     return JSONResponse(
@@ -224,8 +318,14 @@ def create_app(
             if "/approvals/" in request.url.path and (
                 request.url.path.endswith("/approve") or request.url.path.endswith("/deny")
             ):
-                content_type = request.headers.get("content-type", "").lower().strip()
-                if content_type and not content_type.startswith("application/json"):
+                raw_ct = request.headers.get("content-type")
+                if not raw_ct:
+                    return JSONResponse(
+                        status_code=415,
+                        content={"error": "unsupported_media_type", "message": "Content-Type must be application/json"},
+                    )
+                media_type = raw_ct.split(";")[0].strip().lower()
+                if media_type != "application/json":
                     return JSONResponse(
                         status_code=415,
                         content={"error": "unsupported_media_type", "message": "Content-Type must be application/json"},
@@ -239,12 +339,24 @@ def create_app(
     @app.middleware("http")
     async def api_key_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
         """Require API key on mutating /api/* when configured outside demo mode."""
-        if API_KEY and not guards.config.enabled and is_mutating_api_call(request.method, request.url.path):
+        current_api_key = _active_api_key()
+        if current_api_key and not guards.config.enabled and is_mutating_api_call(request.method, request.url.path):
             provided_key = request.headers.get("x-api-key")
             provided_rev = extract_reviewer_token(request)
             exp_rev = reviewer_token_expected()
 
-            authed_agent = bool(provided_key and token_matches(provided_key, API_KEY))
+            # Reject any reviewer credential attempt that matches an agent credential regardless of header
+            if provided_rev and token_matches(provided_rev, current_api_key):
+                if "/approvals/" in request.url.path or "reset" in request.url.path:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "error": "reviewer_credential_required",
+                            "message": "Reviewer credential required to resolve approvals; agent credentials are not permitted.",
+                        },
+                    )
+
+            authed_agent = bool(provided_key and token_matches(provided_key, current_api_key))
             authed_reviewer = bool(exp_rev and provided_rev and token_matches(provided_rev, exp_rev))
 
             if not (authed_agent or authed_reviewer):
@@ -265,6 +377,17 @@ def create_app(
             provided_demo = request.headers.get("x-demo-token")
             provided_rev = extract_reviewer_token(request)
             exp_rev = reviewer_token_expected()
+            demo_tok = guards.config.demo_token if guards and guards.config else ""
+
+            if provided_rev and demo_tok and token_matches(provided_rev, demo_tok):
+                if "/approvals/" in request.url.path or "reset" in request.url.path:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "error": "reviewer_credential_required",
+                            "message": "Reviewer credential required to resolve approvals; agent credentials are not permitted.",
+                        },
+                    )
 
             decision = guards.check_token(provided_demo)
             if not decision.allowed and exp_rev and provided_rev and token_matches(provided_rev, exp_rev):
@@ -300,6 +423,23 @@ def create_app(
         provided_demo = request.headers.get("x-demo-token")
         provided_api = request.headers.get("x-api-key")
 
+        current_api_key = _active_api_key()
+        demo_tok = guards.config.demo_token if guards and guards.config else os.environ.get("DEMO_TOKEN", "")
+
+        # Request defense: Reject any reviewer credential attempt that matches an agent credential,
+        # regardless of header (X-Reviewer-Token, X-Reviewer-Key, or Authorization: Bearer).
+        if provided_rev:
+            if (current_api_key and token_matches(provided_rev, current_api_key)) or (
+                demo_tok and token_matches(provided_rev, demo_tok)
+            ):
+                return False, "", JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "reviewer_credential_required",
+                        "message": "Reviewer credential required to resolve approvals; agent credentials are not permitted.",
+                    },
+                )
+
         if exp_rev:
             if provided_rev and token_matches(provided_rev, exp_rev):
                 pass
@@ -330,17 +470,23 @@ def create_app(
                 )
 
         # Resolve reviewer identity
-        reviewer_id = ""
+        candidate_id = ""
         if req and req.reviewer_id:
-            reviewer_id = re.sub(r"[^\w\s\-\.\(\)@]", "", req.reviewer_id)[:64].strip()
-        elif request.headers.get("x-reviewer-id"):
-            reviewer_id = re.sub(r"[^\w\s\-\.\(\)@]", "", request.headers.get("x-reviewer-id", ""))[:64].strip()
-        elif DEFAULT_REVIEWER_IDENTITY:
-            reviewer_id = DEFAULT_REVIEWER_IDENTITY
-        elif exp_rev and provided_rev:
-            reviewer_id = f"reviewer-{token_fingerprint(provided_rev)}"
+            candidate_id = re.sub(r"[^\w\s\-\.\(\)@]", "", req.reviewer_id)[:64].strip()
+        if not candidate_id and request.headers.get("x-reviewer-id"):
+            candidate_id = re.sub(r"[^\w\s\-\.\(\)@]", "", request.headers.get("x-reviewer-id", ""))[:64].strip()
+
+        # Reject empty cleaned identity or agent-authored masquerade; fallback to bound/configured identity
+        if not candidate_id or candidate_id.lower() in ("agent", "agent-authored", "model", "assistant"):
+            current_reviewer_identity = _active_reviewer_identity()
+            if exp_rev and provided_rev:
+                reviewer_id = f"reviewer-{token_fingerprint(provided_rev)}"
+            elif current_reviewer_identity:
+                reviewer_id = current_reviewer_identity
+            else:
+                reviewer_id = DEMO_REVIEWER_ID
         else:
-            reviewer_id = DEMO_REVIEWER_ID
+            reviewer_id = candidate_id
 
         return True, reviewer_id, None
 
@@ -372,7 +518,7 @@ def create_app(
         request: Request,
         svc: ScopewatchService = Depends(get_service),
     ) -> Any:
-        if not ALLOW_DEMO_RESET:
+        if not _active_allow_demo_reset():
             return JSONResponse(
                 status_code=403,
                 content={
@@ -384,6 +530,19 @@ def create_app(
         exp_rev = reviewer_token_expected()
         if exp_rev:
             provided_rev = extract_reviewer_token(request)
+            current_api_key = _active_api_key()
+            demo_tok = guards.config.demo_token if guards and guards.config else os.environ.get("DEMO_TOKEN", "")
+            if provided_rev and (
+                (current_api_key and token_matches(provided_rev, current_api_key))
+                or (demo_tok and token_matches(provided_rev, demo_tok))
+            ):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "reviewer_credential_required",
+                        "message": "Reviewer credential required for demo reset; agent credentials are not permitted.",
+                    },
+                )
             if not (provided_rev and token_matches(provided_rev, exp_rev)):
                 return JSONResponse(
                     status_code=403,
@@ -393,16 +552,24 @@ def create_app(
                     },
                 )
 
-        init_db(svc.db_path)
         conn = svc._get_conn()
         try:
-            conn.execute("DELETE FROM evidence_events;")
-            conn.execute("DELETE FROM execution_receipts;")
-            conn.execute("DELETE FROM approval_requests;")
-            conn.execute("DELETE FROM reasoning_audits;")
-            conn.execute("DELETE FROM policy_decisions;")
-            conn.execute("DELETE FROM action_requests;")
-            conn.execute("DELETE FROM runs;")
+            with db_transaction(conn):
+                if svc.has_in_flight_executions(conn):
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "error": "execution_in_flight",
+                            "message": "Cannot reset demo while action execution is in flight.",
+                        },
+                    )
+                conn.execute("DELETE FROM evidence_events;")
+                conn.execute("DELETE FROM execution_receipts;")
+                conn.execute("DELETE FROM approval_requests;")
+                conn.execute("DELETE FROM reasoning_audits;")
+                conn.execute("DELETE FROM policy_decisions;")
+                conn.execute("DELETE FROM action_requests;")
+                conn.execute("DELETE FROM runs;")
         finally:
             conn.close()
         return {"status": "ok", "message": "Demo state reset successfully."}

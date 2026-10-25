@@ -1,5 +1,6 @@
 """Configuration settings for Scopewatch baseline."""
 
+import hmac
 import logging
 import os
 from pathlib import Path
@@ -18,74 +19,120 @@ DEFAULT_EXPIRY_SECONDS = int(os.environ.get("SCOPEWATCH_APPROVAL_TTL", "300"))
 MAX_READ_BYTES = 64 * 1024  # 64 KiB
 MAX_WRITE_BYTES = 64 * 1024  # 64 KiB
 
-# CORS and Security (issue #185)
-# Comma-separated list of allowed origins, e.g. "https://app.example.com,https://dashboard.example.com"
-# Defaults to empty list for default same-origin behavior (no cross-origin access allowed)
-CORS_ALLOW_ORIGINS = [
-    origin.strip()
-    for origin in os.environ.get("SCOPEWATCH_CORS_ALLOW_ORIGINS", "").split(",")
-    if origin.strip()
-]
-# Whether to allow credentials (cookies, auth headers) in CORS requests
-CORS_ALLOW_CREDENTIALS = os.environ.get("SCOPEWATCH_CORS_ALLOW_CREDENTIALS", "false").lower() == "true"
-# API key for production authentication (when not in demo mode)
-API_KEY = os.environ.get("SCOPEWATCH_API_KEY", "")
 
-# Reviewer authentication (issue #185)
-# Distinct credential held only by human reviewers/judges to approve or deny holds.
-# The agent loop never receives this token.
-REVIEWER_TOKEN = (
-    os.environ.get("SCOPEWATCH_REVIEWER_TOKEN")
-    or os.environ.get("REVIEWER_TOKEN")
-    or os.environ.get("SCOPEWATCH_REVIEWER_KEY", "")
-)
+# --- Canonical / Backwards-compatible Configuration Resolvers (issue #185) ---
 
-# Reviewer identity label override
-DEFAULT_REVIEWER_IDENTITY = os.environ.get("SCOPEWATCH_REVIEWER_ID", "")
-
-# Flag controlling demo state reset (issue #185)
-ALLOW_DEMO_RESET = os.environ.get("SCOPEWATCH_ALLOW_RESET", "false").lower() in ("true", "1", "yes")
-
-# Flag controlling HSTS (issue #185)
-ENABLE_HSTS = os.environ.get("SCOPEWATCH_ENABLE_HSTS", "false").lower() in ("true", "1", "yes")
-
-
-def reviewer_token_expected(env: dict[str, str] | None = None) -> str:
-    """Return the expected reviewer token, if any is configured or required."""
+def get_api_key(env: Mapping[str, str] | None = None) -> str:
+    """Return configured agent API key. Canonical: SCOPEWATCH_API_KEY, alias: API_KEY."""
     src = env if env is not None else os.environ
-    explicit = (
+    return str(src.get("SCOPEWATCH_API_KEY") or src.get("API_KEY") or "").strip()
+
+
+def get_reviewer_token(env: Mapping[str, str] | None = None) -> str:
+    """Return explicit reviewer token. Canonical: SCOPEWATCH_REVIEWER_TOKEN, aliases: REVIEWER_TOKEN, SCOPEWATCH_REVIEWER_KEY."""
+    src = env if env is not None else os.environ
+    return str(
         src.get("SCOPEWATCH_REVIEWER_TOKEN")
         or src.get("REVIEWER_TOKEN")
         or src.get("SCOPEWATCH_REVIEWER_KEY", "")
-    )
+    ).strip()
+
+
+def get_reviewer_identity(env: Mapping[str, str] | None = None) -> str:
+    """Return default reviewer identity label. Canonical: SCOPEWATCH_REVIEWER_ID, aliases: DEFAULT_REVIEWER_IDENTITY, REVIEWER_ID."""
+    src = env if env is not None else os.environ
+    return str(
+        src.get("SCOPEWATCH_REVIEWER_ID")
+        or src.get("DEFAULT_REVIEWER_IDENTITY")
+        or src.get("REVIEWER_ID", "")
+    ).strip()
+
+
+def get_cors_allow_origins(env: Mapping[str, str] | None = None) -> list[str]:
+    """Return list of allowed CORS origins. Canonical: SCOPEWATCH_CORS_ALLOW_ORIGINS, alias: CORS_ALLOW_ORIGINS."""
+    src = env if env is not None else os.environ
+    raw = str(src.get("SCOPEWATCH_CORS_ALLOW_ORIGINS") or src.get("CORS_ALLOW_ORIGINS", "")).strip()
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+def get_cors_allow_credentials(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether CORS credentials are allowed. Canonical: SCOPEWATCH_CORS_ALLOW_CREDENTIALS, alias: CORS_ALLOW_CREDENTIALS."""
+    src = env if env is not None else os.environ
+    raw = str(src.get("SCOPEWATCH_CORS_ALLOW_CREDENTIALS") or src.get("CORS_ALLOW_CREDENTIALS", "false")).lower()
+    return raw in ("true", "1", "yes")
+
+
+def get_allow_demo_reset(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether demo reset is permitted. Canonical: SCOPEWATCH_ALLOW_RESET, alias: ALLOW_DEMO_RESET."""
+    src = env if env is not None else os.environ
+    raw = str(src.get("SCOPEWATCH_ALLOW_RESET") or src.get("ALLOW_DEMO_RESET", "false")).lower()
+    return raw in ("true", "1", "yes")
+
+
+def get_enable_hsts(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether HSTS header is enabled. Canonical: SCOPEWATCH_ENABLE_HSTS, alias: ENABLE_HSTS."""
+    src = env if env is not None else os.environ
+    raw = str(src.get("SCOPEWATCH_ENABLE_HSTS") or src.get("ENABLE_HSTS", "false")).lower()
+    return raw in ("true", "1", "yes")
+
+
+def validate_auth_configuration(env: Mapping[str, str] | None = None) -> None:
+    """Fail closed at startup if non-empty agent and reviewer credentials match.
+
+    Non-empty agent credentials and reviewer credentials must be distinct.
+    Never echoes tokens or keys in exception messages.
+    """
+    src = env if env is not None else os.environ
+    demo_tok = str(src.get("DEMO_TOKEN", "") or "").strip()
+    agent_k = get_api_key(src)
+    rev_tok = get_reviewer_token(src)
+
+    agent_creds = [c for c in (demo_tok, agent_k) if c]
+    if rev_tok:
+        for a in agent_creds:
+            if hmac.compare_digest(a, rev_tok):
+                raise ValueError(
+                    "Invalid authentication configuration: Agent credential and "
+                    "reviewer credential must be distinct."
+                )
+
+
+# CORS and Security (issue #185)
+CORS_ALLOW_ORIGINS = get_cors_allow_origins()
+CORS_ALLOW_CREDENTIALS = get_cors_allow_credentials()
+API_KEY = get_api_key()
+REVIEWER_TOKEN = get_reviewer_token()
+DEFAULT_REVIEWER_IDENTITY = get_reviewer_identity()
+ALLOW_DEMO_RESET = get_allow_demo_reset()
+ENABLE_HSTS = get_enable_hsts()
+
+
+def reviewer_token_expected(env: Mapping[str, str] | None = None) -> str:
+    """Return the expected reviewer token, if any is configured or required."""
+    src = env if env is not None else os.environ
+    explicit = get_reviewer_token(src)
     if explicit:
-        return explicit.strip()
+        return explicit
     demo_tok = str(src.get("DEMO_TOKEN", "") or "").strip()
     if demo_tok:
         return f"{demo_tok}-reviewer"
-    api_k = str(src.get("SCOPEWATCH_API_KEY", "") or "").strip()
+    api_k = get_api_key(src)
     if api_k:
         return f"{api_k}-reviewer"
     return ""
 
 
-def is_auth_configured(env: dict[str, str] | None = None) -> bool:
+def is_auth_configured(env: Mapping[str, str] | None = None) -> bool:
     """True when any authentication (demo guards, API key, or reviewer token) is configured."""
     src = env if env is not None else os.environ
     return bool(
         str(src.get("DEMO_TOKEN", "") or "").strip()
-        or str(src.get("SCOPEWATCH_API_KEY", "") or "").strip()
-        or str(src.get("SCOPEWATCH_REVIEWER_TOKEN", "") or "").strip()
-        or str(src.get("REVIEWER_TOKEN", "") or "").strip()
+        or get_api_key(src)
+        or get_reviewer_token(src)
     )
 
 
 # --- Gateway-native demo guards (issues #76 / #77) ---------------------------
-# Demo mode engages when DEMO_TOKEN is set; see scopewatch.demo_guards for the
-# enforced semantics (same env names as deploy/.env.example). Token budgets
-# (SCOPEWATCH_DAILY_TOKEN_BUDGET_<PROFILE>) apply regardless of demo mode but
-# never affect the mock profile. Full parsing lives in demo_guards.py and
-# budget_store.py; the defaults below document the demo-mode behaviour.
 DEMO_DEFAULT_MAX_CONCURRENT_RUNS = 5
 DEMO_DEFAULT_MAX_TURNS_PER_RUN = 40
 DEMO_DEFAULT_RATE_LIMIT_RUNS_PER_MIN_PER_IP = 6
@@ -94,33 +141,15 @@ DEMO_DEFAULT_MAX_ACTIONS_PER_DAY = 5000
 TOKEN_DEFAULT_RESERVE_PER_AUDIT = 8000
 
 
-def is_demo_mode(env: dict[str, str] | None = None) -> bool:
+def is_demo_mode(env: Mapping[str, str] | None = None) -> bool:
     """True when DEMO_TOKEN is configured (demo guards engage)."""
     src = env if env is not None else os.environ
     return bool(str(src.get("DEMO_TOKEN", "") or "").strip())
 
 
 # --- Agent wall-clock budget (issue #149) -----------------------------------
-#
-# The agent loop's deadline bounds one whole run, so its right value depends on
-# how long one model turn actually costs. Scripted replay (the `mock` profile)
-# answers instantly and keeps the historical 120 s, so CI and mock-agent runs
-# are unchanged. A live tool-calling turn costs seconds, not milliseconds, so
-# live profiles get LIVE_AGENT_WALL_CLOCK_S. Measured turn costs and how the
-# number was chosen are recorded in docs/operations/judge-runbook.md.
-#
-# `SCOPEWATCH_AGENT_WALL_CLOCK_S` overrides both for one run and is the only
-# knob an operator needs. A malformed or non-positive override is ignored with
-# a warning rather than crashing or silently truncating every run.
 AGENT_WALL_CLOCK_ENV_VAR = "SCOPEWATCH_AGENT_WALL_CLOCK_S"
-
-#: Scripted replay budget, unchanged from before this setting existed.
 REPLAY_AGENT_WALL_CLOCK_S = 120.0
-
-#: Live-model budget: the slower measured profile (openrouter-dev, p50 11.5 s
-#: / p95 14.4 s per tool-calling turn on 2026-10-03) needs ~290 s for the
-#: default 20-turn bound at p95, plus one observed ~39 s tail turn and auditor
-#: calls, so 600 s leaves roughly 2x headroom while still bounding a stuck run.
 LIVE_AGENT_WALL_CLOCK_S = 600.0
 
 
@@ -129,16 +158,7 @@ def agent_wall_clock_timeout_s(
     profile_base_url: str = "",
     env: Optional[Mapping[str, str]] = None,
 ) -> float:
-    """Resolve the agent loop wall-clock budget in seconds.
-
-    Order: explicit ``SCOPEWATCH_AGENT_WALL_CLOCK_S`` override, then the live
-    default for any non-mock profile, then the scripted-replay default.
-
-    ``profile_name`` / ``profile_base_url`` describe the agent model in use, so
-    the budget follows the model rather than the gateway. An unknown profile
-    (no name, or a test double with no profile) is treated as scripted replay
-    and gets the short budget.
-    """
+    """Resolve the agent loop wall-clock budget in seconds."""
     from scopewatch.budget_store import is_mock_profile
 
     src: Mapping[str, str] = env if env is not None else os.environ
@@ -167,13 +187,13 @@ def agent_wall_clock_timeout_s(
     return REPLAY_AGENT_WALL_CLOCK_S
 
 
-def agent_profile_name(env: dict[str, str] | None = None) -> str:
+def agent_profile_name(env: Mapping[str, str] | None = None) -> str:
     """Active agent provider profile (default: mock; never hard-code models)."""
     src = env if env is not None else os.environ
     return str(src.get("SCOPEWATCH_AGENT_PROFILE", "mock") or "mock")
 
 
-def auditor_profile_name(env: dict[str, str] | None = None) -> str:
+def auditor_profile_name(env: Mapping[str, str] | None = None) -> str:
     """Active auditor provider profile (default: mock)."""
     src = env if env is not None else os.environ
     return str(src.get("SCOPEWATCH_AUDITOR_PROFILE", "mock") or "mock")
