@@ -351,6 +351,49 @@ def _allowed_flags_for(prefix: list[str]) -> tuple[str, ...]:
     return ()
 
 
+def _check_run_command_flags(
+    argv: list[str], matched_len: int, allowed_flags: tuple[str, ...]
+) -> tuple[ReasonCode, str, str] | None:
+    """Return a denial tuple if any post-prefix option is disallowed.
+
+    Closes the ``-o addopts=...`` override channel (V1 gap 6): ``-o`` is
+    allowlisted for path/ini values, but ``addopts`` re-injects arbitrary
+    flags, so an ini override naming ``addopts`` is denied. Other override
+    channels are not on the allowlist at all.
+    """
+    i = matched_len
+    n = len(argv)
+    while i < n:
+        item = argv[i]
+        if item.startswith("-"):
+            option = item.split("=", 1)[0]
+            if option not in allowed_flags:
+                return (
+                    ReasonCode.COMMAND_NOT_ALLOWED,
+                    f"Option '{option}' is not in the allowlist for this command.",
+                    "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
+                )
+            if option == "-o":
+                if "=" in item:
+                    value = item.split("=", 1)[1]
+                elif i + 1 < n:
+                    value = argv[i + 1]
+                    i += 1
+                else:
+                    value = ""
+                key = value.split("=", 1)[0].strip() if value else ""
+                if key.lower() == "addopts" or value.strip().lower().startswith(
+                    "addopts"
+                ):
+                    return (
+                        ReasonCode.COMMAND_NOT_ALLOWED,
+                        "Option '-o addopts=...' (ini override) is not allowed.",
+                        "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
+                    )
+        i += 1
+    return None
+
+
 def _check_run_command_path(
     value: str,
     *,
@@ -592,16 +635,10 @@ def revalidate_run_command_in_workspace(
     # Same default-deny flag rule as the policy path (R7), so a scope or
     # allowlist drift cannot re-widen the option surface at dispatch.
     allowed_flags = _allowed_flags_for(argv[:matched_len])
+    flag_denial = _check_run_command_flags(argv, matched_len, allowed_flags)
+    if flag_denial is not None:
+        return flag_denial
     for item in argv[matched_len:]:
-        if item.startswith("-"):
-            option = item.split("=", 1)[0]
-            if option not in allowed_flags:
-                return (
-                    ReasonCode.COMMAND_NOT_ALLOWED,
-                    f"Option '{option}' is not in the allowlist for this command "
-                    "at dispatch.",
-                    "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
-                )
         candidates = [item]
         if "=" in item:
             candidates.append(item.split("=", 1)[1])
@@ -784,15 +821,11 @@ def _evaluate_run_command(
     # longer ride through; allowed options still pass through the path
     # rules below, so '--rootdir=/abs' keeps its path denial.
     allowed_flags = _allowed_flags_for(argv[:matched_len])
+    flag_denial = _check_run_command_flags(argv, matched_len, allowed_flags)
+    if flag_denial is not None:
+        reason_code, explanation, matched_rule = flag_denial
+        return deny(reason_code, explanation, matched_rule)
     for item in argv[matched_len:]:
-        if item.startswith("-"):
-            option = item.split("=", 1)[0]
-            if option not in allowed_flags:
-                return deny(
-                    ReasonCode.COMMAND_NOT_ALLOWED,
-                    f"Option '{option}' is not in the allowlist for this command.",
-                    "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
-                )
         candidates = [item]
         if "=" in item:
             candidates.append(item.split("=", 1)[1])
