@@ -3,8 +3,10 @@
 from concurrent.futures import ThreadPoolExecutor
 import json
 import threading
+import time
 from typing import Any
 
+import httpx
 import pytest
 
 from tests.test_agent_loop import create_test_run, test_env, wait_for_approval
@@ -241,3 +243,150 @@ def test_timeout_wins_against_reviewer_with_stale_pending_read(
     assert action["execution_receipt"] is None
     events = client.get(f"/api/v1/runs/{run_id}/events").json()
     assert not any(event["event_type"] == "EXECUTION_STARTED" for event in events)
+
+
+def test_completion_retry_refreshes_deadline_budget_under_write_lock(
+    test_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deferred completion retry recomputes its deadline budget under real SQLite lock contention.
+
+    Acceptance criteria for #283:
+    1. First completion attempt encounters 409 APPROVED_ACTION_IN_FLIGHT and retries.
+    2. Monotonic time elapses before the second completion request is dispatched.
+    3. The second request recomputes remaining deadline budget (decreasing sent budget).
+    4. The second request arrives before the deadline, then waits on the real SQLite
+       write lock held by receipt persistence. The lock wait exceeds the refreshed remaining
+       budget but is LESS than the initial stale budget.
+    5. The gateway rejects the second attempt with 409 COMPLETION_DEADLINE_EXCEEDED.
+    6. The loop and stored run fail closed (FAILED), with zero RUN_COMPLETED evidence.
+    """
+    import scopewatch.service as service
+    from scopewatch.repository import ScopewatchRepository
+
+    client = test_env["client"]
+    run_id = create_test_run(client, requires_approval=["read_text"])
+    dispatcher = GatewayDispatcher(http_client=client)
+    held = dispatcher.submit_action(
+        run_id,
+        convert_tool_call_to_submit_request(
+            "read_text", {"path": "invoices/approved/vendor-a.txt"},
+        ),
+    )
+    approval_id = held.approval_request.id
+
+    executing = threading.Event()
+    release_execution = threading.Event()
+    first_refused = threading.Event()
+    persisting = threading.Event()
+    release_receipt = threading.Event()
+    second_entered = threading.Event()
+
+    real_execute = service.execute_action
+    real_create_receipt = ScopewatchRepository.create_execution_receipt
+    real_complete_svc = test_env["app"].state.service.complete_run
+    real_post = client.post
+
+    def gated_execute(*args: Any, **kwargs: Any) -> Any:
+        executing.set()
+        assert release_execution.wait(10), "release_execution timed out"
+        return real_execute(*args, **kwargs)
+
+    def gated_create_receipt(*args: Any, **kwargs: Any) -> Any:
+        # Called inside `with db_transaction(conn):`, so conn holds BEGIN IMMEDIATE
+        persisting.set()
+        assert release_receipt.wait(10), "release_receipt timed out"
+        return real_create_receipt(*args, **kwargs)
+
+    complete_svc_calls = 0
+
+    def observed_complete_svc(*args: Any, **kwargs: Any) -> Any:
+        nonlocal complete_svc_calls
+        complete_svc_calls += 1
+        if complete_svc_calls == 2:
+            second_entered.set()
+        return real_complete_svc(*args, **kwargs)
+
+    sent_budgets: list[float] = []
+    complete_post_calls = 0
+
+    def tracking_post(url: str, *args: Any, **kwargs: Any) -> httpx.Response:
+        nonlocal complete_post_calls
+        if url.endswith("/complete") and run_id in url:
+            complete_post_calls += 1
+            params = kwargs.get("params") or {}
+            if isinstance(params, dict) and "deadline_budget" in params:
+                sent_budgets.append(float(params["deadline_budget"]))
+            resp = real_post(url, *args, **kwargs)
+            if complete_post_calls == 1 and resp.status_code == 409:
+                first_refused.set()
+                # Consume time before returning so the next attempt dispatches with less remaining budget
+                time.sleep(0.25)
+            return resp
+        return real_post(url, *args, **kwargs)
+
+    monkeypatch.setattr(service, "execute_action", gated_execute)
+    monkeypatch.setattr(ScopewatchRepository, "create_execution_receipt", gated_create_receipt)
+    monkeypatch.setattr(test_env["app"].state.service, "complete_run", observed_complete_svc)
+    monkeypatch.setattr(client, "post", tracking_post)
+
+    provider = MockProviderClient()
+    provider.enqueue(ChatResult(content="Finished.", model="mock", profile="mock", tool_calls=[]))
+
+    wall_clock = 0.55
+    loop = AgentLoop(
+        run_id=run_id,
+        provider_client=provider,
+        dispatcher=GatewayDispatcher(http_client=client),
+        wall_clock_timeout_s=wall_clock,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        review_future = pool.submit(
+            client.post, f"/api/v1/approvals/{approval_id}/approve", json={}
+        )
+        try:
+            assert executing.wait(5), "Action never began executing"
+            start_time = time.monotonic()
+            loop_future = pool.submit(loop.run)
+
+            # 1. First completion attempt encounters 409 APPROVED_ACTION_IN_FLIGHT
+            assert first_refused.wait(5), "First complete attempt was not refused"
+
+            # 2. Let execution finish and enter receipt persistence where SQLite write lock is held
+            release_execution.set()
+            assert persisting.wait(5), "Receipt persistence never acquired lock"
+
+            # 3. Second complete request arrives and waits for the SQLite write lock
+            assert second_entered.wait(5), "Second complete attempt never entered service"
+
+            # Verify the second request started within the deadline
+            elapsed_at_second = time.monotonic() - start_time
+            assert elapsed_at_second < wall_clock, f"Second request dispatched after deadline: {elapsed_at_second}s"
+
+            # Hold SQLite write lock for 0.35s:
+            # 0.35s > refreshed remaining budget (~0.20s), but < initial budget (0.55s)
+            time.sleep(0.35)
+            assert not loop_future.done(), "Loop terminated prematurely before lock release"
+        finally:
+            release_execution.set()
+            release_receipt.set()
+
+        review_resp = review_future.result(timeout=10)
+        assert review_resp.status_code == 200, f"Approval resolution failed: {review_resp.text}"
+        result = loop_future.result(timeout=10)
+
+    # Assertions
+    assert complete_post_calls >= 2, f"Expected >= 2 complete POSTs, got {complete_post_calls}"
+    assert len(sent_budgets) >= 2, f"Expected >= 2 sent budgets, got {sent_budgets}"
+    assert sent_budgets[1] < sent_budgets[0], (
+        f"Deadline budget was not refreshed on retry: initial={sent_budgets[0]}, retry={sent_budgets[1]}"
+    )
+
+    assert result.status == "FAILED", f"Expected FAILED result, got {result.status}"
+    stored_run = client.get(f"/api/v1/runs/{run_id}").json()
+    assert stored_run["status"] == "FAILED", f"Stored run status is {stored_run['status']}"
+
+    events = client.get(f"/api/v1/runs/{run_id}/events").json()
+    event_types = [e["event_type"] for e in events]
+    assert "RUN_COMPLETED" not in event_types, f"RUN_COMPLETED event found: {event_types}"
+    assert "SYSTEM_ERROR" in event_types, f"Expected SYSTEM_ERROR event: {event_types}"
