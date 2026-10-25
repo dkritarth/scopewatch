@@ -8,6 +8,7 @@ can omit it, and so a decision built without going through the engine fails
 closed to "unknown" instead of claiming a revision that never ran.
 """
 
+import os
 import re
 import shlex
 import sys
@@ -37,6 +38,23 @@ from scopewatch.schemas import ActionRequest, PolicyDecision, Run, TaskScope
 # The shell metacharacter set lives in scopewatch.models so the policy
 # fingerprint can cover it; kept under its historical private name here.
 _RUN_COMMAND_METACHARACTERS = RUN_COMMAND_METACHARACTERS
+
+
+def _resolve(path: Path) -> Path:
+    """``Path.resolve()`` that raises ``RuntimeError`` on a symlink loop.
+
+    Python 3.12 raises for a loop; 3.13 returns the path with the looping
+    link left unresolved, which would let a loop pass the containment checks
+    as an ordinary in-workspace path. A fully resolved path has no symlink
+    component, so any symlink left in the result means resolution stopped.
+    """
+    resolved = path.resolve()
+    # os.path.islink, unlike Path.is_symlink, answers False instead of
+    # raising for a name the filesystem rejects (ENAMETOOLONG), so a
+    # nonexistent over-long name still reaches the scope checks.
+    if any(os.path.islink(part) for part in (resolved, *resolved.parents)):
+        raise RuntimeError(f"Symlink loop while resolving {path}")
+    return resolved
 
 
 def evaluate_policy(
@@ -221,8 +239,8 @@ def _evaluate_policy_rules(
 
     # Step 10: Resolve path against the synthetic workspace
     try:
-        resolved_workspace = workspace_root.resolve()
-        candidate_path = (resolved_workspace / normalized_rel).resolve()
+        resolved_workspace = _resolve(workspace_root)
+        candidate_path = _resolve(resolved_workspace / normalized_rel)
     except (OSError, RuntimeError):
         return PolicyDecision(
             id=decision_id,
@@ -461,8 +479,8 @@ def _check_run_command_path(
             "RULE_RUN_COMMAND_MALFORMED_PATH",
         )
     try:
-        resolved_workspace = workspace_root.resolve()
-        candidate = (resolved_workspace / normalized).resolve()
+        resolved_workspace = _resolve(workspace_root)
+        candidate = _resolve(resolved_workspace / normalized)
     except (OSError, RuntimeError):
         return (
             ReasonCode.MALFORMED_REQUEST,
@@ -488,7 +506,7 @@ def _check_run_command_path(
         )
     if is_link:
         try:
-            test_path.resolve().relative_to(resolved_workspace)
+            _resolve(test_path).relative_to(resolved_workspace)
         except ValueError:
             return (
                 ReasonCode.SYMLINK_ESCAPE,
@@ -540,8 +558,8 @@ def _check_staged_resolved_target(
             "RULE_RUN_COMMAND_MALFORMED_PATH",
         )
     try:
-        resolved = (staged_root / normalized).resolve()
-    except OSError:
+        resolved = _resolve(staged_root / normalized)
+    except (OSError, RuntimeError):
         return (
             ReasonCode.MALFORMED_REQUEST,
             f"{describe} could not be resolved at dispatch.",
@@ -560,8 +578,8 @@ def _check_staged_resolved_target(
         if blocked_norm is None:
             continue
         try:
-            blocked_base = (staged_root / blocked_norm).resolve()
-        except OSError:
+            blocked_base = _resolve(staged_root / blocked_norm)
+        except (OSError, RuntimeError):
             continue
         try:
             resolved.relative_to(blocked_base)
@@ -641,8 +659,8 @@ def revalidate_run_command_in_workspace(
         )
 
     try:
-        staged = staged_root.resolve()
-    except OSError:
+        staged = _resolve(staged_root)
+    except (OSError, RuntimeError):
         return (
             ReasonCode.MALFORMED_REQUEST,
             "Staged workspace could not be resolved at dispatch.",
@@ -667,7 +685,7 @@ def revalidate_run_command_in_workspace(
                     scope=scope,
                     workspace_root=staged,
                 )
-            except OSError:
+            except (OSError, RuntimeError):
                 return (
                     ReasonCode.MALFORMED_REQUEST,
                     f"Command argument '{candidate}' could not be resolved at dispatch.",
@@ -693,7 +711,7 @@ def revalidate_run_command_in_workspace(
             scope=scope,
             workspace_root=staged,
         )
-    except OSError:
+    except (OSError, RuntimeError):
         return (
             ReasonCode.MALFORMED_REQUEST,
             "Working directory could not be resolved at dispatch.",

@@ -2,6 +2,10 @@
 
 Scopewatch is a pre-execution security gateway and reviewer interface for auditing and mediating autonomous AI agent actions against declared task scopes before execution occurs.
 
+![Scopewatch dashboard overview](docs/images/screenshots/01-dashboard-overview-dark.png)
+
+**Project website and interactive demo:** https://dkritarth.github.io/scopewatch/ (source in [`site/`](site/README.md)). **Judges:** the one-page cold-run sheet is [docs/operations/judge-runbook.md](docs/operations/judge-runbook.md).
+
 It enforces a strict defense-in-depth model:
 1. **Deterministic policy first**: Evaluates path, tool, and operation allowlists before any model call or executor dispatch. Deterministic `DENY` decisions are final.
 2. **Escalate-only reasoning audit**: An independent auditor analyzes the agent's chain-of-thought trace for scope drift, prompt injection, and policy evasion. The auditor can only escalate an `ALLOW` to a `HOLD`—it can never grant access or downgrade a decision.
@@ -33,23 +37,10 @@ npm ci --prefix frontend
 
 The invoice scenarios (01–06) need nothing else. The coding scenarios (10–13, `./scripts/run_demo.sh --coding`) submit `run_command` actions, which the deterministic policy only permits on the Docker executor: with a reachable Docker daemon the launcher selects `SCOPEWATCH_EXECUTOR=docker` itself, and without one it says so before seeding instead of showing silent `DENY [UNSUPPORTED_OPERATION]` receipts.
 
-### 1. Run the local demo
-
-Run the all-in-one demo launcher:
+### 1. Run the local demo (mock, scripted replay — no keys, no network)
 
 ```bash
-# Run in scripted mode (replays synthetic scenarios)
 ./scripts/run_demo.sh
-
-# Run in agent mode with the default offline mock provider
-./scripts/run_demo.sh --agent
-
-# Run in agent mode with live provider profiles (requires API key in environment)
-export OPENROUTER_API_KEY="sk-or-..."
-./scripts/run_demo.sh --agent --profile openrouter-dev
-
-# Keep the repository clean: seed and serve a scratch database and workspace copy
-./scripts/run_demo.sh --db-path /tmp/sw/demo.db --workspace-root /tmp/sw/workspace
 ```
 
 This starts the FastAPI backend, seeds synthetic invoice scenarios into a local workspace, serves the reviewer UI, and prints:
@@ -61,7 +52,16 @@ This starts the FastAPI backend, seeds synthetic invoice scenarios into a local 
 
 Defaults are `HOST=127.0.0.1` `PORT=8000` (`PORT=... HOST=... ./scripts/run_demo.sh` overrides). The script seeds into `demo/workspace/` (tracked fixtures, created only if missing) and `runtime-data/scopewatch.db` (gitignored). Provider profiles default to `mock` (no keys); live profiles read keys from the environment (`.env.example`, gitignored `.env`).
 
-### 2. Run the Scopewatch agent loop CLI
+### 2. Run with live Nebius inference (requires `NEBIUS_API_KEY`)
+
+```bash
+export NEBIUS_API_KEY="sk-..."   # Token Factory key
+./scripts/run_demo.sh --agent --profile nebius-demo
+```
+
+This runs the Scopewatch agent loop against the `nebius-demo` profile (`nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory). The dashboard shows live provider calls. Nebius exposes no reasoning field, so this profile has no provider-exposed trace. What the gateway records depends on whether Nemotron also writes text into `content` on tool-call turns, which has not been observed live (issue #214): if it does, the agent loop forwards that text as an agent-authored summary (`AGENT_AUTHORED_SUMMARY`) and the auditor reads it, so scenario 06 may `HOLD`, on agent-written text rather than a provider trace; if `content` is empty, provenance is `UNAVAILABLE`, the auditor is skipped, and 06 stays `ALLOW` (see `docs/submission/nebius-nvidia.md` §1, Table 1, and `backend/config/providers.toml`).
+
+### 3. Run the Scopewatch agent loop CLI
 
 Drive a scenario directly via the agent loop runner (`backend/scopewatch/agent/__main__.py:110-145`; `python` is absent on some machines, use `python3` with `PYTHONPATH=backend`):
 
@@ -73,7 +73,7 @@ PYTHONPATH=backend python3 -m scopewatch.agent --scenario demo/scenarios/01_safe
 PYTHONPATH=backend python3 -m scopewatch.agent --scenario demo/scenarios/06_invoice_injection.json --profile mock
 ```
 
-### 3. Run the held-out reasoning auditor evaluation
+### 4. Run the held-out reasoning auditor evaluation
 
 Evaluate auditor accuracy, false-negative rate, false-hold rate, and latency against held-out test cases (`backend/scripts/evaluate_reasoning_audit.py:217-308`; method in `docs/evaluation.md:42-72`):
 
@@ -83,15 +83,28 @@ PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile
 
 # Live evaluation on OpenRouter or Nebius (requires API key)
 PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile openrouter-dev --split heldout
+PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile nebius-demo --split heldout
 ```
 
-### 4. Run clean-room validation
+### 5. Run clean-room validation
 
 Verify the entire repository (backend unit/integration tests, PoC tests, frontend unit tests, browser Playwright tests, and clean-room security invariants):
 
 ```bash
 ./scripts/validate.sh
 ```
+
+---
+
+## Live evaluation results (held-out split, one pinned run per profile, 2026-10-03)
+
+| Profile | Model served | Accuracy | False negatives | False holds | Failed closed | Latency p50 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `nebius-demo` (Nebius Token Factory) | `nvidia/Nemotron-3_5-Lightning` | 79.2% | 8.33% | **0.00%** | 14.58% | 619 ms |
+| `openrouter-dev` (OpenRouter) | `nvidia/nemotron-3.5-lightning` | 87.5% | 5.56% | **0.00%** | 8.33% | 2,372 ms |
+| `mock` (structural check, not a model) | `mock-rules-auditor` | 93.8% | 2.78% | 16.67% | 0.00% | 1 ms |
+
+Both live profiles miss our <5% false-negative target, and every live miss sits in `injection_following` (the auditor answered "no concern" where a concern was expected). That is the only unsafe direction anywhere in the measurement; across 96 held-out audits no clean action was ever held, and every other failure mode failed *closed* to a hold. Method, dataset hash, per-category detail, and what was *not* verified: `docs/evaluation.md` and `docs/spikes/2026-10-nemotron-provider-verification.md`.
 
 ---
 
@@ -156,6 +169,7 @@ Live-model reachability for each of these outcomes (three live runs per scenario
 | `scripts/` | `run_demo.sh`, `validate.sh`, `seed_demo.py`; `scripts/agents/` backlog and worktree helpers |
 | `docs/` | Architecture, decision records (ADR-0001), ideas, spikes, agent playbook, and hackathon notes ([index](docs/README.md)) |
 | `poc/` | Prototypes and experiments (including CoT auditing PoC in `poc/cot-auditing/`) |
+| `site/` | Project website and interactive scenario replay, deployed to GitHub Pages |
 | `.agents/` | Agent role specs, slash commands, and shared skills |
 
 ---

@@ -8,6 +8,15 @@
 # from scratch (see RUNBOOK.md "Reset demo data").
 set -euo pipefail
 
+# Hosted images require demo mode. Compose rejects unset/empty values, but
+# a whitespace-only token would disable the native gateway guards too.
+# Match DemoGuardConfig.from_env's Python str.strip() semantics, including
+# Unicode whitespace that Bash's locale-dependent [[:space:]] can miss.
+if ! python -c 'import os, sys; sys.exit(0 if os.environ.get("DEMO_TOKEN", "").strip() else 1)'; then
+  echo "[entrypoint] DEMO_TOKEN must contain non-whitespace characters." >&2
+  exit 1
+fi
+
 MARKER="/data/.seeded-scripted-v1"
 
 if [[ ! -f "${MARKER}" ]]; then
