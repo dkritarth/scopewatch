@@ -294,7 +294,8 @@ def test_api_key_mode_separates_agent_from_reviewer(monkeypatch, make_gateway):
         json={"resolution_reason": "Authorized human approval", "reviewer_id": "auditor-charlie"},
     )
     assert rev_approve.status_code == 200
-    assert rev_approve.json()["approval_request"]["resolved_by"] == "auditor-charlie"
+    from scopewatch.demo_guards import token_fingerprint
+    assert rev_approve.json()["approval_request"]["resolved_by"] == f"reviewer-{token_fingerprint(reviewer_key)}"
 
 
 # -----------------------------------------------------------------------------
@@ -569,6 +570,17 @@ def test_canonical_env_resolvers_and_backwards_aliases():
     assert get_reviewer_identity({"REVIEWER_ID": "id-r"}) == "id-r"
     assert get_reviewer_identity({"SCOPEWATCH_REVIEWER_ID": "canon-id", "DEFAULT_REVIEWER_IDENTITY": "alias-id"}) == "canon-id"
 
+    # Whitespace canonical falls back to alias (issue #185 review finding 3)
+    assert get_api_key({"SCOPEWATCH_API_KEY": "   ", "API_KEY": "alias-k"}) == "alias-k"
+    assert get_reviewer_token({"SCOPEWATCH_REVIEWER_TOKEN": "   ", "REVIEWER_TOKEN": "alias-r"}) == "alias-r"
+    assert get_reviewer_token({"SCOPEWATCH_REVIEWER_TOKEN": "	 ", "SCOPEWATCH_REVIEWER_KEY": "alias-key"}) == "alias-key"
+    assert get_reviewer_identity({"SCOPEWATCH_REVIEWER_ID": "   ", "DEFAULT_REVIEWER_IDENTITY": "alias-id"}) == "alias-id"
+    assert get_reviewer_identity({"SCOPEWATCH_REVIEWER_ID": " 	 ", "REVIEWER_ID": "alias-id"}) == "alias-id"
+    assert get_allow_demo_reset({"SCOPEWATCH_ALLOW_RESET": "   ", "ALLOW_DEMO_RESET": "true"}) is True
+    assert get_cors_allow_origins({"SCOPEWATCH_CORS_ALLOW_ORIGINS": "   ", "CORS_ALLOW_ORIGINS": "https://c.com"}) == ["https://c.com"]
+    assert get_cors_allow_credentials({"SCOPEWATCH_CORS_ALLOW_CREDENTIALS": "   ", "CORS_ALLOW_CREDENTIALS": "true"}) is True
+    assert get_enable_hsts({"SCOPEWATCH_ENABLE_HSTS": "   ", "ENABLE_HSTS": "true"}) is True
+
     # Demo reset: SCOPEWATCH_ALLOW_RESET over ALLOW_DEMO_RESET
     assert get_allow_demo_reset({"SCOPEWATCH_ALLOW_RESET": "true"}) is True
     assert get_allow_demo_reset({"ALLOW_DEMO_RESET": "1"}) is True
@@ -585,8 +597,13 @@ def test_canonical_env_resolvers_and_backwards_aliases():
     assert get_cors_allow_credentials({"SCOPEWATCH_CORS_ALLOW_CREDENTIALS": "false", "CORS_ALLOW_CREDENTIALS": "true"}) is False
 
 
-def test_whitespace_reviewer_id_falls_back_to_bound_identity(monkeypatch, make_gateway):
-    """5. Whitespace or empty reviewer_id falls back to credential-bound identity, rejecting masquerade."""
+def test_arbitrary_claimed_reviewer_id_cannot_forge_authenticated_identity(monkeypatch, make_gateway):
+    """5. Arbitrary caller claim in body or header cannot forge authenticated identity (issue #185 finding 1).
+
+    Always bind resolved_by to explicit server configured reviewer identity or credential
+    fingerprint; request claim never becomes authenticated identity.
+    Test arbitrary root/admin/agent/unicode/whitespace cannot forge credential bound identity.
+    """
     from scopewatch.demo_guards import token_fingerprint
 
     rev_k = "unique-reviewer-secret-key"
@@ -594,37 +611,117 @@ def test_whitespace_reviewer_id_falls_back_to_bound_identity(monkeypatch, make_g
 
     client, _, _ = make_gateway()
     run_id = _create_sample_run(client)
-
-    # 1. Whitespace in body -> fallback to reviewer-<fingerprint>
-    appr1 = _create_sample_approval(client, run_id)
-    r1 = client.post(
-        f"/api/v1/approvals/{appr1}/approve",
-        headers={"X-Reviewer-Token": rev_k, "Content-Type": "application/json"},
-        json={"reviewer_id": "    	   ", "resolution_reason": "Cleaned to empty"},
-    )
-    assert r1.status_code == 200
     expected_fingerprint = f"reviewer-{token_fingerprint(rev_k)}"
-    assert r1.json()["approval_request"]["resolved_by"] == expected_fingerprint
 
-    # 2. Whitespace in header -> fallback to reviewer-<fingerprint>
-    appr2 = _create_sample_approval(client, run_id)
-    r2 = client.post(
-        f"/api/v1/approvals/{appr2}/approve",
-        headers={"X-Reviewer-Token": rev_k, "X-Reviewer-Id": "   ", "Content-Type": "application/json"},
+    # 1. Arbitrary claims 'admin', 'root', 'agent', unicode, whitespace NEVER become resolved_by
+    claims = [
+        "admin",
+        "root",
+        "agent",
+        "agent-authored",
+        "model",
+        "assistant",
+        "   	   ",
+        "👑superadmin​",
+    ]
+    for claim in claims:
+        appr = _create_sample_approval(client, run_id)
+        r = client.post(
+            f"/api/v1/approvals/{appr}/approve",
+            headers={"X-Reviewer-Token": rev_k, "Content-Type": "application/json"},
+            json={"reviewer_id": claim, "resolution_reason": f"Claim {claim}"},
+        )
+        assert r.status_code == 200
+        assert r.json()["approval_request"]["resolved_by"] == expected_fingerprint, (
+            f"Claim {claim!r} forged authenticated identity! Expected {expected_fingerprint}"
+        )
+
+    # 2. X-Reviewer-Id header claim cannot forge identity
+    appr_hdr = _create_sample_approval(client, run_id)
+    r_hdr = client.post(
+        f"/api/v1/approvals/{appr_hdr}/approve",
+        headers={"X-Reviewer-Token": rev_k, "X-Reviewer-Id": "admin", "Content-Type": "application/json"},
         content=b"{}",
     )
-    assert r2.status_code == 200
-    assert r2.json()["approval_request"]["resolved_by"] == expected_fingerprint
+    assert r_hdr.status_code == 200
+    assert r_hdr.json()["approval_request"]["resolved_by"] == expected_fingerprint
 
-    # 3. Masquerade as 'agent' or 'agent-authored' -> rejected, falls back to bound identity
-    appr3 = _create_sample_approval(client, run_id)
-    r3 = client.post(
-        f"/api/v1/approvals/{appr3}/approve",
+    # 3. When server explicitly configures SCOPEWATCH_REVIEWER_ID, resolved_by binds to it, NOT request claims
+    monkeypatch.setenv("SCOPEWATCH_REVIEWER_ID", "server-sec-lead")
+    client_sec, _, _ = make_gateway()
+    run_id_sec = _create_sample_run(client_sec)
+    appr_sec = _create_sample_approval(client_sec, run_id_sec)
+    r_sec = client_sec.post(
+        f"/api/v1/approvals/{appr_sec}/approve",
         headers={"X-Reviewer-Token": rev_k, "Content-Type": "application/json"},
-        json={"reviewer_id": "agent", "resolution_reason": "Masquerade attempt"},
+        json={"reviewer_id": "admin", "resolution_reason": "Masquerade attempt"},
     )
-    assert r3.status_code == 200
-    assert r3.json()["approval_request"]["resolved_by"] == expected_fingerprint
+    assert r_sec.status_code == 200
+    assert r_sec.json()["approval_request"]["resolved_by"] == "server-sec-lead"
+
+
+def test_derived_reviewer_tokens_removed_and_missing_reviewer_token_fails_closed(monkeypatch, make_gateway):
+    """7. Derived reviewer tokens removed; missing reviewer token fails closed with 403 (issue #185 finding 2)."""
+    from scopewatch.config import reviewer_token_expected
+
+    # Derived reviewer token fallback removed entirely
+    assert reviewer_token_expected({"SCOPEWATCH_API_KEY": "agent-secret"}) == ""
+    assert reviewer_token_expected({"API_KEY": "agent-secret"}) == ""
+    assert reviewer_token_expected({"DEMO_TOKEN": "demo-secret"}) == ""
+
+    # A. API key mode without reviewer token configured
+    agent_k = "agent-key-alone"
+    monkeypatch.delenv("DEMO_TOKEN", raising=False)
+    monkeypatch.delenv("SCOPEWATCH_REVIEWER_TOKEN", raising=False)
+    monkeypatch.delenv("REVIEWER_TOKEN", raising=False)
+    monkeypatch.setenv("SCOPEWATCH_API_KEY", agent_k)
+    monkeypatch.setattr("scopewatch.app.API_KEY", agent_k)
+
+    client, _, _ = make_gateway()
+    run_id = _create_sample_run(client, headers={"X-API-Key": agent_k})
+    appr_id = _create_sample_approval(client, run_id, headers={"X-API-Key": agent_k})
+
+    # 1. Agent attempts self-approval via X-API-Key -> 403 reviewer_credential_required
+    r_self = client.post(
+        f"/api/v1/approvals/{appr_id}/approve",
+        headers={"X-API-Key": agent_k, "Content-Type": "application/json"},
+        json={"resolution_reason": "Self approve"},
+    )
+    assert r_self.status_code == 403
+    assert r_self.json()["error"] == "reviewer_credential_required"
+
+    # 2. Agent attempts derived reviewer token alone (fails at middleware: not a valid agent key or reviewer token)
+    r_derived_alone = client.post(
+        f"/api/v1/approvals/{appr_id}/approve",
+        headers={"X-Reviewer-Token": f"{agent_k}-reviewer", "Content-Type": "application/json"},
+        json={"resolution_reason": "Derived token approve"},
+    )
+    assert r_derived_alone.status_code in (401, 403)
+
+    # 3. Agent presents agent key + derived reviewer token -> fails closed at endpoint with 403
+    r_derived_with_key = client.post(
+        f"/api/v1/approvals/{appr_id}/approve",
+        headers={"X-API-Key": agent_k, "X-Reviewer-Token": f"{agent_k}-reviewer", "Content-Type": "application/json"},
+        json={"resolution_reason": "Derived token with agent key approve"},
+    )
+    assert r_derived_with_key.status_code == 403
+    assert r_derived_with_key.json()["error"] == "reviewer_credential_required"
+    assert "SCOPEWATCH_REVIEWER_TOKEN is not configured" in r_derived_with_key.json()["message"]
+
+    # 4. Mutating approve with no credentials -> 401 or 403
+    r_no_auth = client.post(
+        f"/api/v1/approvals/{appr_id}/approve",
+        headers={"Content-Type": "application/json"},
+        json={"resolution_reason": "No auth"},
+    )
+    assert r_no_auth.status_code in (401, 403)
+
+    # 5. Demo reset with auth configured but no reviewer token -> 403
+    monkeypatch.setattr("scopewatch.app.ALLOW_DEMO_RESET", True)
+    r_reset = client.post("/api/v1/demo/reset", headers={"X-API-Key": agent_k})
+    assert r_reset.status_code == 403
+    assert r_reset.json()["error"] == "reviewer_credential_required"
+    assert "SCOPEWATCH_REVIEWER_TOKEN is not configured" in r_reset.json()["message"]
 
 
 def test_reset_refused_while_execution_in_flight(monkeypatch, make_gateway):

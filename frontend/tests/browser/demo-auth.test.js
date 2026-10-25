@@ -19,6 +19,7 @@ import { chromium } from "playwright";
 
 // Synthetic credential for this test process only. Never a real demo token.
 const DEMO_TOKEN = "browser-test-demo-token-not-real";
+const SYNTHETIC_REVIEWER_TOKEN = "browser-test-reviewer-token-not-real";
 
 function createUnhealthyGatewayExecutable({ ignoreSigterm = false } = {}) {
   const repoRoot = mkdtempSync(join(tmpdir(), "scopewatch-unhealthy-gateway-"));
@@ -109,7 +110,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
       ...process.env,
       PYTHONPATH: join(repoRoot, "backend"),
       // Demo mode on/off drives whether the dashboard offers the panel.
-      ...(demoMode ? { DEMO_TOKEN } : { DEMO_TOKEN: "" }),
+      ...(demoMode ? { DEMO_TOKEN, SCOPEWATCH_REVIEWER_TOKEN: SYNTHETIC_REVIEWER_TOKEN } : { DEMO_TOKEN: "", SCOPEWATCH_REVIEWER_TOKEN: "" }),
       ...extraEnv,
     },
   });

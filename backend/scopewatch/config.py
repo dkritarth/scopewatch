@@ -22,57 +22,66 @@ MAX_WRITE_BYTES = 64 * 1024  # 64 KiB
 
 # --- Canonical / Backwards-compatible Configuration Resolvers (issue #185) ---
 
+def _first_nonempty(src: Mapping[str, str], keys: list[str]) -> str:
+    """Return the first candidate value whose stripped string is non-empty."""
+    for k in keys:
+        raw = src.get(k)
+        if raw is not None:
+            val = str(raw).strip()
+            if val:
+                return val
+    return ""
+
+
 def get_api_key(env: Mapping[str, str] | None = None) -> str:
     """Return configured agent API key. Canonical: SCOPEWATCH_API_KEY, alias: API_KEY."""
     src = env if env is not None else os.environ
-    return str(src.get("SCOPEWATCH_API_KEY") or src.get("API_KEY") or "").strip()
+    return _first_nonempty(src, ["SCOPEWATCH_API_KEY", "API_KEY"])
 
 
 def get_reviewer_token(env: Mapping[str, str] | None = None) -> str:
     """Return explicit reviewer token. Canonical: SCOPEWATCH_REVIEWER_TOKEN, aliases: REVIEWER_TOKEN, SCOPEWATCH_REVIEWER_KEY."""
     src = env if env is not None else os.environ
-    return str(
-        src.get("SCOPEWATCH_REVIEWER_TOKEN")
-        or src.get("REVIEWER_TOKEN")
-        or src.get("SCOPEWATCH_REVIEWER_KEY", "")
-    ).strip()
+    return _first_nonempty(
+        src,
+        ["SCOPEWATCH_REVIEWER_TOKEN", "REVIEWER_TOKEN", "SCOPEWATCH_REVIEWER_KEY"],
+    )
 
 
 def get_reviewer_identity(env: Mapping[str, str] | None = None) -> str:
     """Return default reviewer identity label. Canonical: SCOPEWATCH_REVIEWER_ID, aliases: DEFAULT_REVIEWER_IDENTITY, REVIEWER_ID."""
     src = env if env is not None else os.environ
-    return str(
-        src.get("SCOPEWATCH_REVIEWER_ID")
-        or src.get("DEFAULT_REVIEWER_IDENTITY")
-        or src.get("REVIEWER_ID", "")
-    ).strip()
+    return _first_nonempty(
+        src,
+        ["SCOPEWATCH_REVIEWER_ID", "DEFAULT_REVIEWER_IDENTITY", "REVIEWER_ID"],
+    )
 
 
 def get_cors_allow_origins(env: Mapping[str, str] | None = None) -> list[str]:
     """Return list of allowed CORS origins. Canonical: SCOPEWATCH_CORS_ALLOW_ORIGINS, alias: CORS_ALLOW_ORIGINS."""
     src = env if env is not None else os.environ
-    raw = str(src.get("SCOPEWATCH_CORS_ALLOW_ORIGINS") or src.get("CORS_ALLOW_ORIGINS", "")).strip()
+    raw = _first_nonempty(src, ["SCOPEWATCH_CORS_ALLOW_ORIGINS", "CORS_ALLOW_ORIGINS"])
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
 def get_cors_allow_credentials(env: Mapping[str, str] | None = None) -> bool:
     """Return whether CORS credentials are allowed. Canonical: SCOPEWATCH_CORS_ALLOW_CREDENTIALS, alias: CORS_ALLOW_CREDENTIALS."""
     src = env if env is not None else os.environ
-    raw = str(src.get("SCOPEWATCH_CORS_ALLOW_CREDENTIALS") or src.get("CORS_ALLOW_CREDENTIALS", "false")).lower()
+    raw = (_first_nonempty(src, ["SCOPEWATCH_CORS_ALLOW_CREDENTIALS", "CORS_ALLOW_CREDENTIALS"]) or "false").lower()
     return raw in ("true", "1", "yes")
 
 
 def get_allow_demo_reset(env: Mapping[str, str] | None = None) -> bool:
     """Return whether demo reset is permitted. Canonical: SCOPEWATCH_ALLOW_RESET, alias: ALLOW_DEMO_RESET."""
     src = env if env is not None else os.environ
-    raw = str(src.get("SCOPEWATCH_ALLOW_RESET") or src.get("ALLOW_DEMO_RESET", "false")).lower()
+    raw = (_first_nonempty(src, ["SCOPEWATCH_ALLOW_RESET", "ALLOW_DEMO_RESET"]) or "false").lower()
     return raw in ("true", "1", "yes")
 
 
 def get_enable_hsts(env: Mapping[str, str] | None = None) -> bool:
     """Return whether HSTS header is enabled. Canonical: SCOPEWATCH_ENABLE_HSTS, alias: ENABLE_HSTS."""
     src = env if env is not None else os.environ
-    raw = str(src.get("SCOPEWATCH_ENABLE_HSTS") or src.get("ENABLE_HSTS", "false")).lower()
+    raw = (_first_nonempty(src, ["SCOPEWATCH_ENABLE_HSTS", "ENABLE_HSTS"]) or "false").lower()
     return raw in ("true", "1", "yes")
 
 
@@ -83,7 +92,7 @@ def validate_auth_configuration(env: Mapping[str, str] | None = None) -> None:
     Never echoes tokens or keys in exception messages.
     """
     src = env if env is not None else os.environ
-    demo_tok = str(src.get("DEMO_TOKEN", "") or "").strip()
+    demo_tok = _first_nonempty(src, ["DEMO_TOKEN"])
     agent_k = get_api_key(src)
     rev_tok = get_reviewer_token(src)
 
@@ -108,25 +117,16 @@ ENABLE_HSTS = get_enable_hsts()
 
 
 def reviewer_token_expected(env: Mapping[str, str] | None = None) -> str:
-    """Return the expected reviewer token, if any is configured or required."""
+    """Return explicit expected reviewer token. Derived reviewer token fallbacks are removed."""
     src = env if env is not None else os.environ
-    explicit = get_reviewer_token(src)
-    if explicit:
-        return explicit
-    demo_tok = str(src.get("DEMO_TOKEN", "") or "").strip()
-    if demo_tok:
-        return f"{demo_tok}-reviewer"
-    api_k = get_api_key(src)
-    if api_k:
-        return f"{api_k}-reviewer"
-    return ""
+    return get_reviewer_token(src)
 
 
 def is_auth_configured(env: Mapping[str, str] | None = None) -> bool:
     """True when any authentication (demo guards, API key, or reviewer token) is configured."""
     src = env if env is not None else os.environ
     return bool(
-        str(src.get("DEMO_TOKEN", "") or "").strip()
+        _first_nonempty(src, ["DEMO_TOKEN"])
         or get_api_key(src)
         or get_reviewer_token(src)
     )
@@ -144,7 +144,7 @@ TOKEN_DEFAULT_RESERVE_PER_AUDIT = 8000
 def is_demo_mode(env: Mapping[str, str] | None = None) -> bool:
     """True when DEMO_TOKEN is configured (demo guards engage)."""
     src = env if env is not None else os.environ
-    return bool(str(src.get("DEMO_TOKEN", "") or "").strip())
+    return bool(_first_nonempty(src, ["DEMO_TOKEN"]))
 
 
 # --- Agent wall-clock budget (issue #149) -----------------------------------

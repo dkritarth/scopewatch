@@ -440,7 +440,18 @@ def create_app(
                     },
                 )
 
-        if exp_rev:
+        auth_configured = bool(current_api_key or demo_tok or guards.config.enabled or exp_rev)
+
+        if auth_configured:
+            if not exp_rev:
+                return False, "", JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "reviewer_credential_required",
+                        "message": "Reviewer credential is required to resolve approvals, but SCOPEWATCH_REVIEWER_TOKEN is not configured on the server.",
+                    },
+                )
+
             if provided_rev and token_matches(provided_rev, exp_rev):
                 pass
             elif provided_demo or provided_api:
@@ -469,24 +480,32 @@ def create_app(
                     },
                 )
 
-        # Resolve reviewer identity
+            # In authenticated mode: ALWAYS bind resolved_by to explicit server-configured
+            # reviewer identity or credential fingerprint. Request claims in body or headers
+            # never become authenticated identity.
+            current_reviewer_identity = _active_reviewer_identity()
+            if current_reviewer_identity:
+                reviewer_id = current_reviewer_identity
+            else:
+                reviewer_id = f"reviewer-{token_fingerprint(provided_rev)}"
+
+            return True, reviewer_id, None
+
+        # Local zero-key mode (no credentials configured on server):
+        # Local zero-key documented fallback allowed.
+        current_reviewer_identity = _active_reviewer_identity()
         candidate_id = ""
         if req and req.reviewer_id:
             candidate_id = re.sub(r"[^\w\s\-\.\(\)@]", "", req.reviewer_id)[:64].strip()
         if not candidate_id and request.headers.get("x-reviewer-id"):
             candidate_id = re.sub(r"[^\w\s\-\.\(\)@]", "", request.headers.get("x-reviewer-id", ""))[:64].strip()
 
-        # Reject empty cleaned identity or agent-authored masquerade; fallback to bound/configured identity
-        if not candidate_id or candidate_id.lower() in ("agent", "agent-authored", "model", "assistant"):
-            current_reviewer_identity = _active_reviewer_identity()
-            if exp_rev and provided_rev:
-                reviewer_id = f"reviewer-{token_fingerprint(provided_rev)}"
-            elif current_reviewer_identity:
-                reviewer_id = current_reviewer_identity
-            else:
-                reviewer_id = DEMO_REVIEWER_ID
-        else:
+        if current_reviewer_identity:
+            reviewer_id = current_reviewer_identity
+        elif candidate_id and candidate_id.lower() not in ("agent", "agent-authored", "model", "assistant"):
             reviewer_id = candidate_id
+        else:
+            reviewer_id = DEMO_REVIEWER_ID
 
         return True, reviewer_id, None
 
@@ -528,10 +547,20 @@ def create_app(
             )
 
         exp_rev = reviewer_token_expected()
-        if exp_rev:
+        current_api_key = _active_api_key()
+        demo_tok = guards.config.demo_token if guards and guards.config else os.environ.get("DEMO_TOKEN", "")
+        auth_configured = bool(exp_rev or current_api_key or demo_tok or guards.config.enabled)
+
+        if auth_configured:
+            if not exp_rev:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "reviewer_credential_required",
+                        "message": "Reviewer credential required for demo reset, but SCOPEWATCH_REVIEWER_TOKEN is not configured on the server.",
+                    },
+                )
             provided_rev = extract_reviewer_token(request)
-            current_api_key = _active_api_key()
-            demo_tok = guards.config.demo_token if guards and guards.config else os.environ.get("DEMO_TOKEN", "")
             if provided_rev and (
                 (current_api_key and token_matches(provided_rev, current_api_key))
                 or (demo_tok and token_matches(provided_rev, demo_tok))
