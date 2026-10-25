@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
+import time
 from typing import Any, Callable, Optional
 import uuid
 
@@ -615,6 +616,7 @@ capture_token: Optional[str] = None,
         event_type: EventType,
         summary: Callable[[str], str],
         details: dict[str, Any],
+        deadline_budget: Optional[float] = None,
     ) -> tuple[Run, EvidenceEvent]:
         """Move a run to a terminal status (#187).
 
@@ -622,6 +624,7 @@ capture_token: Optional[str] = None,
         so closing the run now would record the execution after the run's
         terminal event; refuse instead.
         """
+        started_at = time.monotonic()
         conn = self._get_conn()
         try:
             if not ScopewatchRepository.get_run(conn, run_id):
@@ -634,6 +637,15 @@ capture_token: Optional[str] = None,
             with db_transaction(conn):
                 # Re-read under the write lock so the checks below cannot be
                 # overtaken by a concurrent resolve or close.
+                if (
+                    deadline_budget is not None
+                    and (time.monotonic() - started_at) >= deadline_budget
+                ):
+                    raise ScopewatchAPIError(
+                        code="COMPLETION_DEADLINE_EXCEEDED",
+                        message="Completion deadline exceeded while waiting for the run lock.",
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
                 run = ScopewatchRepository.get_run(conn, run_id)
                 if run is None:
                     raise ScopewatchAPIError(
@@ -666,13 +678,16 @@ capture_token: Optional[str] = None,
         finally:
             conn.close()
 
-    def complete_run(self, run_id: str) -> tuple[Run, EvidenceEvent]:
+    def complete_run(
+        self, run_id: str, deadline_budget: Optional[float] = None
+    ) -> tuple[Run, EvidenceEvent]:
         return self._close_run(
             run_id,
             RunStatus.COMPLETED,
             EventType.RUN_COMPLETED,
             lambda name: f"Run '{name}' was marked COMPLETED.",
             {},
+            deadline_budget=deadline_budget,
         )
 
     def fail_run(self, run_id: str, reason: str = "Agent execution failed.") -> tuple[Run, EvidenceEvent]:

@@ -348,9 +348,23 @@ class AgentLoop:
 
                 # If no tool calls produced, task is finished
                 if not chat_result.tool_calls:
-                    self.dispatcher.complete_run(
-                        self.run_id, deadline=start_time + self.wall_clock_timeout_s
-                    )
+                    try:
+                        self.dispatcher.complete_run(
+                            self.run_id, deadline=start_time + self.wall_clock_timeout_s
+                        )
+                    except Exception:
+                        err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s)."
+                        self.dispatcher.fail_run(self.run_id, reason=err)
+                        return AgentRunResult(
+                            run_id=self.run_id,
+                            status="FAILED",
+                            turns=turns,
+                            total_tool_calls=total_tool_calls,
+                            actions=recorded_actions,
+                            decisions=recorded_decisions,
+                            error=err,
+                            messages=messages,
+                        )
                     final_response = chat_result.content
                     if unresolved_holds:
                         final_response = (

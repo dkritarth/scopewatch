@@ -231,8 +231,12 @@ capture_token=capture_token,
         return RunResponse.from_run(svc.get_run(run_id))
 
     @app.post("/api/v1/runs/{run_id}/complete", response_model=RunResponse)
-    def complete_run(run_id: str, svc: ScopewatchService = Depends(get_service)) -> RunResponse:
-        run, _ = svc.complete_run(run_id)
+    def complete_run(
+        run_id: str,
+        deadline_budget: Optional[float] = Query(None),
+        svc: ScopewatchService = Depends(get_service),
+    ) -> RunResponse:
+        run, _ = svc.complete_run(run_id, deadline_budget=deadline_budget)
         return RunResponse.from_run(run)
 
     @app.post("/api/v1/runs/{run_id}/fail", response_model=RunResponse)

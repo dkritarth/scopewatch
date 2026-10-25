@@ -345,7 +345,10 @@ class GatewayDispatcher:
     def complete_run(self, run_id: str, *, deadline: Optional[float] = None) -> Run:
         """Mark run as COMPLETED via POST /api/v1/runs/{run_id}/complete."""
         url = f"/api/v1/runs/{run_id}/complete"
-        resp = self._post_terminal(url, deadline=deadline)
+        params: dict[str, Any] = {}
+        if deadline is not None:
+            params["deadline_budget"] = max(0.0, deadline - time.monotonic())
+        resp = self._post_terminal(url, deadline=deadline, params=params or None)
         if resp.status_code != 200:
             raise RuntimeError(
                 f"Failed to complete run '{run_id}' (HTTP {resp.status_code}): {resp.text}"
