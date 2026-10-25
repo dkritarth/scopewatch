@@ -219,8 +219,8 @@ class AgentLoop:
         total_tool_calls = 0
         recorded_actions: list[ActionResponse] = []
         recorded_decisions: list[str] = []
-        # Holds whose approval poll timed out (#187): the run can still
-        # complete, but its summary must not claim those actions executed.
+        # Holds atomically expired after the review wait (#283). Their stored
+        # terminal approval state proves the summary's non-execution note.
         unresolved_holds = 0
 
         system_prompt = build_system_prompt(self.task_description)
@@ -348,7 +348,9 @@ class AgentLoop:
 
                 # If no tool calls produced, task is finished
                 if not chat_result.tool_calls:
-                    self.dispatcher.complete_run(self.run_id)
+                    self.dispatcher.complete_run(
+                        self.run_id, deadline=start_time + self.wall_clock_timeout_s
+                    )
                     final_response = chat_result.content
                     if unresolved_holds:
                         final_response = (
@@ -467,16 +469,12 @@ class AgentLoop:
                         approval_req = action_resp.approval_request
                         approval_id = approval_req.id if approval_req else None
                         poll_start = time.monotonic()
-                        resolved = False
                         execution_in_flight = False
                         tool_content = ""
 
                         # The review deadline stops applying once dispatch starts.
                         # Execution must settle before feedback or a terminal event.
-                        while (
-                            execution_in_flight
-                            or (time.monotonic() - poll_start) < self.approval_timeout_s
-                        ):
+                        while True:
                             if (time.monotonic() - start_time) >= self.wall_clock_timeout_s:
                                 err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s) while awaiting approval."
                                 self.dispatcher.fail_run(self.run_id, reason=err)
@@ -492,15 +490,27 @@ class AgentLoop:
                                     prompt_version=self.prompt_version,
                                 )
 
-                            approvals = self.dispatcher.list_approvals(self.run_id)
                             matching = None
-                            for app in approvals:
-                                if approval_id and app.id == approval_id:
-                                    matching = app
-                                    break
-                                elif app.action_request_id == action_resp.action_request.id:
-                                    matching = app
-                                    break
+                            review_timed_out = (
+                                not execution_in_flight
+                                and (time.monotonic() - poll_start) >= self.approval_timeout_s
+                            )
+                            if review_timed_out:
+                                if approval_id is None:
+                                    raise RuntimeError("Held action has no approval request.")
+                                # A final read alone leaves a race with approval.
+                                # The gateway expires PENDING under its write lock,
+                                # or returns the review that won that same lock.
+                                matching = self.dispatcher.expire_approval(approval_id)
+                            else:
+                                approvals = self.dispatcher.list_approvals(self.run_id)
+                                for app in approvals:
+                                    if approval_id and app.id == approval_id:
+                                        matching = app
+                                        break
+                                    elif app.action_request_id == action_resp.action_request.id:
+                                        matching = app
+                                        break
 
                             if matching:
                                 if matching.status in (
@@ -516,7 +526,6 @@ class AgentLoop:
                                     receipt = act_data.execution_receipt
                                     if receipt is not None:
                                         tool_content = json.dumps(_receipt_feedback(receipt))
-                                        resolved = True
                                         break
                                 elif matching.status in (ApprovalStatus.DENIED, "DENIED"):
                                     tool_content = json.dumps({
@@ -526,24 +535,22 @@ class AgentLoop:
                                             or "Action was denied by human reviewer."
                                         ),
                                     })
-                                    resolved = True
                                     break
                                 elif matching.status in (ApprovalStatus.EXPIRED, "EXPIRED"):
-                                    tool_content = json.dumps({
-                                        "status": "DENIED",
-                                        "explanation": "Approval request expired before review.",
-                                    })
-                                    resolved = True
+                                    if review_timed_out:
+                                        unresolved_holds += 1
+                                        tool_content = json.dumps({
+                                            "status": "TIMEOUT",
+                                            "explanation": f"Approval timed out after {self.approval_timeout_s}s waiting for review.",
+                                        })
+                                    else:
+                                        tool_content = json.dumps({
+                                            "status": "DENIED",
+                                            "explanation": "Approval request expired before review.",
+                                        })
                                     break
 
                             time.sleep(self.poll_interval_s)
-
-                        if not resolved:
-                            unresolved_holds += 1
-                            tool_content = json.dumps({
-                                "status": "TIMEOUT",
-                                "explanation": f"Approval timed out after {self.approval_timeout_s}s waiting for review.",
-                            })
 
                         messages.append({
                             "role": "tool",

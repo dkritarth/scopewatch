@@ -313,6 +313,13 @@ capture_token=capture_token,
         svc.get_run(run_id)
         return svc.list_approvals(status_filter=status, run_id=run_id)
 
+    @app.post("/api/v1/approvals/{approval_id}/expire", response_model=ApprovalRequest)
+    def expire_approval_wait(
+        approval_id: str,
+        svc: ScopewatchService = Depends(get_service),
+    ) -> ApprovalRequest:
+        return svc.expire_approval_wait(approval_id)
+
     @app.post("/api/v1/approvals/{approval_id}/approve", response_model=ApprovalResolutionResponse)
     async def approve_action(
         approval_id: str,

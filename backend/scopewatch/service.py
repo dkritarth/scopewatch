@@ -1476,6 +1476,57 @@ capture_token: Optional[str] = None,
 
     # ---------------- Approvals ----------------
 
+    def expire_approval_wait(self, approval_id: str) -> ApprovalRequest:
+        """End an agent's review wait atomically against concurrent approval.
+
+        Only PENDING can expire. If review already won, return its persisted
+        state so the agent can wait for the receipt instead of claiming timeout.
+        """
+        conn = self._get_conn()
+        event: Optional[EvidenceEvent] = None
+        try:
+            with db_transaction(conn):
+                approval = ScopewatchRepository.get_approval_request(conn, approval_id)
+                if approval is None:
+                    raise ScopewatchAPIError(
+                        code="APPROVAL_NOT_FOUND",
+                        message="Approval request not found.",
+                        status_code=status.HTTP_404_NOT_FOUND,
+                    )
+                if approval.status == ApprovalStatus.PENDING:
+                    now = datetime.now(timezone.utc).isoformat()
+                    reason = "Agent approval wait timed out."
+                    approval = ScopewatchRepository.resolve_approval(
+                        conn, approval_id=approval_id,
+                        new_status=ApprovalStatus.EXPIRED, resolved_by="system",
+                        resolved_at=now, reason=reason,
+                    )
+                    event = ScopewatchRepository.append_event(
+                        conn, run_id=approval.run_id,
+                        event_type=EventType.APPROVAL_EXPIRED, actor="system",
+                        summary=f"Approval request '{approval_id}' expired after the agent review wait.",
+                        timestamp=now, action_request_id=approval.action_request_id,
+                        approval_request_id=approval.id,
+                        policy_decision_id=approval.policy_decision_id,
+                        details={
+                            "expired_at": now, "reason": reason,
+                            "policy_version": approval.policy_version,
+                        },
+                    )
+                    pending = ScopewatchRepository.list_approvals(
+                        conn, status_filter=ApprovalStatus.PENDING, run_id=approval.run_id
+                    )
+                    run = ScopewatchRepository.get_run(conn, approval.run_id)
+                    if not pending and run and run.status == RunStatus.WAITING_FOR_APPROVAL:
+                        ScopewatchRepository.update_run_status(
+                            conn, run.id, RunStatus.ACTIVE, now
+                        )
+            if event is not None:
+                broadcaster.publish_sync(approval.run_id, event)
+            return approval
+        finally:
+            conn.close()
+
     def reconcile_expired_approvals(self, run_id: Optional[str] = None) -> list[ApprovalRequest]:
         """Reconcile expired pending approvals whose expires_at deadline has passed (#118)."""
         conn = self._get_conn()
