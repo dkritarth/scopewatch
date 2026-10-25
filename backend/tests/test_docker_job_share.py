@@ -349,6 +349,10 @@ SHARED_BINDINGS: list[tuple[str, str, str]] = [
     ("make_world_accessible", "_make_world_accessible", "make_world_accessible"),
     ("stage_workspace_copy", "_stage_workspace_copy", "stage_workspace_copy"),
     ("best_effort_remove", "_best_effort_remove", "best_effort_remove"),
+    ("run_docker_process", "run_docker_process", "run_docker_process"),
+    ("check_staged_workspace_size", "check_staged_workspace_size", "check_staged_workspace_size"),
+    ("OutputOverrunError", "OutputOverrunError", "OutputOverrunError"),
+    ("OversizedCopyBackError", "OversizedCopyBackError", "OversizedCopyBackError"),
 ]
 
 
@@ -434,6 +438,10 @@ def test_container_output_caps_match_gateway_config() -> None:
 
     assert docker_job.MAX_READ_BYTES == config.MAX_READ_BYTES
     assert docker_job.MAX_WRITE_BYTES == config.MAX_WRITE_BYTES
+    assert docker_job.MAX_DIR_ENTRIES == config.MAX_DIR_ENTRIES
+    assert docker_job.MAX_COPY_BACK_BYTES == config.MAX_COPY_BACK_BYTES
+    assert docker_job.MAX_COPY_BACK_FILES == config.MAX_COPY_BACK_FILES
+    assert docker_job.MAX_CONTAINER_OUTPUT_BYTES == config.MAX_CONTAINER_OUTPUT_BYTES
 
 
 def test_runner_only_imports_the_shared_modules_from_scopewatch() -> None:

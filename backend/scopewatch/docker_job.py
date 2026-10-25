@@ -51,10 +51,12 @@ from __future__ import annotations
 import json
 import math
 import os
+import selectors
 import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
@@ -90,6 +92,18 @@ RUN_COMMAND_OUTPUT_LIMIT = 64 * 1024
 # cannot import gateway config, and the cross-test pins them together.
 MAX_READ_BYTES = 64 * 1024  # 64 KiB
 MAX_WRITE_BYTES = 64 * 1024  # 64 KiB
+MAX_DIR_ENTRIES = 1000
+MAX_COPY_BACK_BYTES = 10 * 1024 * 1024  # 10 MiB
+MAX_COPY_BACK_FILES = 10000
+MAX_CONTAINER_OUTPUT_BYTES = 2 * 1024 * 1024  # 2 MiB
+
+
+class OutputOverrunError(Exception):
+    """Raised when container process stdout or stderr exceeds output limit."""
+
+
+class OversizedCopyBackError(ValueError):
+    """Raised when staged workspace exceeds copy-back size bounds."""
 
 
 def clamp_run_command_timeout(value: Any) -> float:
@@ -196,6 +210,7 @@ def helper_code() -> str:
         "from pathlib import Path\n"
         f"MAX_READ = {int(MAX_READ_BYTES)}\n"
         f"MAX_WRITE = {int(MAX_WRITE_BYTES)}\n"
+        f"MAX_DIR_ENTRIES = {int(MAX_DIR_ENTRIES)}\n"
         f"RUN_CMD_LIMIT = {int(RUN_COMMAND_OUTPUT_LIMIT)}\n"
         f"RUN_CMD_TIMEOUT_DEFAULT = {float(RUN_COMMAND_DEFAULT_TIMEOUT_S)}\n"
         f"RUN_CMD_TIMEOUT_MIN = {float(RUN_COMMAND_MIN_TIMEOUT_S)}\n"
@@ -242,10 +257,24 @@ def helper_code() -> str:
         "            if not resolved.is_dir():\n"
         "                fail(f'Resource is not a directory: {resource}', 'EXECUTION_FAILED')\n"
         "                return\n"
+        "            raw_entries = []\n"
+        "            truncated = False\n"
+        "            with os.scandir(resolved) as it:\n"
+        "                for entry in it:\n"
+        "                    if len(raw_entries) < MAX_DIR_ENTRIES:\n"
+        "                        raw_entries.append(entry)\n"
+        "                    else:\n"
+        "                        truncated = True\n"
+        "                        break\n"
+        "            raw_entries.sort(key=lambda e: e.name)\n"
         "            items = []\n"
-        "            for entry in sorted(os.listdir(resolved)):\n"
-        "                items.append({'name': entry, 'type': 'directory' if (resolved / entry).is_dir() else 'file'})\n"
-        "            print(json.dumps({'status': 'EXECUTED', 'result': {'operation': 'list_directory', 'resource': resource, 'item_count': len(items), 'items': items}, 'error_code': None}))\n"
+        "            for entry in raw_entries:\n"
+        "                try:\n"
+        "                    is_dir = entry.is_dir()\n"
+        "                except OSError:\n"
+        "                    is_dir = False\n"
+        "                items.append({'name': entry.name, 'type': 'directory' if is_dir else 'file'})\n"
+        "            print(json.dumps({'status': 'EXECUTED', 'result': {'operation': 'list_directory', 'resource': resource, 'item_count': len(items), 'items': items, 'truncated': truncated}, 'error_code': None}))\n"
         "            return\n"
         "        elif op == 'read_text':\n"
         "            if not resolved.exists():\n"
@@ -360,7 +389,7 @@ def build_docker_command(
     Separated from the callers for two reasons: the exact hardening flags can
     be asserted without a Docker daemon, and both sides produce a
     byte-identical argv. ``executor_label`` is the only intentional
-    difference between them (``"docker"`` for the gateway, ``"runner"`` for
+    difference between them (``\"docker\"`` for the gateway, ``\"runner\"`` for
     the sidecar), alongside the caller-supplied image, container name, and run
     label.
     """
@@ -421,10 +450,47 @@ def replace_link(src_link: Path, dest: Path) -> None:
     dest.symlink_to(os.readlink(src_link))
 
 
+def check_staged_workspace_size(
+    workspace_copy: Path,
+    *,
+    max_bytes: int = MAX_COPY_BACK_BYTES,
+    max_files: int = MAX_COPY_BACK_FILES,
+) -> int:
+    """Validate that the staged workspace does not exceed size limits.
+
+    Walks the staged copy without following symlinks and sums the size of
+    regular files. Raises :class:`OversizedCopyBackError` if the cumulative
+    size or entry count exceeds the bounds. Returns the total byte count.
+    """
+    total_bytes = 0
+    total_entries = 0
+    staged = Path(workspace_copy)
+    for dirpath, dirnames, filenames in os.walk(staged, followlinks=False):
+        total_entries += len(dirnames) + len(filenames)
+        if total_entries > max_files:
+            raise OversizedCopyBackError(
+                f"Staged workspace entry count ({total_entries}) exceeds limit ({max_files})."
+            )
+        for name in filenames:
+            src_entry = Path(dirpath) / name
+            try:
+                if not src_entry.is_symlink() and src_entry.is_file():
+                    total_bytes += src_entry.stat().st_size
+            except OSError:
+                pass
+            if total_bytes > max_bytes:
+                raise OversizedCopyBackError(
+                    f"Staged workspace size ({total_bytes} bytes) exceeds limit ({max_bytes} bytes)."
+                )
+    return total_bytes
+
+
 def sync_copy_back(
     workspace_copy: Path,
     workspace_root: Path,
     blocked_paths: Iterable[str] = (),
+    max_bytes: int = MAX_COPY_BACK_BYTES,
+    max_files: int = MAX_COPY_BACK_FILES,
 ) -> list[str]:
     """Copy container-modified files back to the host workspace.
 
@@ -448,6 +514,7 @@ def sync_copy_back(
     container deletes are not propagated). Special files (sockets, fifos,
     devices) are skipped rather than copied.
     """
+    check_staged_workspace_size(workspace_copy, max_bytes=max_bytes, max_files=max_files)
     blocked = normalize_blocked_paths(blocked_paths)
     staged = Path(workspace_copy)
     dest_root = Path(workspace_root)
@@ -697,3 +764,128 @@ def best_effort_remove(container_name: str) -> None:
         )
     except Exception:
         pass
+
+
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def run_docker_process(
+    cmd: list[str],
+    *,
+    timeout: float,
+    max_bytes: int = MAX_CONTAINER_OUTPUT_BYTES,
+    subprocess_module: Any = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Execute a docker subprocess with bounded host memory streaming and cleanup.
+
+    Streams stdout and stderr up to max_bytes using non-blocking I/O (selectors).
+    If output exceeds max_bytes, terminates/kills the process and raises OutputOverrunError.
+    If timeout expires, kills the process and raises subprocess.TimeoutExpired.
+    If subprocess_module has monkeypatched `run`, delegates to it and verifies bounds.
+    """
+    subproc = subprocess_module if subprocess_module is not None else subprocess
+    if getattr(subproc, "run", None) is not _REAL_SUBPROCESS_RUN:
+        proc = subproc.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+        stdout_bytes = proc.stdout if isinstance(proc.stdout, (bytes, bytearray)) else b""
+        stderr_bytes = proc.stderr if isinstance(proc.stderr, (bytes, bytearray)) else b""
+        if len(stdout_bytes) > max_bytes or len(stderr_bytes) > max_bytes:
+            raise OutputOverrunError(
+                f"Container output exceeded {max_bytes} byte limit."
+            )
+        return proc
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    sel = selectors.DefaultSelector()
+    assert proc.stdout is not None and proc.stderr is not None
+    os.set_blocking(proc.stdout.fileno(), False)
+    os.set_blocking(proc.stderr.fileno(), False)
+    sel.register(proc.stdout, selectors.EVENT_READ, data="out")
+    sel.register(proc.stderr, selectors.EVENT_READ, data="err")
+
+    out_chunks = bytearray()
+    err_chunks = bytearray()
+    deadline = time.monotonic() + timeout
+    overrun = False
+    timed_out = False
+
+    try:
+        while sel.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            events = sel.select(timeout=max(0.0, min(remaining, 0.25)))
+            for key, mask in events:
+                chunk = key.fileobj.read(65536)
+                if not chunk:
+                    sel.unregister(key.fileobj)
+                    try:
+                        key.fileobj.close()
+                    except Exception:
+                        pass
+                elif key.data == "out":
+                    out_chunks.extend(chunk)
+                    if len(out_chunks) > max_bytes:
+                        overrun = True
+                        break
+                else:
+                    err_chunks.extend(chunk)
+                    if len(err_chunks) > max_bytes:
+                        overrun = True
+                        break
+            if overrun:
+                break
+            if proc.poll() is not None and not events:
+                break
+    finally:
+        for key in list(sel.get_map().values()):
+            try:
+                sel.unregister(key.fileobj)
+            except Exception:
+                pass
+            try:
+                key.fileobj.close()
+            except Exception:
+                pass
+        sel.close()
+
+    if timed_out:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=1.0)
+        except Exception:
+            pass
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+    if overrun:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=1.0)
+        except Exception:
+            pass
+        raise OutputOverrunError(
+            f"Container output exceeded {max_bytes} byte limit."
+        )
+
+    ret = proc.wait()
+    return subprocess.CompletedProcess(
+        cmd,
+        ret,
+        stdout=bytes(out_chunks),
+        stderr=bytes(err_chunks),
+    )

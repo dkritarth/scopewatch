@@ -28,7 +28,13 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Optional
 
-from scopewatch.config import MAX_READ_BYTES, MAX_WRITE_BYTES
+from scopewatch.config import (
+    MAX_CONTAINER_OUTPUT_BYTES,
+    MAX_COPY_BACK_BYTES,
+    MAX_COPY_BACK_FILES,
+    MAX_READ_BYTES,
+    MAX_WRITE_BYTES,
+)
 from scopewatch.dispatch_gate import authorize_dispatch
 
 # Shared Docker job construction lives in scopewatch.docker_job (issue #106):
@@ -49,17 +55,21 @@ from scopewatch.docker_job import (
     DOCKER_RUN_TIMEOUT_BUFFER_S,
     DOCKER_TIMEOUT_S,
     DOCKER_USER,
+    OutputOverrunError,
+    OversizedCopyBackError,
     RUN_COMMAND_DEFAULT_TIMEOUT_S,
     RUN_COMMAND_MAX_TIMEOUT_S,
     RUN_COMMAND_MIN_TIMEOUT_S,
     RUN_COMMAND_OUTPUT_LIMIT,
     best_effort_remove as _best_effort_remove,
     build_docker_command,
+    check_staged_workspace_size,
     clamp_run_command_timeout,
     helper_code as _helper_code,
     make_world_accessible as _make_world_accessible,
     prepare_docker_job,
     replace_link as _replace_link,
+    run_docker_process,
     stage_workspace_copy as _stage_workspace_copy,
     sync_copy_back as _sync_copy_back,
 )
@@ -111,11 +121,6 @@ def extract_run_command_argv(action: ActionRequest) -> Optional[list[str]]:
     return None
 
 
-
-
-
-
-
 def is_docker_available(timeout_s: float = 5.0) -> bool:
     """Return True when a Docker daemon is reachable via the CLI."""
     try:
@@ -128,10 +133,6 @@ def is_docker_available(timeout_s: float = 5.0) -> bool:
         return proc.returncode == 0
     except Exception:
         return False
-
-
-
-
 
 
 def _load_scope_from_store(
@@ -351,17 +352,20 @@ class DockerExecutor:
                 run_label=action.run_id,
             )
             try:
-                proc = subprocess.run(
+                proc = run_docker_process(
                     cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
                     timeout=job.host_timeout_s(self.timeout_s),
+                    max_bytes=MAX_CONTAINER_OUTPUT_BYTES,
+                    subprocess_module=subprocess,
                 )
             except subprocess.TimeoutExpired:
                 _best_effort_remove(container_name)
                 return _failed("EXECUTION_FAILED", "Docker execution timed out.")
             except FileNotFoundError:
                 return _failed("EXECUTION_FAILED", "Docker daemon unavailable; failing closed.")
+            except OutputOverrunError:
+                _best_effort_remove(container_name)
+                return _failed("EXECUTION_FAILED", "Docker container output exceeded size limit.")
             except Exception:
                 _best_effort_remove(container_name)
                 return _failed("EXECUTION_FAILED", "Docker execution failed.")
@@ -391,8 +395,14 @@ class DockerExecutor:
             ):
                 try:
                     refused = _sync_copy_back(
-                        workspace_copy, resolved_workspace, blocked_paths
+                        workspace_copy,
+                        resolved_workspace,
+                        blocked_paths,
+                        max_bytes=MAX_COPY_BACK_BYTES,
+                        max_files=MAX_COPY_BACK_FILES,
                     )
+                except OversizedCopyBackError as err:
+                    return _failed("OVERSIZED_WORKSPACE", f"Copy-back refused: {err}")
                 except Exception:
                     return _failed("EXECUTION_FAILED", "Docker execution failed.")
                 if refused:
@@ -416,8 +426,6 @@ class DockerExecutor:
             if staging_root is not None:
                 shutil.rmtree(staging_root, ignore_errors=True)
             _best_effort_remove(container_name)
-
-
 
 
 def execute_action_docker(
