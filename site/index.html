@@ -354,7 +354,7 @@ Status: Approved
             <p>The <code>nebius-demo</code> profile serves Nemotron through Nebius's OpenAI-compatible endpoint. Keys come from the environment and never touch the repo.</p>
             <ul>
               <li>Live held-out auditor run and live agent runs of scenarios 01–05 and 10 on 2026-10-03.</li>
-              <li>Observed: Nebius returned its reasoning fields as <code>None</code>, so those runs are honestly labelled <code>UNAVAILABLE</code> instead of inventing a trace.</li>
+              <li>Observed on a plain completion: Nebius returned its reasoning fields as <code>None</code>, so this profile has no provider-exposed trace and none is invented. What those agent runs recorded instead (an agent-authored summary or <code>UNAVAILABLE</code>) was not captured; see issue #214.</li>
             </ul>
           </article>
         </div>
