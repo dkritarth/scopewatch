@@ -100,8 +100,9 @@ beat the env var; the env var beats the pin. Rebuild the CI image after
 any `backend/requirements.lock` bump.
 
 For the coding demo's local Docker executor, use
-`deploy/executor-image/Dockerfile` (same base digest + hashed pytest pin)
-and build it with `scripts/build_executor_image.sh`, which tags it
+`backend/executor/Dockerfile` (same base digest + hashed backend lock, so
+`python -m pytest` exists inside) and build it with
+`scripts/build_executor_image.sh`, which tags it
 `scopewatch-executor:local` by default. The demo launcher preflights that
 the configured image exists locally and that `python -c "import pytest"`
 succeeds inside it with `--network none`; it refuses to seed otherwise.

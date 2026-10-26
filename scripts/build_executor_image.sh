@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 IMAGE="${SCOPEWATCH_EXECUTOR_IMAGE:-scopewatch-executor:local}"
 
 docker build \
-  -f "${REPO_ROOT}/deploy/executor-image/Dockerfile" \
+  -f "${REPO_ROOT}/backend/executor/Dockerfile" \
   -t "${IMAGE}" \
   "${REPO_ROOT}"
 

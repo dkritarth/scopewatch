@@ -35,6 +35,15 @@ jobs:
           docker pull "$(cat /tmp/executor-image.txt)"
       - name: Build executor image with test runner
         run: docker build -f backend/executor/Dockerfile -t scopewatch-executor:ci .
+      - name: Build executor image via build script
+        env:
+          SCOPEWATCH_EXECUTOR_IMAGE: scopewatch-executor:ci
+        run: ./scripts/build_executor_image.sh
+      - name: Preflight executor image
+        env:
+          SCOPEWATCH_EXECUTOR_IMAGE: scopewatch-executor:ci
+          PYTHONPATH: backend
+        run: python3 scripts/preflight_executor_image.py
       - name: Run Docker executor tests
         env:
           SCOPEWATCH_EXECUTOR_IMAGE: scopewatch-executor:ci
