@@ -270,8 +270,10 @@ def _evaluate_policy_rules(
     # On a case-insensitive volume, `Path.resolve()` only canonicalises the
     # casing of path components that exist on disk, so a nonexistent write
     # target keeps the requested casing and an upper-case alias of a blocked
-    # path would slip the raw string match. Fold case for the comparison when
-    # the workspace volume itself folds case (#305).
+    # path would slip the raw string match. The probe answers insensitive /
+    # sensitive / unknown; the matcher folds the blocked side on insensitive
+    # *or* unknown and the allowed side only on insensitive, so an
+    # undetectable volume can tighten but never widen the scope (#305).
     canonical_rel = candidate_path.relative_to(resolved_workspace)
     scope_error = scoped_path_reason(
         normalized_rel,

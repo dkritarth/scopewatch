@@ -176,8 +176,9 @@ def _verify_scoped_target(
     else:
         allowed = task_scope.allowed_paths if require_allowed else ["."]
         # Keep dispatch in agreement with the policy engine on a
-        # case-insensitive volume (#305): the same case-fold decision, re-run
-        # here immediately before I/O against the real staged workspace.
+        # case-insensitive volume (#305): the same three-state probe and the
+        # same asymmetric fold, re-run here immediately before I/O against
+        # the real staged workspace.
         if scoped_path_reason(
             requested,
             canonical,

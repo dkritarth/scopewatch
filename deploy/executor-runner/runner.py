@@ -585,7 +585,9 @@ def handle_execute(
             eff_allowed = allowed if require_allowed else ["."]
             # Re-apply the gateway's case decision on this side of the wire
             # (#184/#305): on a case-insensitive staged volume an upper-case
-            # alias of a blocked path must be refused here too.
+            # alias of a blocked path must be refused here too. A three-state
+            # probe (None = unknown) keeps an undetectable volume from
+            # widening the allowed set.
             case_insensitive = volume_is_case_insensitive(str(workspace))
             denial = scoped_path_denial(
                 req_segments, res_segments, eff_allowed, blocked,

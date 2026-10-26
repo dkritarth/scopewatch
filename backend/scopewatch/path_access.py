@@ -14,6 +14,7 @@ from scopewatch.models import ReasonCode
 from scopewatch.scope_paths import (
     BLOCKED_PATH,
     PATH_NOT_ALLOWED,
+    clear_case_probe_cache,
     normalize_relative_segments as _normalize_segments,
     scoped_path_denial as _scoped_path_denial,
     segments_within as _segments_within,
@@ -45,12 +46,15 @@ def scoped_path_reason(
     allowed_paths: Iterable[str],
     blocked_paths: Iterable[str],
     *,
-    case_insensitive: bool = False,
+    case_insensitive: bool | None = None,
 ) -> tuple[ReasonCode, str | None] | None:
     """Check both names; an allowed alias cannot authorize a blocked target.
 
-    ``case_insensitive`` is forwarded to the shared matcher so a case-variant
-    alias of a blocked path is caught on a case-insensitive volume (#305).
+    ``case_insensitive`` is the volume's three-state verdict from
+    :func:`scopewatch.scope_paths.volume_is_case_insensitive` (#305):
+    ``True`` (folds case), ``False`` (does not), or ``None``/omitted
+    (unknown, which folds the blocked check only so a failed probe never
+    widens the allowed scope).
     """
     denial = _scoped_path_denial(
         requested.parts,
@@ -69,6 +73,7 @@ def scoped_path_reason(
 __all__ = [
     "BLOCKED_PATH",
     "PATH_NOT_ALLOWED",
+    "clear_case_probe_cache",
     "is_descendant_or_equal",
     "matching_path",
     "normalize_relative_path",
