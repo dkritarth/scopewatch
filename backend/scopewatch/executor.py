@@ -12,7 +12,7 @@ import sqlite3
 from typing import Any, Optional
 import uuid
 
-from scopewatch.config import MAX_READ_BYTES, MAX_WRITE_BYTES
+from scopewatch.config import MAX_DIR_ENTRIES, MAX_READ_BYTES, MAX_WRITE_BYTES
 from scopewatch.dispatch_gate import authorize_dispatch
 from scopewatch.models import (
     ApprovalStatus,
@@ -246,12 +246,25 @@ def _execute_local(
             if not target_path.is_dir():
                 raise NotADirectoryError(f"Resource is not a directory: {action.resource}")
 
+            raw_entries = []
+            truncated = False
+            with os.scandir(target_path) as it:
+                for entry in it:
+                    if len(raw_entries) < MAX_DIR_ENTRIES:
+                        raw_entries.append(entry)
+                    else:
+                        truncated = True
+                        break
+
+            raw_entries.sort(key=lambda e: e.name)
             items = []
-            for entry in sorted(os.listdir(target_path)):
-                entry_path = target_path / entry
-                is_dir = entry_path.is_dir()
+            for entry in raw_entries:
+                try:
+                    is_dir = entry.is_dir()
+                except OSError:
+                    is_dir = False
                 items.append({
-                    "name": entry,
+                    "name": entry.name,
                     "type": "directory" if is_dir else "file",
                 })
 
@@ -268,6 +281,7 @@ def _execute_local(
                     "resource": action.resource,
                     "item_count": len(items),
                     "items": items,
+                    "truncated": truncated,
                 },
                 error_code=None,
                 resource=action.resource,

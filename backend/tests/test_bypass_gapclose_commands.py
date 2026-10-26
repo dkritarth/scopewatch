@@ -209,19 +209,22 @@ def test_gapclose_basetemp_absolute_denied(
     )
 
 
-def test_gapclose_deselect_value_unchecked_documents_gap(
+def test_gapclose_unchecked_option_values_denied(
     gap_cmd_workspace: Path, gap_cmd_run: Run, docker_backend: None
 ) -> None:
-    """Same V1 limitation as ``-p`` (``test_bypass_pytest_plugin_flag_...``):
-    non-path option values such as ``-k``/``--deselect`` carry no path signal
-    and pass; containment rests on the Docker sandbox."""
+    """Former V1 gap 6 instance (see ``test_bypass_pytest_plugin_flag_denied``):
+    non-path option values such as ``-k``/``--deselect``/``-p`` carry no
+    path signal and used to pass with containment resting on the Docker
+    sandbox. The flag allowlist now denies every option not declared for
+    the matched command prefix."""
     for argv in (
         ["pytest", "-k", "test_auth", "tests/"],
         ["pytest", "--deselect", "tests/test_auth.py::test_x", "tests/"],
         ["pytest", "-p", "evilplugin", "tests/"],
     ):
         decision = evaluate_policy(_cmd(gap_cmd_run, argv=argv), gap_cmd_run, gap_cmd_workspace)
-        assert decision.outcome == PolicyOutcome.ALLOW
+        assert decision.outcome == PolicyOutcome.DENY
+        assert decision.reason_code == ReasonCode.COMMAND_NOT_ALLOWED
 
 
 # --- Metacharacters beyond the three in test_bypass.py ---

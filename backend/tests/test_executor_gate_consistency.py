@@ -715,6 +715,7 @@ def no_docker_run(monkeypatch):
             calls.append(cmd)
         raise FileNotFoundError
 
+    monkeypatch.setattr(runner_mod, "run_docker_process", fake_run)
     monkeypatch.setattr(runner_mod.subprocess, "run", fake_run)
     return calls
 
