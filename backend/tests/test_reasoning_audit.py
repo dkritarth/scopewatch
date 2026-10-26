@@ -406,7 +406,7 @@ def test_invalid_schema_verdict_fails_closed(sample_scope: TaskScope) -> None:
 
 
 def test_oversized_trace_truncation(sample_scope: TaskScope) -> None:
-    """Trace exceeding max_trace_chars is truncated with explicit truncation marker."""
+    """Display helper truncates; operational classification rejects incomplete evidence."""
     max_chars = 1000
     huge_prefix = "A" * 800
     huge_suffix = "B" * 800
@@ -418,14 +418,15 @@ def test_oversized_trace_truncation(sample_scope: TaskScope) -> None:
     assert TRUNCATION_MARKER in truncated
     assert truncated.startswith(huge_prefix)
 
-    # Auditing an oversized trace completes safely and includes the truncation marker in prompt
+    # Operational auditing must fail closed instead of classifying a prefix.
     result = audit_agent_turn(
         task_scope=sample_scope,
         turn_id="turn-oversized",
         reasoning_text=huge_trace,
         max_trace_chars=max_chars,
     )
-    assert result.verdict in (ReasoningAuditVerdict.NO_CONCERN, ReasoningAuditVerdict.CONCERN)
+    assert result.verdict == ReasoningAuditVerdict.FAILED
+    assert result.error_code == AuditErrorCode.INPUT_TOO_LARGE.value
 
 
 def test_recent_actions_bounded_to_cap(sample_scope: TaskScope) -> None:
