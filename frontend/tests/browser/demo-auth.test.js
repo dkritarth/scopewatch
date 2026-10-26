@@ -469,13 +469,17 @@ test("same-origin dashboard approve flow works in browser (#185)", { timeout: 30
     await page.click("#reviewer-token-save");
 
     // Switch to the live run
-    await page.locator('#run-buttons button:has-text("Live")').first().click();
+    await page.locator('#run-buttons button').first().click();
+
+    // Open the requests view where approval cards render
+    await page.locator('.rail-nav [data-view-target="requests"]').click();
 
     // Verify the approval card is visible
     const polApprovalCard = page.locator(".approval-card").first();
     await polApprovalCard.waitFor({ timeout: 10000 });
 
     const approveBtn = polApprovalCard.locator(".btn-approve");
+    await page.waitForFunction(() => !document.querySelector('.approval-card .btn-approve')?.disabled, { timeout: 10000 });
     await approveBtn.click();
     assert.equal(await approveBtn.innerText(), "Confirm approve");
 
