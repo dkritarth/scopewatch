@@ -1,6 +1,6 @@
 """Pydantic schemas for Scopewatch domain objects and API messages."""
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from scopewatch.models import (
@@ -26,6 +26,7 @@ class TaskScope(BaseModel):
     allowed_operations: list[str] = Field(default_factory=list)
     allowed_network_destinations: list[str] = Field(default_factory=list)
     requires_approval: list[str] = Field(default_factory=list)
+    require_reasoning_for: list[Literal["write_text", "run_command", "delete_path"]] = Field(default_factory=list)
     allowed_commands: list[list[str]] = Field(default_factory=list)
     commands_requiring_approval: list[list[str]] = Field(default_factory=list)
     created_at: str

@@ -81,7 +81,8 @@
          "name": "vendor-c-injected.txt",
          "type": "file"
         }
-       ]
+       ],
+       "truncated": false
       },
       "error_code": null
      }
@@ -660,7 +661,8 @@
          "name": "vendor-c-injected.txt",
          "type": "file"
         }
-       ]
+       ],
+       "truncated": false
       },
       "error_code": null
      }

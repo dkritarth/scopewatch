@@ -90,6 +90,27 @@ from scopewatch.schemas import (
 logger = logging.getLogger("scopewatch.service")
 
 
+def required_reasoning_decision(
+    action: ActionRequest, run: Run, decision: PolicyDecision, audit_enabled: bool,
+) -> tuple[PolicyDecision, Optional[str]]:
+    """Apply scope availability requirements equally to preview and submission."""
+    required = action.operation in run.task_scope.require_reasoning_for
+    evidence = (action.exposed_reasoning_trace or "").strip() or (action.reasoning_summary or "").strip()
+    missing = ("audit_disabled" if not audit_enabled else "missing_text" if not evidence else None) if required else None
+    if decision.outcome != PolicyOutcome.ALLOW or not missing:
+        return decision, missing
+    return PolicyDecision(
+        id=str(uuid.uuid4()), action_request_id=action.id,
+        outcome=PolicyOutcome.HOLD, reason_code=ReasonCode.REASONING_UNAVAILABLE,
+        explanation=("This scope requires reasoning review for this operation; " +
+                     ("the auditor is disabled." if missing == "audit_disabled"
+                      else "no nonempty reasoning trace or summary was supplied.")),
+        matched_rule="RULE_REQUIRED_REASONING_UNAVAILABLE",
+        decided_at=datetime.now(timezone.utc).isoformat(),
+        deterministic=True, policy_version=decision.policy_version,
+    ), missing
+
+
 def _audit_error_code(exc: BaseException) -> str:
     """Extract a sanitized diagnostic code from an audit failure."""
     code = getattr(exc, "code", None)
@@ -865,7 +886,11 @@ capture_token: Optional[str] = None,
             # unverified here exactly as it would on submission.
             capture_verified=False,
         )
-        return evaluate_policy(action, run, workspace)
+        decision = evaluate_policy(action, run, workspace)
+        return required_reasoning_decision(
+            action, run, decision,
+            reasoning_audit_enabled_from_env(os.environ.get("SCOPEWATCH_REASONING_AUDIT")),
+        )[0]
 
     async def submit_action(
         self,
@@ -941,6 +966,11 @@ capture_token: Optional[str] = None,
             trace_text = (action.exposed_reasoning_trace or "").strip() or (
                 action.reasoning_summary or ""
             ).strip()
+
+            decision, reasoning_requirement = required_reasoning_decision(
+                action, run, decision, reasoning_audit_enabled,
+            )
+            reasoning_required = action.operation in run.task_scope.require_reasoning_for
 
             # #116: reviewer-visible provenance diagnostics. The stored label
             # already says caller-asserted when it is; these fields say so
@@ -1259,6 +1289,9 @@ capture_token: Optional[str] = None,
                             "profile": audit_record.profile,
                         }
                     else:
+                        if reasoning_required:
+                            details_held["reasoning_required"] = True
+                            details_held["reasoning_requirement"] = reasoning_requirement
                         if not reasoning_audit_enabled:
                             details_held["reasoning_audit"] = "disabled"
                             details_held["reasoning_availability"] = "disabled"
