@@ -361,11 +361,10 @@ def test_m2_docker_cli_missing_fails_closed(
     import scopewatch.executor_docker as docker_mod
 
     monkeypatch.setattr(docker_mod, "is_docker_available", lambda *a, **k: True)
-    monkeypatch.setattr(
-        docker_mod.subprocess,
-        "run",
-        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no docker")),
-    )
+    def _raise_fnf(*a, **k):
+        raise FileNotFoundError("no docker")
+    monkeypatch.setattr(docker_mod, "run_docker_process", _raise_fnf)
+    monkeypatch.setattr(docker_mod.subprocess, "run", _raise_fnf)
     monkeypatch.setenv("SCOPEWATCH_EXECUTOR", "docker")
     receipt = execute_action(
         _action(), accept_workspace, policy_decision=_allow_decision()
@@ -433,6 +432,7 @@ def _mock_docker_success(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         return _Proc()
 
     monkeypatch.setattr(docker_mod, "is_docker_available", lambda *a, **k: True)
+    monkeypatch.setattr(docker_mod, "run_docker_process", _fake_run)
     monkeypatch.setattr(docker_mod.subprocess, "run", _fake_run)
     return seen
 
@@ -494,6 +494,7 @@ def test_m2_docker_timeout_removes_container_fail_closed(
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(docker_mod, "is_docker_available", lambda *a, **k: True)
+    monkeypatch.setattr(docker_mod, "run_docker_process", _fake_run)
     monkeypatch.setattr(docker_mod.subprocess, "run", _fake_run)
     monkeypatch.setenv("SCOPEWATCH_EXECUTOR", "docker")
     receipt = execute_action(

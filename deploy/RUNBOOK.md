@@ -482,3 +482,13 @@ Structural tests check the service graph, published ports, and the documented
 throwaway budget-check procedure. A real VM is still needed to verify binding,
 TLS issuance, the dashboard through Caddy, and live-provider token spend.
 All automated provider fixtures are synthetic and use mock transports.
+
+### Safe scripted seed lifecycle (audit #289)
+
+Fresh volumes seed six invoice scenarios without autoapproval. The four runs with
+no pending requests are completed; the two HOLD runs remain reviewable and count
+against the normal concurrency cap. Runtime guards remain enabled while seeding.
+The v2 marker makes restarts idempotent. A legacy v1 marker means the old seed may
+already have executed the injection: startup refuses automatic migration. Inspect
+and explicitly migrate/reset that demo volume using the documented reset procedure;
+the entrypoint never deletes or rewrites old evidence automatically.
