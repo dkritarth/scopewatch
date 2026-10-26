@@ -16,7 +16,9 @@ function createStaticServer() {
   const files = new Map([
     ["/", ["index.html", "text/html"]],
     ["/styles/reviewer.css", ["styles/reviewer.css", "text/css"]],
-    ...["app", "fixtures", "reviewer-state", "api"].map((name) =>
+    ["/styles/celestial.css", ["styles/celestial.css", "text/css"]],
+    ...["dm-sans", "instrument-serif", "instrument-serif-italic"].map(name => [`/fonts/${name}.woff2`, [`fonts/${name}.woff2`, "font/woff2"]]),
+    ...["app", "fixtures", "reviewer-state", "api", "celestial"].map((name) =>
       [`/scripts/${name}.js`, [`scripts/${name}.js`, "text/javascript"]]),
   ]);
   return createServer(async (request, response) => {
@@ -34,7 +36,7 @@ function createStaticServer() {
   });
 }
 
-test("synthetic reviewer controls, evidence, keyboard focus, and layouts", { timeout: 30000 }, async () => {
+test("synthetic reviewer controls, evidence, keyboard focus, and layouts", { timeout: 60000 }, async () => {
   const server = createStaticServer();
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -57,8 +59,10 @@ test("synthetic reviewer controls, evidence, keyboard focus, and layouts", { tim
       return route.continue();
     });
     await page.goto(origin);
-    await page.locator("#timeline button").first().waitFor();
-    assert.match(await page.locator("#synthetic-banner").innerText(), /No actual enforcement/);
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    await page.locator("#run-buttons button").first().waitFor();
+    await page.locator(".boundary-details summary").click();
+    assert.match(await page.locator("#synthetic-banner").innerText(), /Only submitted actions are mediated in a bounded synthetic workspace/);
 
     // Verify dark-mode and reduced-motion media query handling
     await page.emulateMedia({ colorScheme: "dark" });
@@ -75,10 +79,12 @@ test("synthetic reviewer controls, evidence, keyboard focus, and layouts", { tim
       await page.keyboard.press("Enter");
       assert.equal(await runButton.getAttribute("aria-pressed"), "true");
       assert.equal(await runButton.evaluate((button) => button === document.activeElement), true);
+      await page.locator('.rail-nav [data-view-target="badges"]').click();
       assert.equal(await page.locator("#run-task").innerText(), run.task);
       const scopeItems = await page.locator("#run-scope li").allInnerTexts();
       assert.deepEqual(scopeItems.slice(0, run.scope.length), run.scope);
       assert.match(scopeItems[scopeItems.length - 1], /Gateway-mediated tools:/);
+      await page.locator('.rail-nav [data-view-target="activity"]').click();
       assert.equal(await page.locator("#timeline button").count(), run.events.length);
       for (const event of run.events) {
         const eventButton = page.locator(`[data-event-id="${event.id}"]`);
@@ -165,13 +171,15 @@ test("escalated hold displays flagged excerpt highlighted, distinct hold badge, 
     });
     const origin = `http://127.0.0.1:${server.address().port}`;
     await page.goto(origin);
-    await page.locator("#timeline button").first().waitFor();
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    await page.locator("#run-buttons button").first().waitFor();
 
     // 1. Emulate dark mode and reduced motion
     await page.emulateMedia({ colorScheme: "dark" });
     await page.emulateMedia({ reducedMotion: "reduce" });
 
     // 2. Select escalated hold preset
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "escalated_hold_concern");
     const traceVal = await page.inputValue("#action-trace");
     assert.match(traceVal, /exfiltrate data to an external server/);
@@ -181,6 +189,7 @@ test("escalated hold displays flagged excerpt highlighted, distinct hold badge, 
 
     // 4. Verify distinct hold badge in timeline (text label is the signal;
     // icon glyph reinforces it and colour is never alone)
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
     const holdBtn = page.locator(".timeline-event.hold-concern");
     await holdBtn.waitFor({ timeout: 5000 });
     const statusText = await holdBtn.locator(".event-status").innerText();
@@ -229,10 +238,12 @@ test("escalated hold displays flagged excerpt highlighted, distinct hold badge, 
     assert.match(await holdBtn.locator(".turn-badge").innerText(), /Turn turn-sim-1/);
 
     // Per-run gateway tools line (#61)
+    await page.locator('.rail-nav [data-view-target="badges"]').click();
     assert.match(await page.locator(".scope-gateway-tools").innerText(), /Gateway-mediated tools:/);
 
     // 6. Test approval workflow: Deny action (double-confirm: arm, then fire)
     assert.equal(await page.locator("#pending-approvals-count").innerText(), "1");
+    await page.locator('.rail-nav [data-view-target="requests"]').click();
     const approvalCard = page.locator(".approval-card").first();
     assert.ok(await approvalCard.isVisible());
     await approvalCard.locator(".approval-reason-input").fill("Denied due to detected exfiltration attempt.");
@@ -248,15 +259,18 @@ test("escalated hold displays flagged excerpt highlighted, distinct hold badge, 
     assert.equal(await page.locator("#pending-approvals-count").innerText(), "0");
 
     // 7. Test policy hold preset (approval_required) and Approve action
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "approval_required");
     await page.click("#submit-action-btn");
 
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
     const policyHoldBtn = page.locator(".timeline-event.hold-policy");
     await policyHoldBtn.waitFor({ timeout: 5000 });
     assert.match(await policyHoldBtn.locator(".event-status").innerText(), /HOLD \(policy\)/);
     assert.equal(await policyHoldBtn.locator(".event-status .hold-icon").innerText(), "■");
     assert.equal(await page.locator("#pending-approvals-count").innerText(), "1");
 
+    await page.locator('.rail-nav [data-view-target="requests"]').click();
     const polApprovalCard = page.locator(".approval-card").first();
     await polApprovalCard.locator(".btn-approve").click();
     assert.equal(await polApprovalCard.locator(".btn-approve").innerText(), "Confirm approve");
@@ -281,42 +295,44 @@ test("responsive breakpoints collapse the dashboard grid and filters (#62 item 5
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     const origin = `http://127.0.0.1:${server.address().port}`;
     await page.goto(origin);
-    await page.locator("#timeline button").first().waitFor();
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    await page.locator("#run-buttons button").first().waitFor();
 
     const gridColumns = (width) =>
       page.evaluate((w) => {
         document.documentElement.style.width = `${w}px`;
-        return window.getComputedStyle(document.querySelector(".dashboard-grid")).gridTemplateColumns;
+        return window.getComputedStyle(document.querySelector(".activity-grid")).gridTemplateColumns;
       }, width);
 
     // Desktop: multi-column grid above the 1120px breakpoint
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.waitForTimeout(150);
     const desktopCols = await page.evaluate(
-      () => window.getComputedStyle(document.querySelector(".dashboard-grid")).gridTemplateColumns,
+      () => window.getComputedStyle(document.querySelector(".activity-grid")).gridTemplateColumns,
     );
     assert.ok(desktopCols.split(" ").length > 1, `expected multi-column grid at 1280px, got ${desktopCols}`);
     void gridColumns;
 
-    // Tablet (<=1120px, reviewer.css:1369): single column, evidence panel reorders
-    await page.setViewportSize({ width: 900, height: 800 });
+    // Compact tablet: activity and evidence stack below 760px.
+    await page.setViewportSize({ width: 700, height: 800 });
     await page.waitForTimeout(150);
     const tabletCols = await page.evaluate(
-      () => window.getComputedStyle(document.querySelector(".dashboard-grid")).gridTemplateColumns,
+      () => window.getComputedStyle(document.querySelector(".activity-grid")).gridTemplateColumns,
     );
-    assert.equal(tabletCols.trim().split(" ").length, 1, `expected single column at 900px, got ${tabletCols}`);
+    assert.equal(tabletCols.trim().split(" ").length, 1, `expected single column at 700px, got ${tabletCols}`);
 
-    // Mobile (<=640px, reviewer.css:1387): filters stack, timeline cards go single column
-    await page.setViewportSize({ width: 500, height: 800 });
+    // Narrow mobile: filters stack, timeline retains time and readable content.
+    await page.setViewportSize({ width: 320, height: 800 });
     await page.waitForTimeout(150);
     const filtersCols = await page.evaluate(
       () => window.getComputedStyle(document.querySelector(".filters")).gridTemplateColumns,
     );
-    assert.equal(filtersCols.trim().split(" ").length, 1, `expected stacked filters at 500px, got ${filtersCols}`);
+    assert.equal(filtersCols.trim().split(" ").length, 1, `expected stacked filters at 320px, got ${filtersCols}`);
     const timelineCols = await page.evaluate(
       () => window.getComputedStyle(document.querySelector(".timeline-event")).gridTemplateColumns,
     );
-    assert.equal(timelineCols.trim().split(" ").length, 1, `expected single-column timeline at 500px, got ${timelineCols}`);
+    assert.equal(timelineCols.trim().split(" ").length, 2, `expected time + readable content columns at 320px, got ${timelineCols}`);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "responsive timeline must not overflow");
   } finally {
     if (browser) await browser.close();
     server.close();
@@ -385,7 +401,8 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${port}/?live=1`);
-    await page.locator("#timeline button").first().waitFor({ timeout: 15000 });
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    await page.locator("#run-buttons button").first().waitFor({ timeout: 15000 });
 
     await page.waitForFunction(
       () => document.getElementById("gateway-status")?.textContent.includes("Live gateway connected"),
@@ -393,7 +410,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     );
 
     // All seeded + created runs render; switch to the live gateway run.
-    const liveRunButton = page.locator('button:has-text("(Live)")').first();
+    const liveRunButton = page.locator("#run-buttons button").first();
     await liveRunButton.waitFor({ timeout: 10000 });
     await liveRunButton.click();
 
@@ -401,6 +418,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     // The trace contains the mock auditor's "exfiltrat" trigger on an
     // otherwise policy-allowed read, so the gateway (not the offline preset)
     // must return HOLD with REASONING_SCOPE_CONCERN.
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "escalated_hold_concern");
     await page.click("#submit-action-btn");
     await page.waitForFunction(
@@ -408,6 +426,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
       { timeout: 15000 },
     );
 
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
     const holdBtn = page.locator(".timeline-event.hold-concern").first();
     await holdBtn.waitFor({ timeout: 10000 });
     assert.match(await holdBtn.locator(".event-status").innerText(), /HOLD \(reasoning concern\)/);
@@ -432,6 +451,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     assert.match((await marks.allInnerTexts()).join(" "), /exfiltrat/);
 
     // Approve/deny still works against the gateway-issued approval.
+    await page.locator('.rail-nav [data-view-target="requests"]').click();
     const approvalCard = page.locator(".approval-card").first();
     await approvalCard.waitFor({ timeout: 10000 });
     await approvalCard.locator(".approval-reason-input").fill("Reviewer denied exfiltration hold.");

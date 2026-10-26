@@ -730,6 +730,25 @@ capture_token: Optional[str] = None,
                         message="An action is still executing; retry once it finishes.",
                         status_code=status.HTTP_409_CONFLICT,
                     )
+                run_events = ScopewatchRepository.get_events(conn, run_id)
+                started_actions = {
+                    event.action_request_id
+                    for event in run_events
+                    if event.event_type == EventType.EXECUTION_STARTED
+                    and event.action_request_id
+                }
+                terminal_actions = {
+                    event.action_request_id
+                    for event in run_events
+                    if event.event_type in (EventType.EXECUTION_SUCCEEDED, EventType.EXECUTION_FAILED)
+                    and event.action_request_id
+                }
+                if started_actions - terminal_actions:
+                    raise ScopewatchAPIError(
+                        code="APPROVED_ACTION_IN_FLIGHT",
+                        message="An action is still executing; retry once it finishes.",
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
                 ScopewatchRepository.update_run_status(conn, run_id, new_status, now)
                 event = ScopewatchRepository.append_event(
                     conn,
@@ -963,9 +982,23 @@ capture_token: Optional[str] = None,
                 os.environ.get("SCOPEWATCH_REASONING_AUDIT")
             )
 
-            trace_text = (action.exposed_reasoning_trace or "").strip() or (
-                action.reasoning_summary or ""
-            ).strip()
+            trace_text = (action.exposed_reasoning_trace or "").strip()
+            summary_text = (action.reasoning_summary or "").strip()
+            if trace_text and summary_text and trace_text != summary_text:
+                # Two independent evidence channels must both reach the audit.
+                # Headers are descriptive data inside the untrusted boundary;
+                # the summary is never represented as a provider-exposed trace.
+                trace_text = (
+                    f"TRACE EVIDENCE ({action.reasoning_provenance.value}):\n{trace_text}\n\n"
+                    f"INDEPENDENT SUMMARY EVIDENCE (agent/caller text, not a provider trace):\n{summary_text}"
+                )
+            else:
+                trace_text = trace_text or summary_text
+
+            decision, reasoning_requirement = required_reasoning_decision(
+                action, run, decision, reasoning_audit_enabled,
+            )
+            reasoning_required = action.operation in run.task_scope.require_reasoning_for
 
             decision, reasoning_requirement = required_reasoning_decision(
                 action, run, decision, reasoning_audit_enabled,
