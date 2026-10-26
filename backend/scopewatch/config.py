@@ -22,6 +22,39 @@ MAX_COPY_BACK_BYTES = 10 * 1024 * 1024  # 10 MiB
 MAX_COPY_BACK_FILES = 10000
 MAX_CONTAINER_OUTPUT_BYTES = 2 * 1024 * 1024  # 2 MiB
 
+# --- Public request-body bounds (issue #304) ---------------------------------
+#
+# Unauthenticated callers can force big in-memory allocations just by sending
+# a large body. The ingress middleware counts streamed bytes before the app
+# sees them; the default bounds a request body at 256 KiB, well above any
+# payload the gateway's own routes legitimately accept (the largest is an
+# action submission carrying reasoning traces and arguments). Override with
+# SCOPEWATCH_MAX_BODY_BYTES; a malformed or non-positive value is ignored
+# with a warning rather than disabling the bound.
+DEFAULT_MAX_REQUEST_BODY_BYTES = 256 * 1024  # 256 KiB
+REQUEST_BODY_LIMIT_ENV_VAR = "SCOPEWATCH_MAX_BODY_BYTES"
+
+
+def max_request_body_bytes(env: Optional[Mapping[str, str]] = None) -> int:
+    """Resolve the public request-body limit in bytes (#304)."""
+    src = env if env is not None else os.environ
+    raw = str(src.get(REQUEST_BODY_LIMIT_ENV_VAR, "") or "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+        logger.warning(
+            "Ignoring malformed %s=%r; using %d bytes.",
+            REQUEST_BODY_LIMIT_ENV_VAR,
+            raw,
+            DEFAULT_MAX_REQUEST_BODY_BYTES,
+        )
+    return DEFAULT_MAX_REQUEST_BODY_BYTES
+
+
 # --- Gateway-native demo guards (issues #76 / #77) ---------------------------
 # Demo mode engages when DEMO_TOKEN is set; see scopewatch.demo_guards for the
 # enforced semantics (same env names as deploy/.env.example). Token budgets
