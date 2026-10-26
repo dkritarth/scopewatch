@@ -14,10 +14,8 @@ The numbers below are shadow prices. Work performed through a ChatGPT or Codex s
 ### Quick start
 
 ```bash
-# 1. Install backend dependencies in virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --require-hashes -r backend/requirements.lock
+# 1. Install backend dependencies in PEP 668-safe virtual environment
+python3 -m venv .venv && . .venv/bin/activate && pip install --require-hashes -r backend/requirements.lock
 
 # 2. Install frontend dependencies
 npm ci --prefix frontend
