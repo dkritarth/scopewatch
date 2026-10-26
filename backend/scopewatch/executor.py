@@ -21,7 +21,11 @@ from scopewatch.models import (
     RunStatus,
     SUPPORTED_OPERATIONS,
 )
-from scopewatch.path_access import normalize_relative_path, scoped_path_reason
+from scopewatch.path_access import (
+    normalize_relative_path,
+    scoped_path_reason,
+    volume_is_case_insensitive,
+)
 from scopewatch.schemas import ActionRequest, ApprovalRequest, ExecutionReceipt, PolicyDecision, TaskScope
 
 
@@ -171,7 +175,17 @@ def _verify_scoped_target(
             raise ExecutionSecurityError("Symlink target requires task scope evidence.", "SYMLINK_SCOPE_REQUIRED")
     else:
         allowed = task_scope.allowed_paths if require_allowed else ["."]
-        if scoped_path_reason(requested, canonical, allowed, task_scope.blocked_paths):
+        # Keep dispatch in agreement with the policy engine on a
+        # case-insensitive volume (#305): the same three-state probe and the
+        # same asymmetric fold, re-run here immediately before I/O against
+        # the real staged workspace.
+        if scoped_path_reason(
+            requested,
+            canonical,
+            allowed,
+            task_scope.blocked_paths,
+            case_insensitive=volume_is_case_insensitive(str(root)),
+        ):
             raise ExecutionSecurityError("Resolved path violates the task scope.", "SCOPE_VIOLATION")
     return target
 

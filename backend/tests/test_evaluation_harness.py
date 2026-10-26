@@ -1,6 +1,7 @@
 """Unit and integration tests for the reasoning auditor evaluation harness."""
 
 from datetime import datetime, timezone
+from typing import Any
 import hashlib
 import json
 from pathlib import Path
@@ -194,3 +195,101 @@ def test_offline_evaluation_dev_mock() -> None:
     assert report["metadata"]["dataset_split"] == "dev"
     assert report["summary_metrics"]["failure_rate"] == 0.0
     assert report["summary_metrics"]["accuracy"] >= 0.90
+
+
+def test_compute_metrics_tokens_aggregation_components_match() -> None:
+    """Issue #151: tokens.total equals prompt + completion when usage is present."""
+    results: list[dict[str, Any]] = [
+        {
+            "category": "clean",
+            "expected_verdict": "NO_CONCERN",
+            "actual_verdict": "NO_CONCERN",
+            "latency_ms": 1.0,
+            "total_tokens": 150,
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+        },
+        {
+            "category": "drift",
+            "expected_verdict": "CONCERN",
+            "actual_verdict": "CONCERN",
+            "latency_ms": 1.0,
+            "total_tokens": 75,
+            "prompt_tokens": 60,
+            "completion_tokens": 15,
+        },
+    ]
+    m = compute_metrics(results)
+    toks = m["tokens"]
+    assert toks["prompt"] == 160
+    assert toks["completion"] == 65
+    assert toks["total"] == 225
+    assert toks["total"] == toks["prompt"] + toks["completion"]
+
+
+def test_compute_metrics_tokens_aggregation_partial_per_case_total_resolved() -> None:
+    """Issue #151: prompt + completion is preferred over a partial sum of per-case total_tokens.
+
+    Matches the 2026-10-03 held-out run (48 cases, prompt=84,715, completion=5,477,
+    where per-case total_tokens was populated on only 18 cases summing to 33,855).
+    The aggregate tokens.total must equal prompt + completion (90,192), not 33,855.
+    """
+    results: list[dict[str, Any]] = []
+    # 18 cases with total_tokens populated (internally consistent: 1856 = 1773 + 83)
+    for i in range(18):
+        results.append(
+            {
+                "case_id": f"populated-{i}",
+                "category": "clean",
+                "expected_verdict": "NO_CONCERN",
+                "actual_verdict": "NO_CONCERN",
+                "latency_ms": 1.0,
+                "prompt_tokens": 1773,
+                "completion_tokens": 83,
+                "total_tokens": 1856,
+            }
+        )
+    # Remaining 30 cases with total_tokens=None
+    rem_prompt = 84715 - (18 * 1773)
+    rem_comp = 5477 - (18 * 83)
+    for i in range(30):
+        p = rem_prompt // 30 + (1 if i < (rem_prompt % 30) else 0)
+        c = rem_comp // 30 + (1 if i < (rem_comp % 30) else 0)
+        results.append(
+            {
+                "case_id": f"unpopulated-{i}",
+                "category": "drift",
+                "expected_verdict": "CONCERN",
+                "actual_verdict": "CONCERN",
+                "latency_ms": 1.0,
+                "prompt_tokens": p,
+                "completion_tokens": c,
+                "total_tokens": None,
+            }
+        )
+
+    assert len(results) == 48
+    sum_total_tokens_present = sum(r["total_tokens"] for r in results if r["total_tokens"] is not None)
+    assert sum_total_tokens_present == 18 * 1856
+
+    m = compute_metrics(results)
+    toks = m["tokens"]
+    assert toks["prompt"] == 84715
+    assert toks["completion"] == 5477
+    assert toks["total"] == 90192
+    assert toks["total"] != sum_total_tokens_present
+    assert toks["total"] == toks["prompt"] + toks["completion"]
+
+
+def test_mock_evaluation_token_consistency() -> None:
+    """Mock evaluation runs report consistent token fields (total == prompt + completion == 0)."""
+    report = evaluate_reasoning_auditor(
+        profile="mock",
+        split="dev",
+        quiet=True,
+    )
+    toks = report["summary_metrics"]["tokens"]
+    assert toks["total"] == 0
+    assert toks["prompt"] == 0
+    assert toks["completion"] == 0
+    assert toks["total"] == toks["prompt"] + toks["completion"]

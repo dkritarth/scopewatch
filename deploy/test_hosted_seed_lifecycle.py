@@ -20,7 +20,8 @@ def seed_environment(tmp_path):
                DEMO_MAX_RUNS_PER_DAY='200', DEMO_MAX_ACTIONS_PER_DAY='5000',
                DEMO_RATE_LIMIT_RUNS_PER_MIN_PER_IP='6', DEMO_MAX_TURNS_PER_RUN='40',
                SCOPEWATCH_AGENT_PROFILE='mock', SCOPEWATCH_AUDITOR_PROFILE='mock',
-               SCOPEWATCH_EXECUTOR='local', SCOPEWATCH_RUN_WORKSPACES_DIR=str(tmp_path / 'runs'))
+               SCOPEWATCH_EXECUTOR='local', SCOPEWATCH_RUN_WORKSPACES_DIR=str(tmp_path / 'runs'),
+               SCOPEWATCH_REVIEWER_TOKEN='synthetic-reviewer-token')
     return env
 
 
@@ -48,7 +49,7 @@ def test_default_hosted_cap_preserves_two_holds_and_no_injected_output(tmp_path,
         pending = client.get('/api/v1/approvals?status=PENDING').json()
         assert len(pending) == 2
         injection = next(a for a in pending if a['operation'] == 'write_text')
-        denied = client.post(f"/api/v1/approvals/{injection['id']}/deny", json={}, headers={'X-Demo-Token':'synthetic-seed-token'})
+        denied = client.post(f"/api/v1/approvals/{injection['id']}/deny", json={}, headers={'X-Reviewer-Token':'synthetic-reviewer-token'})
         assert denied.status_code == 200, denied.text
         assert not list((tmp_path / 'runs').rglob('partner-payment-details.txt'))
 
