@@ -64,10 +64,15 @@ Public request bodies are bounded before any handler or auth layer runs. A pure
 ASGI `BodySizeLimitMiddleware` (outermost, in `backend/scopewatch/ingress.py`)
 counts streamed `http.request` bytes and rejects oversized requests with a
 sanitized `413 {"error":"request body too large"}` that never echoes input;
-`GET`/`HEAD` and the SSE stream route are exempt. The default limit is 256 KiB
+`GET` and `HEAD` are exempt by method. The request body limit defaults to 256 KiB
 and is configurable via `SCOPEWATCH_MAX_BODY_BYTES`. Pydantic bounds
-(`max_length`) on reasoning traces, summaries, and action-argument strings
-return a sanitized `422` without echoing the offending value.
+(`max_length`) on request fields return a sanitized `422` without echoing the
+offending value:
+- Reasoning trace: 32,000 characters (`MAX_REASONING_TRACE_CHARS`)
+- Reasoning summary: 8,000 characters (`MAX_REASONING_SUMMARY_CHARS`)
+- Resolution reason: 2,000 characters (`MAX_RESOLUTION_REASON_CHARS`)
+- Argument strings: 64 KiB (`MAX_ARGUMENT_STRING_CHARS` = `MAX_WRITE_BYTES`, 65,536 characters)
+- Body limit: `SCOPEWATCH_MAX_BODY_BYTES` (256 KiB default)
 
 Key endpoints:
 - `POST /api/v1/runs`: Initialize an isolated run with an explicit task scope.
