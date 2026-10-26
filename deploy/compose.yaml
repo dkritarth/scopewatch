@@ -58,6 +58,13 @@ services:
       SCOPEWATCH_AUDITOR_PROFILE: ${SCOPEWATCH_AUDITOR_PROFILE:-mock}
       SCOPEWATCH_PROVIDERS_CONFIG: /app/backend/config/providers.toml
       SCOPEWATCH_APPROVAL_TTL: ${SCOPEWATCH_APPROVAL_TTL:-300}
+      # API & Reviewer authentication, CORS, and reset controls (issue #185)
+      SCOPEWATCH_API_KEY: ${SCOPEWATCH_API_KEY:-${API_KEY:-}}
+      SCOPEWATCH_REVIEWER_TOKEN: ${SCOPEWATCH_REVIEWER_TOKEN:-${REVIEWER_TOKEN:-}}
+      SCOPEWATCH_REVIEWER_ID: ${SCOPEWATCH_REVIEWER_ID:-${DEFAULT_REVIEWER_IDENTITY:-}}
+      SCOPEWATCH_ALLOW_RESET: ${SCOPEWATCH_ALLOW_RESET:-${ALLOW_DEMO_RESET:-false}}
+      SCOPEWATCH_CORS_ALLOW_ORIGINS: ${SCOPEWATCH_CORS_ALLOW_ORIGINS:-${CORS_ALLOW_ORIGINS:-}}
+      SCOPEWATCH_CORS_ALLOW_CREDENTIALS: ${SCOPEWATCH_CORS_ALLOW_CREDENTIALS:-${CORS_ALLOW_CREDENTIALS:-false}}
       # Per-run workspace root (#117). Every run gets its own copy of the
       # fixture here. Two rules, both enforced by tests in
       # backend/tests/test_run_workspaces_deployment.py:
