@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
+import time
 from typing import Any, Callable, Optional
 import uuid
 
@@ -251,6 +252,56 @@ capture_token: Optional[str] = None,
 
     def _get_conn(self) -> sqlite3.Connection:
         return get_connection(self.db_path)
+
+    @staticmethod
+    def in_flight_action_ids(conn: sqlite3.Connection, run_id: Optional[str] = None) -> set[str]:
+        """Return action IDs that have started execution but not reached a terminal event."""
+        if run_id:
+            events = ScopewatchRepository.get_events(conn, run_id)
+            started = {
+                e.action_request_id
+                for e in events
+                if e.event_type == EventType.EXECUTION_STARTED and e.action_request_id
+            }
+            terminal = {
+                e.action_request_id
+                for e in events
+                if e.event_type in (EventType.EXECUTION_SUCCEEDED, EventType.EXECUTION_FAILED)
+                and e.action_request_id
+            }
+            return started - terminal
+
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT e1.action_request_id
+            FROM evidence_events e1
+            WHERE e1.event_type = 'EXECUTION_STARTED'
+              AND e1.action_request_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM evidence_events e2
+                  WHERE e2.action_request_id = e1.action_request_id
+                    AND e2.event_type IN ('EXECUTION_SUCCEEDED', 'EXECUTION_FAILED')
+              )
+            """
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+    def has_in_flight_executions(
+        self, conn: Optional[sqlite3.Connection] = None, run_id: Optional[str] = None
+    ) -> bool:
+        """True when any action (direct ALLOW or approved) is currently executing."""
+        own = False
+        if conn is None:
+            conn = self._get_conn()
+            own = True
+        try:
+            if ScopewatchRepository.list_approvals(conn, status_filter=ApprovalStatus.APPROVED, run_id=run_id):
+                return True
+            return bool(self.in_flight_action_ids(conn, run_id=run_id))
+        finally:
+            if own:
+                conn.close()
 
     def _get_auditor(self) -> ReasoningAuditor:
         if self._auditor is not None:
@@ -636,6 +687,7 @@ capture_token: Optional[str] = None,
         event_type: EventType,
         summary: Callable[[str], str],
         details: dict[str, Any],
+        deadline_budget: Optional[float] = None,
     ) -> tuple[Run, EvidenceEvent]:
         """Move a run to a terminal status (#187).
 
@@ -643,6 +695,7 @@ capture_token: Optional[str] = None,
         so closing the run now would record the execution after the run's
         terminal event; refuse instead.
         """
+        started_at = time.monotonic()
         conn = self._get_conn()
         try:
             if not ScopewatchRepository.get_run(conn, run_id):
@@ -655,6 +708,15 @@ capture_token: Optional[str] = None,
             with db_transaction(conn):
                 # Re-read under the write lock so the checks below cannot be
                 # overtaken by a concurrent resolve or close.
+                if (
+                    deadline_budget is not None
+                    and (time.monotonic() - started_at) >= deadline_budget
+                ):
+                    raise ScopewatchAPIError(
+                        code="COMPLETION_DEADLINE_EXCEEDED",
+                        message="Completion deadline exceeded while waiting for the run lock.",
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
                 run = ScopewatchRepository.get_run(conn, run_id)
                 if run is None:
                     raise ScopewatchAPIError(
@@ -662,12 +724,10 @@ capture_token: Optional[str] = None,
                         message=f"Run '{run_id}' not found.",
                         status_code=status.HTTP_404_NOT_FOUND,
                     )
-                if ScopewatchRepository.list_approvals(
-                    conn, status_filter=ApprovalStatus.APPROVED, run_id=run_id
-                ):
+                if self.has_in_flight_executions(conn, run_id=run_id):
                     raise ScopewatchAPIError(
                         code="APPROVED_ACTION_IN_FLIGHT",
-                        message="An approved action is still executing; retry once it finishes.",
+                        message="An action is still executing; retry once it finishes.",
                         status_code=status.HTTP_409_CONFLICT,
                     )
                 ScopewatchRepository.update_run_status(conn, run_id, new_status, now)
@@ -687,13 +747,16 @@ capture_token: Optional[str] = None,
         finally:
             conn.close()
 
-    def complete_run(self, run_id: str) -> tuple[Run, EvidenceEvent]:
+    def complete_run(
+        self, run_id: str, deadline_budget: Optional[float] = None
+    ) -> tuple[Run, EvidenceEvent]:
         return self._close_run(
             run_id,
             RunStatus.COMPLETED,
             EventType.RUN_COMPLETED,
             lambda name: f"Run '{name}' was marked COMPLETED.",
             {},
+            deadline_budget=deadline_budget,
         )
 
     def fail_run(self, run_id: str, reason: str = "Agent execution failed.") -> tuple[Run, EvidenceEvent]:
@@ -1517,6 +1580,57 @@ capture_token: Optional[str] = None,
             conn.close()
 
     # ---------------- Approvals ----------------
+
+    def expire_approval_wait(self, approval_id: str) -> ApprovalRequest:
+        """End an agent's review wait atomically against concurrent approval.
+
+        Only PENDING can expire. If review already won, return its persisted
+        state so the agent can wait for the receipt instead of claiming timeout.
+        """
+        conn = self._get_conn()
+        event: Optional[EvidenceEvent] = None
+        try:
+            with db_transaction(conn):
+                approval = ScopewatchRepository.get_approval_request(conn, approval_id)
+                if approval is None:
+                    raise ScopewatchAPIError(
+                        code="APPROVAL_NOT_FOUND",
+                        message="Approval request not found.",
+                        status_code=status.HTTP_404_NOT_FOUND,
+                    )
+                if approval.status == ApprovalStatus.PENDING:
+                    now = datetime.now(timezone.utc).isoformat()
+                    reason = "Agent approval wait timed out."
+                    approval = ScopewatchRepository.resolve_approval(
+                        conn, approval_id=approval_id,
+                        new_status=ApprovalStatus.EXPIRED, resolved_by="system",
+                        resolved_at=now, reason=reason,
+                    )
+                    event = ScopewatchRepository.append_event(
+                        conn, run_id=approval.run_id,
+                        event_type=EventType.APPROVAL_EXPIRED, actor="system",
+                        summary=f"Approval request '{approval_id}' expired after the agent review wait.",
+                        timestamp=now, action_request_id=approval.action_request_id,
+                        approval_request_id=approval.id,
+                        policy_decision_id=approval.policy_decision_id,
+                        details={
+                            "expired_at": now, "reason": reason,
+                            "policy_version": approval.policy_version,
+                        },
+                    )
+                    pending = ScopewatchRepository.list_approvals(
+                        conn, status_filter=ApprovalStatus.PENDING, run_id=approval.run_id
+                    )
+                    run = ScopewatchRepository.get_run(conn, approval.run_id)
+                    if not pending and run and run.status == RunStatus.WAITING_FOR_APPROVAL:
+                        ScopewatchRepository.update_run_status(
+                            conn, run.id, RunStatus.ACTIVE, now
+                        )
+            if event is not None:
+                broadcaster.publish_sync(approval.run_id, event)
+            return approval
+        finally:
+            conn.close()
 
     def reconcile_expired_approvals(self, run_id: Optional[str] = None) -> list[ApprovalRequest]:
         """Reconcile expired pending approvals whose expires_at deadline has passed (#118)."""

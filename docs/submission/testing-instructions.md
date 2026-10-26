@@ -16,6 +16,15 @@ sends private data anywhere.
   `DENY` (`BLOCKED_PATH`) with no execution receipt after the decision event.
 - **Status:** not yet deployed. Use Option B until this URL exists.
 
+### Reviewer Access & Authentication (issue #185)
+
+- **Local/dev runs:** require **zero keys** out of the box. You can review and resolve approvals immediately without configuring any tokens.
+- **Hosted/authenticated environments:** When `REVIEWER_TOKEN` or `DEMO_TOKEN` is configured on the gateway, the dashboard opens a **Reviewer Access** panel in the top right.
+  1. Paste the reviewer token provided for the judging deployment into the input field.
+  2. Click **Save**.
+  3. The token is stored strictly in JavaScript page memory for the current session (never in cookies or localStorage) and attached to mutating reviewer calls (`X-Reviewer-Token`).
+- **Role separation:** Agent tokens (`X-API-Key` or `X-Demo-Token`) cannot approve held actions; only reviewer credentials can grant approval.
+
 ## Option B — Local run (works today, no keys, ~5 minutes)
 
 Prerequisites: Python 3.12+, Node 22+. No API keys, no Docker, no network.

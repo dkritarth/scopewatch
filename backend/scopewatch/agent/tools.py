@@ -257,6 +257,7 @@ class GatewayDispatcher:
         timeout_s: float = 30.0,
         capture_token: Optional[str] = None,
         demo_token: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.capture_token = (
@@ -265,10 +266,15 @@ class GatewayDispatcher:
         self.demo_token = (
             demo_token if demo_token is not None else os.environ.get("DEMO_TOKEN")
         )
+        self.api_key = (
+            api_key if api_key is not None else os.environ.get("SCOPEWATCH_API_KEY")
+        )
         self._external_client = http_client is not None
         default_headers: dict[str, str] = {}
         if self.demo_token:
             default_headers["X-Demo-Token"] = self.demo_token
+        if self.api_key:
+            default_headers["X-API-Key"] = self.api_key
         self._client = http_client or httpx.Client(
             base_url=self.base_url,
             transport=transport,
@@ -280,6 +286,8 @@ class GatewayDispatcher:
         headers: dict[str, str] = {}
         if self.demo_token:
             headers["X-Demo-Token"] = self.demo_token
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
         if extra:
             headers.update(extra)
         return headers
@@ -333,10 +341,19 @@ class GatewayDispatcher:
             )
         return [ApprovalRequest.model_validate(item) for item in resp.json()]
 
-    def complete_run(self, run_id: str) -> Run:
+    def expire_approval(self, approval_id: str) -> ApprovalRequest:
+        """Atomically end a pending review wait, preserving any winning review."""
+        resp = self._client.post(
+            f"/api/v1/approvals/{approval_id}/expire", headers=self._mutating_headers()
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"Failed to end approval wait (HTTP {resp.status_code}).")
+        return ApprovalRequest.model_validate(resp.json())
+
+    def complete_run(self, run_id: str, *, deadline: Optional[float] = None) -> Run:
         """Mark run as COMPLETED via POST /api/v1/runs/{run_id}/complete."""
         url = f"/api/v1/runs/{run_id}/complete"
-        resp = self._post_terminal(url)
+        resp = self._post_terminal(url, deadline=deadline)
         if resp.status_code != 200:
             raise RuntimeError(
                 f"Failed to complete run '{run_id}' (HTTP {resp.status_code}): {resp.text}"
@@ -351,15 +368,27 @@ class GatewayDispatcher:
             return Run.model_validate(resp.json())
         return None
 
-    def _post_terminal(self, url: str, **kwargs: Any) -> httpx.Response:
+    def _post_terminal(
+        self, url: str, *, deadline: Optional[float] = None, **kwargs: Any
+    ) -> httpx.Response:
         """Wait for an already-dispatched approval before closing the run.
 
         The gateway owns the execution deadline. A loop budget expiring cannot
         cancel its effect or permit a terminal event ahead of its receipt.
         Retry only the gateway's explicit in-flight refusal.
+        Completion may abandon retries at the agent deadline so the loop can
+        switch to failure, which still waits for receipt persistence.
         """
         while True:
-            resp = self._client.post(url, headers=self._mutating_headers(), **kwargs)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("Wall clock timeout reached while completing run.")
+            request_kwargs = dict(kwargs)
+            if deadline is not None:
+                base_params = kwargs.get("params")
+                params = dict(base_params) if isinstance(base_params, dict) else {}
+                params["deadline_budget"] = max(0.0, deadline - time.monotonic())
+                request_kwargs["params"] = params or None
+            resp = self._client.post(url, headers=self._mutating_headers(), **request_kwargs)
             if resp.status_code != 409:
                 return resp
             try:
