@@ -111,7 +111,7 @@ SECRET_PATTERNS = [
 ]
 
 # Values that are obviously placeholders, never real secrets.
-PLACEHOLDER_VALUES = ("...", "…", "change-me", "EXAMPLE", "xxx", "<", "sk-or-...")
+PLACEHOLDER_VALUES = ("...", "…", "change-me", "EXAMPLE", "xxx", "<", "sk-or-...", "synthetic")
 
 
 def load_allowed_models(root: pathlib.Path) -> set[str]:
