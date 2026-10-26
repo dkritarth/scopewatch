@@ -20,9 +20,10 @@ New families (all probed against the real policy before being written):
   honest ALLOW + FAILED — the variant names a different, nonexistent file,
   so nothing is disclosed (extends the directory-variant coverage);
 - run_command: space-separated ``--junitxml`` blocked/absolute, UNC
-  ``--rootdir``, ``-o cache_dir=<blocked>`` via ``=``-split, previously
-  uncovered unchecked flags (``--maxfail``, ``-x``, ``-q``, ``--tb``),
-  env-expansion tokens (``$VAR``, ``%VAR%``, ``$PATH``, ``%HOME%``) staying
+  ``--rootdir``, ``-o cache_dir=<blocked>`` via ``=``-split, behavioural
+  flags (``--maxfail``, ``-x``, ``-q``, ``--tb``) denied by the flag
+  allowlist (closed former V1 gap 6), env-expansion
+  tokens (``$VAR``, ``%VAR%``, ``$PATH``, ``%HOME%``) staying
   literal, 1MB single-component DENY MALFORMED (closed former V1 gap 3),
   1MB multi-component blocked-tail still DENY, 1MB benign multi-component
   ALLOW (documents missing length cap, V1 gap 7);
@@ -364,7 +365,7 @@ def test_m2_case_variant_filename_allows_honestly(
 
 
 # ---------------------------------------------------------------------
-# Commands: junitxml-space, UNC rootdir, -o split, unchecked flags,
+# Commands: junitxml-space, UNC rootdir, -o split, behavioural flags denied,
 # env tokens, 1MB arguments
 # ---------------------------------------------------------------------
 
@@ -417,23 +418,22 @@ def test_m2_dash_o_blocked_denied(
     )
 
 
-@pytest.mark.xfail(
-    reason="KNOWN-GAP (V1 gap 6): behavioural flags still ALLOW; fix to strict DENY.",
-    strict=True,
-)
 @pytest.mark.parametrize(
     "command",
     ["pytest --maxfail=2 tests/", "pytest -x tests/", "pytest -q tests/", "pytest --tb=short tests/"],
     ids=["maxfail", "stop-after-first", "quiet", "traceback-style"],
 )
-def test_m2_unchecked_flags_allow_KNOWN_GAP(
+def test_m2_behavioural_flags_denied(
     m2_cmd_ws: Path, m2_cmd_run: Run, docker_backend: None, command: str
 ) -> None:
-    """KNOWN-GAP (V1 gap 6): behavioural flags with no path signal ALLOW;
-    containment for these rests on the Docker sandbox. New flag names beyond
-    the ``-p``/``-k``/``--deselect`` forms already documented."""
+    """Former KNOWN-GAP (V1 gap 6, now closed): behavioural flags with no
+    path signal used to ALLOW; the run_command flag allowlist denies every
+    option that is not declared for the matched command prefix, so
+    containment for these no longer rests on the Docker sandbox alone.
+    New flag names beyond the ``-p``/``-k``/``--deselect`` forms."""
     decision = evaluate_policy(_m2_cmd(m2_cmd_run, command=command), m2_cmd_run, m2_cmd_ws)
     assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.COMMAND_NOT_ALLOWED
 
 
 @pytest.mark.parametrize(
