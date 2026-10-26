@@ -144,7 +144,7 @@ RUN_COMMAND_METACHARACTERS = (";", "&", "|", ">", "<", "`", "$(", "\n", "\r", "\
 #    reported as ``LEGACY_POLICY_VERSION_LABEL``. They are never backfilled:
 #    stamping today's revision onto a past decision would assert something
 #    untrue about when it was evaluated.
-POLICY_RULES_REVISION = "2026-10-03.1"
+POLICY_RULES_REVISION = "2026-10-25.1"
 
 #: Display label for decisions recorded before policy versions were stored.
 LEGACY_POLICY_VERSION_LABEL = "unknown (legacy)"

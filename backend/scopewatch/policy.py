@@ -143,7 +143,7 @@ def _evaluate_policy_rules(
         )
 
     # Step 5: Reject all network operations in the baseline
-    if action.operation == "network_request" or bool(scope.allowed_network_destinations):
+    if action.operation == "network_request":
         return PolicyDecision(
             id=decision_id,
             action_request_id=action.id,
