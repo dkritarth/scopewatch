@@ -642,8 +642,12 @@ def create_app(
         return RunResponse.from_run(svc.get_run(run_id))
 
     @app.post("/api/v1/runs/{run_id}/complete", response_model=RunResponse)
-    def complete_run(run_id: str, svc: ScopewatchService = Depends(get_service)) -> RunResponse:
-        run, _ = svc.complete_run(run_id)
+    def complete_run(
+        run_id: str,
+        deadline_budget: Optional[float] = Query(None),
+        svc: ScopewatchService = Depends(get_service),
+    ) -> RunResponse:
+        run, _ = svc.complete_run(run_id, deadline_budget=deadline_budget)
         return RunResponse.from_run(run)
 
     @app.post("/api/v1/runs/{run_id}/fail", response_model=RunResponse)
@@ -717,6 +721,13 @@ def create_app(
     ) -> list[ApprovalRequest]:
         svc.get_run(run_id)
         return svc.list_approvals(status_filter=status, run_id=run_id)
+
+    @app.post("/api/v1/approvals/{approval_id}/expire", response_model=ApprovalRequest)
+    def expire_approval_wait(
+        approval_id: str,
+        svc: ScopewatchService = Depends(get_service),
+    ) -> ApprovalRequest:
+        return svc.expire_approval_wait(approval_id)
 
     @app.post("/api/v1/approvals/{approval_id}/approve", response_model=ApprovalResolutionResponse)
     async def approve_action(
