@@ -106,15 +106,22 @@ if not (Path(__file__).resolve().parent / "scopewatch" / "docker_job.py").is_fil
 from scopewatch.docker_job import (  # noqa: E402
     DOCKER_IMAGE as RUNNER_DOCKER_IMAGE,
     DOCKER_TIMEOUT_S,
+    MAX_CONTAINER_OUTPUT_BYTES,
+    MAX_COPY_BACK_BYTES,
+    MAX_COPY_BACK_FILES,
+    OutputOverrunError,
+    OversizedCopyBackError,
     RUN_COMMAND_DEFAULT_TIMEOUT_S,
     best_effort_remove,
     build_docker_command,
+    check_staged_workspace_size,
     clamp_run_command_timeout,
     StagingScopeError,
     make_world_accessible,
     normalize_blocked_paths,
     prepare_docker_job,
     replace_link,
+    run_docker_process,
     stage_workspace_copy,
     sync_copy_back,
 )
@@ -679,12 +686,14 @@ def handle_execute(
             executor_label="runner",
         )
         try:
-            proc = subprocess.run(
+            proc = run_docker_process(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 timeout=job.host_timeout_s(DOCKER_TIMEOUT_S),
+                max_bytes=MAX_CONTAINER_OUTPUT_BYTES,
             )
+        except OutputOverrunError:
+            best_effort_remove(container_name)
+            return 200, {"status": "FAILED", "result": {"error": "Docker container output exceeded size limit."}, "error_code": "EXECUTION_FAILED"}
         except subprocess.TimeoutExpired:
             best_effort_remove(container_name)
             return 200, {"status": "FAILED", "result": {"error": "Docker execution timed out."}, "error_code": "EXECUTION_FAILED"}
@@ -706,7 +715,19 @@ def handle_execute(
             return 502, {"error": "Docker helper returned malformed output"}
         if status == "EXECUTED" and operation in ("write_text", "run_command"):
             try:
-                refused = sync_copy_back(workspace_copy, workspace, blocked_paths)
+                refused = sync_copy_back(
+                    workspace_copy,
+                    workspace,
+                    blocked_paths,
+                    max_bytes=MAX_COPY_BACK_BYTES,
+                    max_files=MAX_COPY_BACK_FILES,
+                )
+            except OversizedCopyBackError as err:
+                return 200, {
+                    "status": "FAILED",
+                    "result": {"error": f"Copy-back refused: {err}"},
+                    "error_code": "OVERSIZED_WORKSPACE",
+                }
             except Exception:
                 return 200, {"status": "FAILED", "result": {"error": "Docker execution failed."}, "error_code": "EXECUTION_FAILED"}
             if refused:

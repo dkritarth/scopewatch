@@ -356,6 +356,8 @@ def _fake_pytest_container(monkeypatch: pytest.MonkeyPatch, module, seen: dict) 
             return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
         return real_run(cmd, **kwargs)
 
+    if hasattr(module, "run_docker_process"):
+        monkeypatch.setattr(module, "run_docker_process", fake_run)
     monkeypatch.setattr(module.subprocess, "run", fake_run)
 
 
