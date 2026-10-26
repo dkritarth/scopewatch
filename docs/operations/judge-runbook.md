@@ -15,9 +15,11 @@ node --version      # want v22+
 
 ```bash
 git clone https://github.com/dkritarth/scopewatch.git && cd scopewatch
-pip install -r backend/requirements.txt
+python3 -m venv .venv && . .venv/bin/activate && pip install --require-hashes -r backend/requirements.lock
 npm ci --prefix frontend
 ```
+
+The dashboard itself has no runtime npm dependencies, so `npm ci --prefix frontend` is only needed for the frontend tests.
 
 Pinned/reproducible variant (same bytes every machine): `pip install --require-hashes -r backend/requirements.lock`. Env names (only for live-model runs): `SCOPEWATCH_AGENT_PROFILE`, `SCOPEWATCH_AUDITOR_PROFILE`, `OPENROUTER_API_KEY`, `NEBIUS_API_KEY` (`.env.example`, gitignored `.env`). Mock (default) needs none of them.
 
@@ -28,7 +30,9 @@ Pinned/reproducible variant (same bytes every machine): `pip install --require-h
 # prints: dashboard http://127.0.0.1:8000/ | health /api/v1/health | runs /api/v1/runs
 ```
 
-Open `http://127.0.0.1:8000/` → pick run `scenario-06-invoice-injection` → policy `ALLOW`, audit `HOLD (reasoning concern)` with highlighted excerpt → **Deny** → denial recorded. Then open `scenario-02-blocked-private` → `DENY (BLOCKED_PATH)` with no execution receipt after the decision. Variants: `--agent` (offline mock), `--coding` (M2 scenarios 10–13), `PORT=8001 ./scripts/run_demo.sh` (override).
+Open `http://127.0.0.1:8000/` → pick run `Reasoning-Injection Escalation` → policy `ALLOW`, audit `HOLD (reasoning concern)` with highlighted excerpt → **Deny** → denial recorded. Then open `Blocked Confidential Directory Access` → `DENY (BLOCKED_PATH)` with no execution receipt after the decision. Variants: `--agent` (offline mock), `--coding` (M2 scenarios 10–13), `PORT=8001 ./scripts/run_demo.sh` (override).
+
+Approvals are single-use and expire after `SCOPEWATCH_APPROVAL_TTL` seconds (default `300`, from `DEFAULT_EXPIRY_SECONDS` in `backend/scopewatch/config.py`). Reviewer access for approving or denying approvals arrives with #258.
 
 *Authentication Note (issue #185):* Local demo requires zero keys or tokens. If testing against a deployed gateway with auth enabled (`REVIEWER_TOKEN`), paste the reviewer token into the dashboard Reviewer Access panel (top right) to resolve holds. Agent credentials cannot approve holds.
 

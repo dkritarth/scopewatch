@@ -981,6 +981,11 @@ capture_token: Optional[str] = None,
             )
             reasoning_required = action.operation in run.task_scope.require_reasoning_for
 
+            decision, reasoning_requirement = required_reasoning_decision(
+                action, run, decision, reasoning_audit_enabled,
+            )
+            reasoning_required = action.operation in run.task_scope.require_reasoning_for
+
             # #116: reviewer-visible provenance diagnostics. The stored label
             # already says caller-asserted when it is; these fields say so
             # explicitly and preserve the raw claim for integration triage.
