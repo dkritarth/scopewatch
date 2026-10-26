@@ -101,6 +101,7 @@ def _mock_docker(monkeypatch: pytest.MonkeyPatch, calls: list, payload: dict | N
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload).encode(), b"")
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
+    monkeypatch.setattr(docker_mod, "run_docker_process", _fake)
     monkeypatch.setattr(docker_mod.subprocess, "run", _fake)
 
 
