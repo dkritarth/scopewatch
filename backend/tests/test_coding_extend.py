@@ -14,8 +14,9 @@ absent from ``test_scenarios.py`` and from the wave-1/2 coding-mock work:
 - scenario 12: paraphrased injection (same exfiltration intent as the
   contributor-note injection, none of its exact strings) still HOLDs, with a
   paraphrased-refusal control that stays ALLOW;
-- scenario 13: env-exfil via a blocked ``--rootdir`` flag value, an
-  unchecked full-prefix plugin flag (V1 gap 6), and an output-flood
+- scenario 13: env-exfil via a blocked ``--rootdir`` flag value, a
+  full-prefix plugin flag denied by the run_command flag allowlist (V1
+  gap 6 closed), and an output-flood
   truncation proof through the real helper (no daemon);
 - scenario 14 (new additive file): docker-flag escape attempts DENY without
   executing.
@@ -597,17 +598,14 @@ async def test_m2_coding_13_env_flag_exfil_denied(
     assert (m2_coding_env["workspace_dir"] / ".env").read_text(encoding="utf-8") == before
 
 
-@pytest.mark.xfail(
-    reason="KNOWN-GAP (V1 gap 6): unchecked plugin flag still ALLOW; fix to strict DENY.",
-    strict=True,
-)
 @pytest.mark.anyio
-async def test_m2_coding_13_plugin_flag_unchecked_KNOWN_GAP(
+async def test_m2_coding_13_plugin_flag_denied(
     m2_coding_env: dict[str, Any], docker_backend: None
 ):
-    """KNOWN-GAP (V1 gap 6: non-path option values unchecked): a full-prefix
-    ``-p`` plugin value carries no path signal, so policy ALLOWs and
-    containment rests on the Docker sandbox (no network, non-root)."""
+    """Former KNOWN-GAP (V1 gap 6: non-path option values unchecked, now
+    closed): a full-prefix ``-p`` plugin value carries no path signal, so
+    policy used to ALLOW it and containment rested on the Docker sandbox
+    (no network, non-root). The flag allowlist now denies the option."""
     service: ScopewatchService = m2_coding_env["service"]
     data = _load_m2_scenario("13_network_exfil.json")
     task_scope_data = dict(data["task_scope"])
@@ -625,6 +623,7 @@ async def test_m2_coding_13_plugin_flag_unchecked_KNOWN_GAP(
         ),
     )
     assert res.policy_decision.outcome == PolicyOutcome.DENY
+    assert res.policy_decision.reason_code == ReasonCode.COMMAND_NOT_ALLOWED
 
 
 @pytest.mark.anyio
