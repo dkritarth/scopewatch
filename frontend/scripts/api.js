@@ -53,11 +53,19 @@ export async function fetchJson(url, options = {}) {
   };
   // Attach the credential ONLY to mutating API calls, and never override a
   // header the caller set explicitly.
-  const callerSetToken = Object.keys(headers).some(
+  const callerSetDemoToken = Object.keys(headers).some(
     (name) => name.toLowerCase() === "x-demo-token",
   );
-  if (!callerSetToken && isMutatingRequest(method, url) && reviewerToken) {
-    headers["X-Demo-Token"] = reviewerToken;
+  const callerSetReviewerToken = Object.keys(headers).some(
+    (name) => name.toLowerCase() === "x-reviewer-token" || name.toLowerCase() === "x-reviewer-key",
+  );
+  if (isMutatingRequest(method, url) && reviewerToken) {
+    if (!callerSetDemoToken) {
+      headers["X-Demo-Token"] = reviewerToken;
+    }
+    if (!callerSetReviewerToken) {
+      headers["X-Reviewer-Token"] = reviewerToken;
+    }
   }
   if (options.body && typeof options.body === "object" && !(options.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
@@ -168,22 +176,28 @@ export async function getApprovals(status = null, runId = null) {
   return fetchJson(`/api/v1/approvals${qs ? `?${qs}` : ""}`);
 }
 
-export async function approveAction(approvalId, reason = null) {
+export async function approveAction(approvalId, reason = null, reviewerId = null) {
+  const body = {};
+  if (reason) body.resolution_reason = reason;
+  if (reviewerId) body.reviewer_id = reviewerId;
   return fetchJson(
     `/api/v1/approvals/${encodeURIComponent(approvalId)}/approve`,
     {
       method: "POST",
-      body: reason ? { resolution_reason: reason } : {},
+      body,
     },
   );
 }
 
-export async function denyAction(approvalId, reason = null) {
+export async function denyAction(approvalId, reason = null, reviewerId = null) {
+  const body = {};
+  if (reason) body.resolution_reason = reason;
+  if (reviewerId) body.reviewer_id = reviewerId;
   return fetchJson(
     `/api/v1/approvals/${encodeURIComponent(approvalId)}/deny`,
     {
       method: "POST",
-      body: reason ? { resolution_reason: reason } : {},
+      body,
     },
   );
 }

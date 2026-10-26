@@ -101,7 +101,10 @@ Set at minimum:
 | Variable | Value |
 | --- | --- |
 | `DOMAIN` | your DNS name, e.g. `demo.example.com` (`http://localhost` = local dry-run, plain HTTP) |
-| `DEMO_TOKEN` | long random string for judges: `python3 -c "import secrets;print(secrets.token_urlsafe(32))"` |
+| `DEMO_TOKEN` | shared demo secret for demo mutating requests |
+| `REVIEWER_TOKEN` | dedicated credential for human reviewers/judges resolving holds (issue #185) |
+| `API_KEY` | dedicated agent API key for action submissions |
+| `SCOPEWATCH_ALLOW_RESET` | set to `true` to enable `/demo/reset` (default `false`) |
 | `SCOPEWATCH_AGENT_PROFILE` / `SCOPEWATCH_AUDITOR_PROFILE` | `mock` for a zero-cost scripted demo, or `nebius-demo` for live NVIDIA Nemotron via Nebius |
 | `NEBIUS_API_KEY` | only when using `nebius-demo`; paste the key into `.env` on the VM, never into git/chat |
 | abuse/cost caps | defaults are sane; lower `DEMO_MAX_RUNS_PER_DAY` for a tight judging window |
@@ -262,6 +265,15 @@ is populated with content and seeding becomes a no-op), or move seeding to
 `docker compose up -d` to confirm, neither of which was available where this
 was written, so **nothing in the compose file was changed**. After seeding the
 gateway itself writes nothing to `/workspace` — every write goes to `/runs`.
+
+## 3b. Credential Separation & Reviewer Flow (issue #185)
+
+Scopewatch strictly separates **agent** and **reviewer** roles:
+- **Agent credentials** (`X-API-Key` or `X-Demo-Token`) can submit actions and runs, but CANNOT resolve holds. Any attempt by an agent credential to call `/api/v1/approvals/{id}/approve` or `deny` is refused with HTTP 403 (`agent credentials are not permitted`).
+- **Reviewer credentials** (`X-Reviewer-Token` / `REVIEWER_TOKEN`) are required to approve or deny held actions when authentication is configured.
+- **Judge / Reviewer UI**: Judges enter their `REVIEWER_TOKEN` in the **Reviewer Access** panel on the dashboard. The credential is held only in memory for the active browser session and never stored in cookies or localStorage.
+- **Strict Content-Type**: Approval endpoints require `Content-Type: application/json` and reject invalid content types with HTTP 415.
+- **Demo Reset**: `/demo/reset` is disabled by default (HTTP 403). It requires `SCOPEWATCH_ALLOW_RESET=true` plus a valid reviewer credential, and clears `reasoning_audits` in addition to runs and events.
 
 ## 4. Verify the demo (acceptance checks)
 

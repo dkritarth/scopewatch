@@ -34,6 +34,8 @@ Open `http://127.0.0.1:8000/` → pick run `Reasoning-Injection Escalation` → 
 
 Approvals are single-use and expire after `SCOPEWATCH_APPROVAL_TTL` seconds (default `300`, from `DEFAULT_EXPIRY_SECONDS` in `backend/scopewatch/config.py`). Reviewer access for approving or denying approvals arrives with #258.
 
+*Authentication Note (issue #185):* Local demo requires zero keys or tokens. If testing against a deployed gateway with auth enabled (`REVIEWER_TOKEN`), paste the reviewer token into the dashboard Reviewer Access panel (top right) to resolve holds. Agent credentials cannot approve holds.
+
 ## 3. Verify (1 min, optional)
 
 ```bash

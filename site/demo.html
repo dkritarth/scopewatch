@@ -1,15 +1,17 @@
 <!doctype html>
-<html lang="en" class="no-js">
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Scopewatch demo: step through the gateway</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Scopewatch Demo</title>
   <meta name="description" content="Step through six synthetic invoice scenarios and watch the Scopewatch gateway decide on each agent action: policy, reasoning audit, human approval, and execution.">
-  <meta name="theme-color" content="#07070a">
+  <meta name="theme-color" content="#0a0c10" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f3f4f6" media="(prefers-color-scheme: light)">
+  <script>try{var t=localStorage.getItem("scopewatch-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
   <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
@@ -22,19 +24,22 @@
         <a class="hide-sm" href="./#how">How it works</a>
         <a class="hide-sm" href="./#results">Results</a>
         <a href="demo.html" aria-current="page">Demo</a>
-        <a class="btn btn-primary btn-sm" href="https://github.com/dkritarth/scopewatch">GitHub</a>
+        <a href="https://github.com/dkritarth/scopewatch">GitHub</a>
+        <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch theme">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.2" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.8a6.2 6.2 0 0 1 0 12.4z" fill="currentColor"/></svg>
+        </button>
       </nav>
     </div>
   </header>
 
   <main>
-    <div class="demo-hero">
+    <div class="demo-hero gridded">
       <div class="wrap">
-        <span class="eyebrow"><span class="tag">Demo</span> Six scenarios, fifteen agent actions</span>
+        <span class="eyebrow"><span class="tag">Replay</span> Six scenarios · fifteen recorded agent actions</span>
         <h1>Watch the gateway decide.</h1>
         <p class="lead" style="max-width:760px">Pick a scenario and press <strong>Play</strong>. Each action an agent asks for goes through policy, the reasoning auditor, human approval, and the executor in that order. When an action is held, you choose whether to approve it.</p>
         <div class="banner" role="note">
-          <span aria-hidden="true">ⓘ</span>
+          <span aria-hidden="true">i</span>
           <span><strong>Recorded, not simulated.</strong> Every decision, audit verdict, and execution receipt below was produced by the real Scopewatch gateway when it seeded these scenarios with the offline <code>mock</code> provider (<code>scripts/export_site_demo.py</code>). Your browser replays the record and never decides anything itself. Approve and Deny only show what the gateway would do next. All data is synthetic.</span>
         </div>
       </div>
