@@ -42,7 +42,7 @@ from scopewatch.executor_docker import (
     extract_run_command_argv,
 )
 from scopewatch.models import ExecutionStatus, PolicyOutcome, ReasonCode, RunStatus
-from scopewatch.policy import evaluate_policy
+from scopewatch.policy import evaluate_policy, revalidate_run_command_in_workspace
 from scopewatch.schemas import ActionRequest, Run, TaskScope
 
 
@@ -255,7 +255,9 @@ def test_m2_allowed_prefix_with_extra_args(
     cmd_workspace: Path, cmd_run: Run, docker_backend: None
 ) -> None:
     decision = evaluate_policy(
-        _cmd(cmd_run, command="python -m pytest tests/ -q"), cmd_run, cmd_workspace
+        _cmd(cmd_run, command="python -m pytest tests/ test_extra.py"),
+        cmd_run,
+        cmd_workspace,
     )
     assert decision.outcome == PolicyOutcome.ALLOW
 
@@ -350,16 +352,136 @@ def test_m2_symlinked_arg_escaping_denied(
     assert decision.reason_code == ReasonCode.SYMLINK_ESCAPE
 
 
-def test_m2_plain_flags_are_not_paths(
+def test_m2_plain_flags_not_in_allowlist_denied(
     cmd_workspace: Path, cmd_run: Run, docker_backend: None
 ) -> None:
-    """Non-path arguments (dashes, single tokens) pass the path rules."""
+    """Behavioural flags carry no path signal, so the run_command flag
+    allowlist denies options that are not declared for the matched prefix
+    (``-q``/``--tb``) instead of letting them slide through the path rules;
+    non-flag tokens (paths, node ids) still pass those rules."""
     decision = evaluate_policy(
         _cmd(cmd_run, command="pytest tests/ -q --tb=short"),
         cmd_run,
         cmd_workspace,
     )
+    assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.COMMAND_NOT_ALLOWED
+
+
+# ---------------- C4b: run_command flag allowlist and ini override channel (V1 gap 6) ----------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # pytest -o addopts variants
+        "pytest tests/ -o addopts=-q",
+        "pytest tests/ -o=addopts=-q",
+        "pytest tests/ -o 'addopts = -q'",
+        "pytest tests/ -o 'addopts=-p no:cacheprovider'",
+        # python -m pytest variants
+        "python -m pytest tests/ -o addopts=-q",
+        "python -m pytest tests/ -o=addopts=-q",
+        "python -m pytest tests/ -o 'addopts = -q'",
+        "python -m pytest tests/ -o 'addopts=-p no:cacheprovider'",
+        # unknown attached flags remain failclosed under default allowlist
+        "pytest tests/ -oaddopts=-q",
+        "python -m pytest tests/ -oaddopts=-q",
+        # unknown long flags remain failclosed under default allowlist
+        "pytest tests/ --override-ini=addopts=-q",
+        "python -m pytest tests/ --override-ini=addopts=-q",
+    ],
+)
+def test_m2_pytest_addopts_override_channel_denied(
+    cmd_workspace: Path, cmd_run: Run, docker_backend: None, command: str
+) -> None:
+    """Closes V1 gap 6: '-o addopts=...' and unknown attached/long ini options
+    are denied both at deterministic policy evaluation and at executor revalidation."""
+    action = _cmd(cmd_run, command=command)
+
+    # 1. Deterministic policy evaluation denial
+    decision = evaluate_policy(action, cmd_run, cmd_workspace)
+    assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.COMMAND_NOT_ALLOWED
+    assert decision.matched_rule == "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED"
+
+    # 2. Dispatch executor revalidation denial
+    reval = revalidate_run_command_in_workspace(action, cmd_run.task_scope, cmd_workspace)
+    assert reval is not None
+    code, explanation, rule = reval
+    assert code == ReasonCode.COMMAND_NOT_ALLOWED
+    assert rule == "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest tests/ -o strict_xfail=True",
+        "pytest tests/ -o=strict_xfail=True",
+        "python -m pytest tests/ -o strict_xfail=True",
+        "python -m pytest tests/ -o=strict_xfail=True",
+    ],
+)
+def test_m2_pytest_legitimate_ini_override_allowed(
+    cmd_workspace: Path, cmd_run: Run, docker_backend: None, command: str
+) -> None:
+    """Legitimate ini overrides without addopts remain permitted through policy
+    evaluation and executor revalidation."""
+    action = _cmd(cmd_run, command=command)
+
+    decision = evaluate_policy(action, cmd_run, cmd_workspace)
     assert decision.outcome == PolicyOutcome.ALLOW
+    assert decision.reason_code == ReasonCode.ALLOWED_TOOL_AND_RESOURCE
+    assert decision.matched_rule == "RULE_RUN_COMMAND_ALLOWED"
+
+    assert revalidate_run_command_in_workspace(action, cmd_run.task_scope, cmd_workspace) is None
+
+
+def test_m2_non_pytest_custom_command_with_dash_o_preserved(
+    cmd_workspace: Path, cmd_run: Run, docker_backend: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-pytest command allowlisting '-o' is not subject to pytest-specific
+    addopts ini override denial."""
+    from scopewatch import models, policy
+
+    cmd_run.task_scope.allowed_commands.append(["custom_runner"])
+    extended_flags = tuple(models.RUN_COMMAND_ALLOWED_FLAGS) + ((("custom_runner",), ("-o",)),)
+    monkeypatch.setattr(models, "RUN_COMMAND_ALLOWED_FLAGS", extended_flags)
+    monkeypatch.setattr(policy, "RUN_COMMAND_ALLOWED_FLAGS", extended_flags)
+
+    action = _cmd(cmd_run, command="custom_runner -o addopts=custom_val")
+    decision = evaluate_policy(action, cmd_run, cmd_workspace)
+    assert decision.outcome == PolicyOutcome.ALLOW
+    assert decision.reason_code == ReasonCode.ALLOWED_TOOL_AND_RESOURCE
+
+    assert revalidate_run_command_in_workspace(action, cmd_run.task_scope, cmd_workspace) is None
+
+
+def test_m2_python_variant_pytest_prefix_denies_addopts(
+    cmd_workspace: Path, cmd_run: Run, docker_backend: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Supported python variants (e.g. python3 -m pytest) are recognized as pytest
+    prefixes and deny addopts overrides."""
+    from scopewatch import models, policy
+
+    cmd_run.task_scope.allowed_commands.append(["python3", "-m", "pytest"])
+    extended_flags = tuple(models.RUN_COMMAND_ALLOWED_FLAGS) + (
+        (("python3", "-m", "pytest"), ("--rootdir", "--junitxml", "--confcutdir", "--basetemp", "-o")),
+    )
+    monkeypatch.setattr(models, "RUN_COMMAND_ALLOWED_FLAGS", extended_flags)
+    monkeypatch.setattr(policy, "RUN_COMMAND_ALLOWED_FLAGS", extended_flags)
+
+    action = _cmd(cmd_run, command="python3 -m pytest tests/ -o addopts=-q")
+    decision = evaluate_policy(action, cmd_run, cmd_workspace)
+    assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.COMMAND_NOT_ALLOWED
+    assert decision.matched_rule == "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED"
+
+    reval = revalidate_run_command_in_workspace(action, cmd_run.task_scope, cmd_workspace)
+    assert reval is not None
+    code, explanation, rule = reval
+    assert code == ReasonCode.COMMAND_NOT_ALLOWED
+    assert rule == "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED" 
 
 
 @pytest.mark.parametrize("cwd", ["", "."])
