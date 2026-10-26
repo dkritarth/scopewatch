@@ -363,6 +363,18 @@ def test_sse_stream_route_is_exempt(raw_env) -> None:
     assert b"too large" not in body
 
 
+def test_post_to_sse_stream_route_with_oversized_chunked_body_gets_413(raw_env) -> None:
+    app, _ = raw_env
+    status, _, body = call_asgi(
+        app,
+        "POST",
+        "/api/v1/runs/x/events/stream",
+        messages=request_messages(b"a" * (LIMIT + 1), chunk_size=64 * 1024),
+    )
+    assert status == 413
+    assert json.loads(body) == {"error": "request body too large"}
+
+
 # ---------------------------------------------------------------------------
 # Schema bounds: reasoning traces, summaries, argument strings.
 # ---------------------------------------------------------------------------

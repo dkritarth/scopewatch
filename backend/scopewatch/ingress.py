@@ -9,8 +9,8 @@ unbounded JSON allocation, create an action, or produce any evidence.
 Rules:
 - The check is outermost: it runs before authentication, CORS, and every
   route handler, so unauthenticated callers cannot make the server allocate.
-- ``GET`` and ``HEAD`` are exempt (no meaningful body), and so is the SSE
-  event-stream route (``.../events/stream``), which streams responses.
+- ``GET`` and ``HEAD`` are exempt (no meaningful body; the SSE route is
+  ``GET`` only and needs no path-level exemption).
 - A declared ``content-length`` over the limit is rejected without reading
   the body. Bodies without ``content-length`` (chunked, or length
   understated) are still counted as they stream in.
@@ -29,14 +29,11 @@ from scopewatch.config import DEFAULT_MAX_REQUEST_BODY_BYTES
 
 _413_BODY = b'{"error": "request body too large"}'
 _EXEMPT_METHODS = frozenset({"GET", "HEAD"})
-_SSE_PATH_SUFFIX = "/events/stream"
 
 
 def _is_exempt(scope: dict[str, Any]) -> bool:
-    """GET, HEAD, and the SSE event-stream route never carry bounded bodies."""
-    if str(scope.get("method", "")).upper() in _EXEMPT_METHODS:
-        return True
-    return str(scope.get("path", "")).endswith(_SSE_PATH_SUFFIX)
+    """GET and HEAD requests carry no meaningful body and are exempt."""
+    return str(scope.get("method", "")).upper() in _EXEMPT_METHODS
 
 
 def _declared_content_length(scope: dict[str, Any]) -> Optional[int]:
