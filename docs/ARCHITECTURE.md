@@ -68,6 +68,12 @@ Key endpoints:
 - `GET /api/v1/approvals`: List pending, approved, or denied human review requests.
 - `POST /api/v1/approvals/{approval_id}/approve`: Single-use endpoint to authorize an action on hold.
 - `POST /api/v1/approvals/{approval_id}/deny`: Reject an action on hold.
+- `POST /api/v1/approvals/{approval_id}/expire`: End the agent's review wait. Atomically expires only a pending approval with a system-authored event, or returns the existing review state unchanged. The agent waits for a receipt when approval already won this race. The endpoint uses the same mutation authentication as approve and deny.
+
+Agent completion retries check the run's monotonic wall-clock deadline before
+each attempt. If approved execution defers completion beyond that deadline, the
+agent switches to failure and waits for the receipt before persisting FAILED.
+An execution that never settles can still leave this terminal wait pending.
 
 Run endpoints serialize `RunResponse`, not the `Run` storage model. The storage
 model carries the host-side per-run workspace path, which the service needs but

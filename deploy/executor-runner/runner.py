@@ -135,6 +135,7 @@ from scopewatch.scope_paths import (  # noqa: E402
     normalize_relative_segments,
     scoped_path_denial,
     segments_within,
+    volume_is_case_insensitive,
 )  # noqa: E402
 
 # Single-use dispatch tokens expire after 60s (issue #78).
@@ -426,7 +427,10 @@ def _task_scope_shape_error(scope: object) -> Optional[str]:
 
 
 def _argv_scope_denial(
-    argv: list[str], root: Path, task_scope: dict[str, Any]
+    argv: list[str],
+    root: Path,
+    task_scope: dict[str, Any],
+    case_insensitive: Optional[bool] = None,
 ) -> Optional[str]:
     """Return a static refusal when argv leaves the signed scope under ``root``.
 
@@ -436,7 +440,11 @@ def _argv_scope_denial(
     of ``--flag=value``) must be relative, resolve inside ``root``, and avoid
     every blocked prefix, mirroring the gateway's
     ``revalidate_run_command_in_workspace``. Escapes fail closed.
+
+    ``case_insensitive`` is the volume's three-state verdict (#305); the
+    blocked comparison folds when it is ``True`` or unknown (``None``).
     """
+    blocked_folds = case_insensitive is None or case_insensitive is True
     blocked = task_scope.get("blocked_paths") or []
     prefix_len = max(
         (
@@ -465,7 +473,7 @@ def _argv_scope_denial(
                     return "command argument escapes the workspace boundary"
                 continue
             for prefix in blocked:
-                if segments_within(canonical, prefix):
+                if segments_within(canonical, prefix, case_insensitive=blocked_folds):
                     return f"command argument resolves into blocked path '{prefix}'"
     return None
 
@@ -582,7 +590,16 @@ def handle_execute(
         if allowed or blocked:
             require_allowed = (operation != "run_command")
             eff_allowed = allowed if require_allowed else ["."]
-            denial = scoped_path_denial(req_segments, res_segments, eff_allowed, blocked)
+            # Re-apply the gateway's case decision on this side of the wire
+            # (#184/#305): on a case-insensitive staged volume an upper-case
+            # alias of a blocked path must be refused here too. A three-state
+            # probe (None = unknown) keeps an undetectable volume from
+            # widening the allowed set.
+            case_insensitive = volume_is_case_insensitive(str(workspace))
+            denial = scoped_path_denial(
+                req_segments, res_segments, eff_allowed, blocked,
+                case_insensitive=case_insensitive,
+            )
             if denial is not None:
                 return 403, {"error": "resource violates task scope"}
         elif res_segments != req_segments:
@@ -592,6 +609,10 @@ def handle_execute(
     if not isinstance(arguments, dict):
         return 400, {"error": "malformed arguments"}
     run_timeout_s: Optional[float] = None
+    # One volume verdict per job (#305): the blocked argv revalidation,
+    # staging's exclusion, and copy-back's destination checks all fold case
+    # from this single answer for the run's workspace.
+    case_insensitive = volume_is_case_insensitive(str(workspace))
     if operation == "run_command":
         argv, timeout, error = normalize_run_command(arguments)
         if error is not None or argv is None:
@@ -602,6 +623,7 @@ def handle_execute(
                 if not any(argv[: len(cmd)] == cmd for cmd in allowed_cmds):
                     return 403, {"error": "command not allowed by task scope"}
             blocked = task_scope.get("blocked_paths") or []
+            blocked_folds = case_insensitive is None or case_insensitive is True
             for item in argv:
                 candidates = [item]
                 if "=" in item:
@@ -609,7 +631,7 @@ def handle_execute(
                 for candidate in candidates:
                     cand_segments = normalize_relative_segments(candidate)
                     for b in blocked:
-                        if segments_within(cand_segments, b):
+                        if segments_within(cand_segments, b, case_insensitive=blocked_folds):
                             return 403, {"error": f"command argument violates blocked path '{b}'"}
         arguments = {"argv": argv, "timeout_s": timeout}
         run_timeout_s = timeout
@@ -627,7 +649,9 @@ def handle_execute(
     # whose target is blocked, so after staging the argument has simply
     # vanished and only this pass still sees (and refuses) it.
     if operation == "run_command" and isinstance(task_scope, dict):
-        argv_error = _argv_scope_denial(list(arguments["argv"]), workspace, task_scope)
+        argv_error = _argv_scope_denial(
+            list(arguments["argv"]), workspace, task_scope, case_insensitive=case_insensitive
+        )
         if argv_error is not None:
             return 403, {"error": argv_error}
 
@@ -636,7 +660,7 @@ def handle_execute(
     try:
         try:
             staging_root, workspace_copy = stage_workspace_copy(
-                workspace, blocked_paths
+                workspace, blocked_paths, case_insensitive=case_insensitive
             )
         except OSError:
             return 500, {"error": "workspace staging failed"}
@@ -656,7 +680,11 @@ def handle_execute(
             if allowed or blocked:
                 require_allowed = (operation != "run_command")
                 eff_allowed = allowed if require_allowed else ["."]
-                denial = scoped_path_denial(req_segments, res_copy_segments, eff_allowed, blocked)
+                staged_case_insensitive = volume_is_case_insensitive(str(workspace_copy))
+                denial = scoped_path_denial(
+                    req_segments, res_copy_segments, eff_allowed, blocked,
+                    case_insensitive=staged_case_insensitive,
+                )
                 if denial is not None:
                     return 403, {"error": "resource violates task scope"}
             elif res_copy_segments != req_segments:
@@ -664,7 +692,8 @@ def handle_execute(
 
             if operation == "run_command":
                 argv_error = _argv_scope_denial(
-                    list(arguments.get("argv", [])), workspace_copy, task_scope
+                    list(arguments.get("argv", [])), workspace_copy, task_scope,
+                    case_insensitive=volume_is_case_insensitive(str(workspace_copy)),
                 )
                 if argv_error is not None:
                     return 403, {"error": argv_error}
@@ -721,6 +750,7 @@ def handle_execute(
                     blocked_paths,
                     max_bytes=MAX_COPY_BACK_BYTES,
                     max_files=MAX_COPY_BACK_FILES,
+                    case_insensitive=case_insensitive,
                 )
             except OversizedCopyBackError as err:
                 return 200, {

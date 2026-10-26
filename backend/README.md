@@ -28,6 +28,7 @@ Synthetic baseline backend for Scopewatch, implementing deterministic policy eva
 - `GET /api/v1/approvals`: List pending or resolved approval requests.
 - `POST /api/v1/approvals/{approval_id}/approve`: Approve an action and trigger single-use execution.
 - `POST /api/v1/approvals/{approval_id}/deny`: Deny an action.
+- `POST /api/v1/approvals/{approval_id}/expire`: Expire a pending approval (system).
 - `GET /api/v1/runs/{run_id}/events`: Retrieve append-only evidence events with optional sequence pagination.
 - `GET /api/v1/runs/{run_id}/events/stream`: Live Server-Sent Events stream for real-time timeline updates.
 

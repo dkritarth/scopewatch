@@ -59,6 +59,7 @@ import stat
 import subprocess
 import tempfile
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
@@ -106,6 +107,20 @@ class OutputOverrunError(Exception):
 
 class OversizedCopyBackError(ValueError):
     """Raised when staged workspace exceeds copy-back size bounds."""
+
+
+def _fold(segments: tuple[str, ...], case_insensitive: bool) -> tuple[str, ...]:
+    """Case-fold segments for blocked comparison when the volume folds case.
+
+    Mirrors :func:`scopewatch.scope_paths._fold` (the sidecar cannot import
+    the gateway module, so the one shared rule is restated here in this
+    stdlib-only module). NFC-normalizes each segment before casefolding:
+    APFS treats the composed and decomposed spellings of one name as the
+    same file (#305).
+    """
+    if not case_insensitive:
+        return segments
+    return tuple(unicodedata.normalize("NFC", part).casefold() for part in segments)
 
 
 def clamp_run_command_timeout(value: Any) -> float:
@@ -493,6 +508,7 @@ def sync_copy_back(
     blocked_paths: Iterable[str] = (),
     max_bytes: int = MAX_COPY_BACK_BYTES,
     max_files: int = MAX_COPY_BACK_FILES,
+    case_insensitive: Optional[bool] = None,
 ) -> list[str]:
     """Copy container-modified files back to the host workspace.
 
@@ -515,6 +531,9 @@ def sync_copy_back(
     from the staged copy are left alone (same as ``dirs_exist_ok``:
     container deletes are not propagated). Special files (sockets, fifos,
     devices) are skipped rather than copied.
+
+    ``case_insensitive`` is the volume's three-state verdict (#305); the
+    blocked comparison folds when it is ``True`` or unknown (``None``).
     """
     check_staged_workspace_size(workspace_copy, max_bytes=max_bytes, max_files=max_files)
     blocked = normalize_blocked_paths(blocked_paths)
@@ -530,13 +549,13 @@ def sync_copy_back(
         # Resolved-destination check: a directory on the host may be a link
         # the staged copy never had (it was excluded at staging, or created
         # since). Writing below it would follow the link onto its target.
-        if rel_parts and not _dest_dir_allowed(dest_dir, resolved_root, blocked):
+        if rel_parts and not _dest_dir_allowed(dest_dir, resolved_root, blocked, case_insensitive):
             refused.add("/".join(rel_parts))
             dirnames[:] = []
             continue
         dest_dir.mkdir(parents=True, exist_ok=True)
         for name in list(dirnames):
-            if _is_blocked((*rel_parts, name), blocked):
+            if _is_blocked((*rel_parts, name), blocked, case_insensitive):
                 refused.add("/".join((*rel_parts, name)))
                 dirnames.remove(name)
                 continue
@@ -545,7 +564,7 @@ def sync_copy_back(
             # replicate the link itself and never descend into it (the walk
             # already refuses to follow, so no pruning is needed).
             if src_entry.is_symlink():
-                if _contains_blocked((*rel_parts, name), blocked):
+                if _contains_blocked((*rel_parts, name), blocked, case_insensitive):
                     # Replacing this host directory with a link would rmtree
                     # the blocked paths below it (#183 review).
                     refused.add("/".join((*rel_parts, name)))
@@ -554,8 +573,8 @@ def sync_copy_back(
             else:
                 (dest_dir / name).mkdir(parents=True, exist_ok=True)
         for name in filenames:
-            if _is_blocked((*rel_parts, name), blocked) or _contains_blocked(
-                (*rel_parts, name), blocked
+            if _is_blocked((*rel_parts, name), blocked, case_insensitive) or _contains_blocked(
+                (*rel_parts, name), blocked, case_insensitive
             ):
                 # A file or link where the host has an ancestor of a blocked
                 # path would replace (rmtree) that directory: refuse it.
@@ -606,7 +625,9 @@ def make_world_accessible(root: Path) -> None:
 
 
 def stage_workspace_copy(
-    workspace_root: Path, blocked_paths: Iterable[str] = ()
+    workspace_root: Path,
+    blocked_paths: Iterable[str] = (),
+    case_insensitive: Optional[bool] = None,
 ) -> tuple[Path, Path]:
     """Copy the workspace to a temp staging dir and open it to the container.
 
@@ -623,6 +644,9 @@ def stage_workspace_copy(
     blocked path is checked to be absent from the copy; if one is present, or
     ``blocked_paths`` is malformed, or it blocks the workspace root itself,
     staging raises :class:`StagingScopeError` (an ``OSError``) — fail closed.
+
+    ``case_insensitive`` is the volume's three-state verdict (#305); the
+    blocked comparison folds when it is ``True`` or unknown (``None``).
     """
     blocked = normalize_blocked_paths(blocked_paths)
     if any(not prefix for prefix in blocked):
@@ -632,7 +656,11 @@ def stage_workspace_copy(
     staging_root = Path(tempfile.mkdtemp(prefix="scopewatch-run-"))
     try:
         workspace_copy = staging_root / "workspace"
-        ignore = _blocked_ignore(source, resolved_source, blocked) if blocked else None
+        ignore = (
+            _blocked_ignore(source, resolved_source, blocked, case_insensitive)
+            if blocked
+            else None
+        )
         shutil.copytree(source, workspace_copy, symlinks=True, ignore=ignore)
         for prefix in blocked:
             if os.path.lexists(workspace_copy.joinpath(*prefix)):
@@ -675,19 +703,39 @@ def normalize_blocked_paths(blocked_paths: Any) -> tuple[tuple[str, ...], ...]:
     return tuple(normalized)
 
 
-def _is_blocked(parts: tuple[str, ...], blocked: tuple[tuple[str, ...], ...]) -> bool:
-    """True when ``parts`` is a blocked prefix or below one."""
-    return any(parts[: len(prefix)] == prefix for prefix in blocked)
+def _is_blocked(
+    parts: tuple[str, ...],
+    blocked: tuple[tuple[str, ...], ...],
+    case_insensitive: Optional[bool] = None,
+) -> bool:
+    """True when ``parts`` is a blocked prefix or below one.
+
+    ``case_insensitive`` is the volume's three-state verdict (#305); the
+    blocked comparison folds case (and NFC) when it is ``True`` or unknown
+    (``None``), so an upper-case alias of a blocked directory still matches.
+    """
+    fold = case_insensitive is None or case_insensitive is True
+    return any(
+        len(parts) >= len(prefix) and _fold(parts[: len(prefix)], fold) == _fold(prefix, fold)
+        for prefix in blocked
+    )
 
 
-def _contains_blocked(parts: tuple[str, ...], blocked: tuple[tuple[str, ...], ...]) -> bool:
+def _contains_blocked(
+    parts: tuple[str, ...],
+    blocked: tuple[tuple[str, ...], ...],
+    case_insensitive: Optional[bool] = None,
+) -> bool:
     """True when ``parts`` is a strict ancestor of some blocked prefix.
 
     Copy-back must never replace such a directory with a link or a file:
     removing it would delete the blocked paths below it on the host.
+    ``case_insensitive`` follows the blocked side of the volume verdict (#305).
     """
+    fold = case_insensitive is None or case_insensitive is True
     return any(
-        len(prefix) > len(parts) and prefix[: len(parts)] == parts for prefix in blocked
+        len(prefix) > len(parts) and _fold(prefix[: len(parts)], fold) == _fold(parts, fold)
+        for prefix in blocked
     )
 
 
@@ -699,7 +747,10 @@ def _relative_parts(path: Path, root: Path) -> Optional[tuple[str, ...]]:
 
 
 def _blocked_ignore(
-    source: Path, resolved_source: Path, blocked: tuple[tuple[str, ...], ...]
+    source: Path,
+    resolved_source: Path,
+    blocked: tuple[tuple[str, ...], ...],
+    case_insensitive: Optional[bool] = None,
 ):
     """``copytree`` ignore callback that drops blocked entries.
 
@@ -708,6 +759,9 @@ def _blocked_ignore(
     workspace. A link that cannot be resolved is dropped too (fail closed on
     the entry). Non-link entries need no resolution: ``symlinks=True`` never
     descends through a link, so every directory walked is a real one.
+
+    ``case_insensitive`` is the volume's three-state verdict (#305); the
+    blocked comparison folds when it is ``True`` or unknown (``None``).
     """
 
     def ignore(dirpath: str, names: list[str]) -> set[str]:
@@ -719,7 +773,7 @@ def _blocked_ignore(
         dropped = set()
         for name in names:
             parts = (*rel, name)
-            if _is_blocked(parts, blocked):
+            if _is_blocked(parts, blocked, case_insensitive):
                 dropped.add(name)
                 continue
             entry = Path(dirpath) / name
@@ -730,7 +784,7 @@ def _blocked_ignore(
                     dropped.add(name)
                     continue
                 target_rel = _relative_parts(target, resolved_source)
-                if target_rel is not None and _is_blocked(target_rel, blocked):
+                if target_rel is not None and _is_blocked(target_rel, blocked, case_insensitive):
                     dropped.add(name)
         return dropped
 
@@ -738,7 +792,10 @@ def _blocked_ignore(
 
 
 def _dest_dir_allowed(
-    dest_dir: Path, resolved_root: Path, blocked: tuple[tuple[str, ...], ...]
+    dest_dir: Path,
+    resolved_root: Path,
+    blocked: tuple[tuple[str, ...], ...],
+    case_insensitive: Optional[bool] = None,
 ) -> bool:
     """Copy-back may write into ``dest_dir`` only if it resolves in scope."""
     try:
@@ -748,7 +805,7 @@ def _dest_dir_allowed(
     rel = _relative_parts(resolved, resolved_root)
     if rel is None:
         return False
-    return not _is_blocked(rel, blocked)
+    return not _is_blocked(rel, blocked, case_insensitive)
 
 
 def best_effort_remove(container_name: str) -> None:
