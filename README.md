@@ -31,9 +31,10 @@ It enforces a strict defense-in-depth model:
 Prerequisites: Python 3.12+, Node.js 22+. No API keys, no Docker, no network needed for the local demo (mock provider). Install once (details in `BUILDING.md`):
 
 ```bash
-pip install -r backend/requirements.txt   # or pinned: pip install --require-hashes -r backend/requirements.lock
-npm ci --prefix frontend
+python3 -m venv .venv && . .venv/bin/activate && pip install --require-hashes -r backend/requirements.lock
 ```
+
+The dashboard itself has no runtime npm dependencies, so `npm ci --prefix frontend` is only needed for the frontend tests (it installs Playwright as a dev dependency).
 
 The invoice scenarios (01–06) need nothing else. The coding scenarios (10–13, `./scripts/run_demo.sh --coding`) submit `run_command` actions, which the deterministic policy only permits on the Docker executor: with a reachable Docker daemon the launcher selects `SCOPEWATCH_EXECUTOR=docker` itself, and without one it says so before seeding instead of showing silent `DENY [UNSUPPORTED_OPERATION]` receipts.
 
@@ -41,6 +42,20 @@ The invoice scenarios (01–06) need nothing else. The coding scenarios (10–13
 
 ```bash
 ./scripts/run_demo.sh
+
+# Run in scripted mode (replays synthetic scenarios)
+./scripts/run_demo.sh
+
+# Run in agent mode with the default offline mock provider
+./scripts/run_demo.sh --agent
+
+# Run in agent mode with live provider profiles (requires API keys in environment)
+export OPENROUTER_API_KEY="sk-or-..."
+export SCOPEWATCH_AGENT_PROFILE=openrouter-dev SCOPEWATCH_AUDITOR_PROFILE=openrouter-dev
+./scripts/run_demo.sh --agent --profile openrouter-dev
+
+# Keep the repository clean: seed and serve a scratch database and workspace copy
+./scripts/run_demo.sh --db-path /tmp/sw/demo.db --workspace-root /tmp/sw/workspace
 ```
 
 This starts the FastAPI backend, seeds synthetic invoice scenarios into a local workspace, serves the reviewer UI, and prints:
@@ -55,11 +70,24 @@ Defaults are `HOST=127.0.0.1` `PORT=8000` (`PORT=... HOST=... ./scripts/run_demo
 ### 2. Run with live Nebius inference (requires `NEBIUS_API_KEY`)
 
 ```bash
-export NEBIUS_API_KEY="sk-..."   # Token Factory key
+export NEBIUS_API_KEY="nvapi-..."   # Placeholder Token Factory key
+export SCOPEWATCH_AGENT_PROFILE=nebius-demo
+export SCOPEWATCH_AUDITOR_PROFILE=nebius-demo
 ./scripts/run_demo.sh --agent --profile nebius-demo
 ```
 
 This runs the Scopewatch agent loop against the `nebius-demo` profile (`nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory). The dashboard shows live provider calls. Nebius exposes no reasoning field, so this profile has no provider-exposed trace. What the gateway records depends on whether Nemotron also writes text into `content` on tool-call turns, which has not been observed live (issue #214): if it does, the agent loop forwards that text as an agent-authored summary (`AGENT_AUTHORED_SUMMARY`) and the auditor reads it, so scenario 06 may `HOLD`, on agent-written text rather than a provider trace; if `content` is empty, provenance is `UNAVAILABLE`, the auditor is skipped, and 06 stays `ALLOW` (see `docs/submission/nebius-nvidia.md` §1, Table 1, and `backend/config/providers.toml`).
+
+### 2b. Live gateway mode (`?live=1` / `?live=0`)
+
+The reviewer UI at `http://127.0.0.1:8000/` accepts two query-string flags on the **backend port** (default 8000):
+
+- `?live=1` — Enables live mode: the page connects to the gateway's live run stream and shows active runs. With no `?live` parameter, the default gateway port (`8000`) or the `__SCOPEWATCH_LIVE__` flag enables live mode.
+- `?live=0` — Disables live mode: the page shows fixture/simulated runs even when a live gateway is running. This takes precedence over the port default; i.e. `?live=0` on port 8000 still shows static fixtures.
+
+On any other port, `?live=1` is also accepted and enables live mode against that port. Without `?live`, the page defaults to fixture mode on non-8000 ports.
+
+See `frontend/scripts/app.js` for the full derivation logic.
 
 ### 3. Run the Scopewatch agent loop CLI
 
@@ -67,10 +95,10 @@ Drive a scenario directly via the agent loop runner (`backend/scopewatch/agent/_
 
 ```bash
 # Run safe invoice audit scenario offline
-PYTHONPATH=backend python3 -m scopewatch.agent --scenario demo/scenarios/01_safe_audit.json --profile mock
+PYTHONPATH=backend python3 -m scopewatch.agent --scenario demo/scenarios/01_safe_audit.json --profile mock --in-process
 
 # Run reasoning injection escalation scenario
-PYTHONPATH=backend python3 -m scopewatch.agent --scenario demo/scenarios/06_invoice_injection.json --profile mock
+PYTHONPATH=backend python3 -m scopewatch.agent --scenario demo/scenarios/06_invoice_injection.json --profile mock --in-process
 ```
 
 ### 4. Run the held-out reasoning auditor evaluation
@@ -78,12 +106,14 @@ PYTHONPATH=backend python3 -m scopewatch.agent --scenario demo/scenarios/06_invo
 Evaluate auditor accuracy, false-negative rate, false-hold rate, and latency against held-out test cases (`backend/scripts/evaluate_reasoning_audit.py:217-308`; method in `docs/evaluation.md:42-72`):
 
 ```bash
-# Offline evaluation using mock auditor rules
-PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile mock --split heldout
+# Offline evaluation using mock auditor rules (agent and auditor both mock)
+PYTHONPATH=backend SCOPEWATCH_AGENT_PROFILE=mock SCOPEWATCH_AUDITOR_PROFILE=mock python3 backend/scripts/evaluate_reasoning_audit.py --profile mock --split heldout
 
-# Live evaluation on OpenRouter or Nebius (requires API key)
-PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile openrouter-dev --split heldout
-PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile nebius-demo --split heldout
+# Live evaluation on OpenRouter (requires OPENROUTER_API_KEY in environment)
+OPENROUTER_API_KEY="sk-or-..." PYTHONPATH=backend SCOPEWATCH_AGENT_PROFILE=openrouter-dev SCOPEWATCH_AUDITOR_PROFILE=openrouter-dev python3 backend/scripts/evaluate_reasoning_audit.py --profile openrouter-dev --split heldout
+
+# Live evaluation on Nebius (requires NEBIUS_API_KEY in environment)
+NEBIUS_API_KEY="..." PYTHONPATH=backend SCOPEWATCH_AGENT_PROFILE=nebius-demo SCOPEWATCH_AUDITOR_PROFILE=nebius-demo python3 backend/scripts/evaluate_reasoning_audit.py --profile nebius-demo --split heldout
 ```
 
 ### 5. Run clean-room validation
@@ -123,7 +153,7 @@ Both live profiles miss our <5% false-negative target, and every live miss sits 
    A minimal, isolated agent loop (`backend/scopewatch/agent/`) that interacts with the environment exclusively via gateway-mediated tools (`list_directory`, `read_text`, `write_text`, `delete_path`). Has zero import path to the executor.
 
 5. **Approval workflows** (`backend/scopewatch/app.py:191,205`; `backend/scopewatch/service.py:831-900`; `backend/tests/test_agent_end_to_end.py::test_invariant_2_*,test_invariant_3_*`)
-   Generates single-use approval requests for sensitive operations. Human reviewers approve or deny actions directly in the UI or via REST API. Approvals cannot authorize an action with a deterministic `DENY`.
+   Generates single-use approval requests for sensitive operations. Human reviewers approve or deny actions directly in the UI or via REST API. Approvals cannot authorize an action with a deterministic `DENY`. Approval requests expire after `SCOPEWATCH_APPROVAL_TTL` seconds (default `300`, from `DEFAULT_EXPIRY_SECONDS` in `backend/scopewatch/config.py`). Reviewer access for approving or denying approvals arrives with #258.
 
 6. **Structured five-part evidence panel** (`frontend/scripts/app.js`; `frontend/index.html:149-160`)
    Every action audit displays:

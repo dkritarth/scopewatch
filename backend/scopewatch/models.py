@@ -35,6 +35,7 @@ class ReasonCode(str, Enum):
     SHELL_METACHARACTER = "SHELL_METACHARACTER"
     COMMAND_NOT_ALLOWED = "COMMAND_NOT_ALLOWED"
     POLICY_ERROR = "POLICY_ERROR"
+    REASONING_UNAVAILABLE = "REASONING_UNAVAILABLE"
     REASONING_SCOPE_CONCERN = "REASONING_SCOPE_CONCERN"
     REASONING_AUDIT_FAILED = "REASONING_AUDIT_FAILED"
 
@@ -168,7 +169,7 @@ RUN_COMMAND_ALLOWED_FLAGS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] =
 #    reported as ``LEGACY_POLICY_VERSION_LABEL``. They are never backfilled:
 #    stamping today's revision onto a past decision would assert something
 #    untrue about when it was evaluated.
-POLICY_RULES_REVISION = "2026-10-26.2"
+POLICY_RULES_REVISION = "2026-10-26.3"
 
 #: Display label for decisions recorded before policy versions were stored.
 LEGACY_POLICY_VERSION_LABEL = "unknown (legacy)"
