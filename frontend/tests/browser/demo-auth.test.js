@@ -258,6 +258,7 @@ test("hosted demo: mutations need a reviewer token, reads never carry one", { ti
     });
 
     await page.goto(`http://127.0.0.1:${port}/?live=1`);
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
     await page.waitForFunction(
       () => (document.getElementById("gateway-status")?.textContent || "").includes("Live gateway connected"),
       { timeout: 15000 },
@@ -278,7 +279,8 @@ test("hosted demo: mutations need a reviewer token, reads never carry one", { ti
     }
 
     // A mutation without a token is refused, and the error names the panel.
-    await page.locator('#run-buttons button:has-text("Live")').first().click();
+    await page.locator("#run-buttons button").first().click();
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "safe_read");
     await page.click("#submit-action-btn");
     await page.waitForFunction(
@@ -366,6 +368,7 @@ test("a gateway without demo mode never asks for a token (#115)", { timeout: 600
     browser = await chromium.launch();
     const page = await browser.newPage();
     await page.goto(`http://127.0.0.1:${port}/?live=1`);
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
     await page.waitForFunction(
       () => (document.getElementById("gateway-status")?.textContent || "").includes("Live gateway connected"),
       { timeout: 15000 },
@@ -374,7 +377,8 @@ test("a gateway without demo mode never asks for a token (#115)", { timeout: 600
     assert.equal(await page.locator("#reviewer-access-panel").isVisible(), false);
 
     // And a mutation still works, because no token is required here.
-    await page.locator('#run-buttons button:has-text("Live")').first().click();
+    await page.locator("#run-buttons button").first().click();
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "safe_read");
     await page.click("#submit-action-btn");
     await page.waitForFunction(
@@ -465,13 +469,17 @@ test("same-origin dashboard approve flow works in browser (#185)", { timeout: 30
     await page.click("#reviewer-token-save");
 
     // Switch to the live run
-    await page.locator('#run-buttons button:has-text("Live")').first().click();
+    await page.locator('#run-buttons button').first().click();
+
+    // Open the requests view where approval cards render
+    await page.locator('.rail-nav [data-view-target="requests"]').click();
 
     // Verify the approval card is visible
     const polApprovalCard = page.locator(".approval-card").first();
     await polApprovalCard.waitFor({ timeout: 10000 });
 
     const approveBtn = polApprovalCard.locator(".btn-approve");
+    await page.waitForFunction(() => !document.querySelector('.approval-card .btn-approve')?.disabled, { timeout: 10000 });
     await approveBtn.click();
     assert.equal(await approveBtn.innerText(), "Confirm approve");
 
