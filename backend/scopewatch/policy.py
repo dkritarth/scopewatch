@@ -372,6 +372,7 @@ def _check_run_command_path(
     describe: str,
     scope: TaskScope,
     workspace_root: Path,
+    case_insensitive: Optional[bool] = None,
 ) -> Union[tuple[ReasonCode, str, str], None]:
     """Apply the existing path rules to one run_command path value.
 
@@ -379,6 +380,12 @@ def _check_run_command_path(
     escape, blocked paths) but deliberately omits the allowed_paths
     membership requirement: command arguments and the command cwd only need
     traversal/blocked/containment validation.
+
+    ``case_insensitive`` is the volume's three-state verdict from
+    :func:`scopewatch.path_access.volume_is_case_insensitive` (#305); the
+    blocked check folds case when the volume folds case (``True``) or when it
+    is unknown (``None``), so an alias of a blocked path can never slip through
+    on an undetectable volume.
     """
     if "\x00" in value:
         return (
@@ -457,11 +464,12 @@ def _check_run_command_path(
                 "RULE_RUN_COMMAND_MALFORMED_PATH",
             )
     canonical = candidate.relative_to(resolved_workspace)
+    blocked_folds = case_insensitive is None or case_insensitive is True
     for blocked in scope.blocked_paths:
         blocked_norm = _normalize_relative_path(blocked)
         if blocked_norm and (
-            _is_descendant_or_equal(normalized, blocked_norm)
-            or _is_descendant_or_equal(canonical, blocked_norm)
+            _is_descendant_or_equal(normalized, blocked_norm, case_insensitive=blocked_folds)
+            or _is_descendant_or_equal(canonical, blocked_norm, case_insensitive=blocked_folds)
         ):
             return (
                 ReasonCode.BLOCKED_PATH,
@@ -477,6 +485,7 @@ def _check_staged_resolved_target(
     describe: str,
     scope: TaskScope,
     staged_root: Path,
+    case_insensitive: Optional[bool] = None,
 ) -> Union[tuple[ReasonCode, str, str], None]:
     """Check where a staged path value actually resolves (symlinks followed).
 
@@ -486,6 +495,11 @@ def _check_staged_resolved_target(
     target to stay in-bounds and outside every blocked path. Unresolvable
     values fail closed. Nonexistent paths resolve non-strictly to their
     would-be location, so output files that do not exist yet still pass.
+
+    ``case_insensitive`` is the volume's three-state verdict from
+    :func:`scopewatch.path_access.volume_is_case_insensitive` (#305); the
+    blocked check folds case when the volume folds case (``True``) or when it
+    is unknown (``None``), so a resolved alias of a blocked path is refused.
     """
     normalized = _normalize_relative_path(value)
     if normalized is None:
@@ -503,30 +517,29 @@ def _check_staged_resolved_target(
             "RULE_RUN_COMMAND_MALFORMED_PATH",
         )
     try:
-        resolved.relative_to(staged_root)
+        resolved_relative = resolved.relative_to(staged_root)
     except ValueError:
         return (
             ReasonCode.SYMLINK_ESCAPE,
             f"{describe} escapes the workspace boundary at dispatch.",
             "RULE_RUN_COMMAND_SYMLINK_ESCAPE_REJECTED",
         )
+    resolved_parts = resolved_relative.parts
+    blocked_folds = case_insensitive is None or case_insensitive is True
     for blocked in scope.blocked_paths:
         blocked_norm = _normalize_relative_path(blocked)
         if blocked_norm is None:
             continue
-        try:
-            blocked_base = _resolve(staged_root / blocked_norm)
-        except (OSError, RuntimeError):
-            continue
-        try:
-            resolved.relative_to(blocked_base)
+        if not blocked_norm.parts or _is_descendant_or_equal(
+            Path(*resolved_parts), blocked_norm, case_insensitive=blocked_folds
+        ):
+            # ``blocked_norm`` empty means the blocked path is the workspace
+            # root itself; anything resolved inside it is blocked.
             return (
                 ReasonCode.BLOCKED_PATH,
                 f"{describe} resolves into blocked path '{blocked}' at dispatch.",
                 "RULE_RUN_COMMAND_BLOCKED_PATH_MATCHED",
             )
-        except ValueError:
-            continue
     return None
 
 
@@ -614,6 +627,7 @@ def revalidate_run_command_in_workspace(
                     describe=f"Command argument '{candidate}'",
                     scope=scope,
                     workspace_root=staged,
+                    case_insensitive=volume_is_case_insensitive(str(staged)),
                 )
             except (OSError, RuntimeError):
                 return (
@@ -628,6 +642,7 @@ def revalidate_run_command_in_workspace(
                 describe=f"Command argument '{candidate}'",
                 scope=scope,
                 staged_root=staged,
+                case_insensitive=volume_is_case_insensitive(str(staged)),
             )
             if resolved_denial is not None:
                 return resolved_denial
@@ -640,6 +655,7 @@ def revalidate_run_command_in_workspace(
             describe="Working directory",
             scope=scope,
             workspace_root=staged,
+            case_insensitive=volume_is_case_insensitive(str(staged)),
         )
     except (OSError, RuntimeError):
         return (
@@ -654,6 +670,7 @@ def revalidate_run_command_in_workspace(
         describe="Working directory",
         scope=scope,
         staged_root=staged,
+        case_insensitive=volume_is_case_insensitive(str(staged)),
     )
 
 
@@ -781,6 +798,7 @@ def _evaluate_run_command(
     # R7: path-like arguments use the existing path rules. Only the
     # post-prefix arguments are checked; flag values after '=' are checked
     # as well so '--output=/abs/path' cannot smuggle an absolute path.
+    case_insensitive = volume_is_case_insensitive(str(workspace_root))
     for item in argv[matched_len:]:
         candidates = [item]
         if "=" in item:
@@ -791,6 +809,7 @@ def _evaluate_run_command(
                 describe=f"Command argument '{candidate}'",
                 scope=scope,
                 workspace_root=workspace_root,
+                case_insensitive=case_insensitive,
             )
             if denial is not None:
                 reason_code, explanation, matched_rule = denial
@@ -804,6 +823,7 @@ def _evaluate_run_command(
         describe="Working directory",
         scope=scope,
         workspace_root=workspace_root,
+        case_insensitive=case_insensitive,
     )
     if cwd_denial is not None:
         reason_code, explanation, matched_rule = cwd_denial

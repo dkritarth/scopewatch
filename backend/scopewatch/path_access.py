@@ -27,9 +27,16 @@ def normalize_relative_path(path_str: str) -> Path:
     return Path(*_normalize_segments(path_str))
 
 
-def is_descendant_or_equal(child: Path, parent: Path) -> bool:
-    """True when ``child`` is ``parent`` or below it."""
-    return _segments_within(child.parts, str(parent))
+def is_descendant_or_equal(
+    child: Path, parent: Path, *, case_insensitive: bool = False
+) -> bool:
+    """True when ``child`` is ``parent`` or below it.
+
+    With ``case_insensitive=True`` the comparison folds case (and NFC) first,
+    so a case-variant alias still counts as the same path (#305). Blocked
+    callers pass the volume verdict's folded value; allowed callers never do.
+    """
+    return _segments_within(child.parts, str(parent), case_insensitive=case_insensitive)
 
 
 def matching_path(path: Path, prefixes: Iterable[str]) -> str | None:
