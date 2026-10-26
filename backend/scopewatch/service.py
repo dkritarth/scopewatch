@@ -879,6 +879,31 @@ capture_token: Optional[str] = None,
                 action.reasoning_summary or ""
             ).strip()
 
+            # Scope requirements cannot be bypassed by an operator disabling
+            # the auditor or by omitting both evidence channels. Provenance is
+            # metadata: nonempty summaries remain summaries, never raw traces.
+            reasoning_required = action.operation in run.task_scope.require_reasoning_for
+            reasoning_requirement = None
+            if reasoning_required:
+                if not reasoning_audit_enabled:
+                    reasoning_requirement = "audit_disabled"
+                elif not trace_text:
+                    reasoning_requirement = "missing_text"
+            if decision.outcome == PolicyOutcome.ALLOW and reasoning_requirement:
+                decision = PolicyDecision(
+                    id=str(uuid.uuid4()), action_request_id=action.id,
+                    outcome=PolicyOutcome.HOLD,
+                    reason_code=ReasonCode.REASONING_UNAVAILABLE,
+                    explanation=(
+                        "This scope requires reasoning review for this operation; "
+                        + ("the auditor is disabled." if reasoning_requirement == "audit_disabled"
+                           else "no nonempty reasoning trace or summary was supplied.")
+                    ),
+                    matched_rule="RULE_REQUIRED_REASONING_UNAVAILABLE",
+                    decided_at=datetime.now(timezone.utc).isoformat(),
+                    deterministic=True, policy_version=evaluated_policy_version,
+                )
+
             # #116: reviewer-visible provenance diagnostics. The stored label
             # already says caller-asserted when it is; these fields say so
             # explicitly and preserve the raw claim for integration triage.
@@ -1196,6 +1221,9 @@ capture_token: Optional[str] = None,
                             "profile": audit_record.profile,
                         }
                     else:
+                        if reasoning_required:
+                            details_held["reasoning_required"] = True
+                            details_held["reasoning_requirement"] = reasoning_requirement
                         if not reasoning_audit_enabled:
                             details_held["reasoning_audit"] = "disabled"
                             details_held["reasoning_availability"] = "disabled"
