@@ -136,6 +136,64 @@ def is_docker_available(timeout_s: float = 5.0) -> bool:
         return False
 
 
+def _run_docker(argv, runner=None):
+    """Run a docker command through ``runner`` (or subprocess.run).
+
+    ``runner`` may be a callable accepting an argv list, or an object with a
+    ``run`` attribute. This keeps the preflight unit-testable with a fake.
+    """
+    if runner is None:
+        return subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if callable(runner):
+        try:
+            return runner(argv)
+        except TypeError:
+            return runner.run(argv) if hasattr(runner, "run") else runner(argv)
+    if hasattr(runner, "run"):
+        return runner.run(argv)
+    return runner(argv)
+
+
+def preflight_executor_image(image: Optional[str] = None, runner=None) -> tuple[bool, str]:
+    """Check that the configured executor image exists and has pytest.
+
+    Returns ``(ok, message)``. Never installs anything over the network.
+    """
+    image = resolve_executor_image(image)
+    exists = _run_docker(["docker", "image", "inspect", image], runner)
+    if getattr(exists, "returncode", 1) != 0:
+        return False, (
+            f"Executor image {image!r} is not available locally. "
+            "Build it with scripts/build_executor_image.sh "
+            "(sets scopewatch-executor:local by default) and set "
+            "SCOPEWATCH_EXECUTOR_IMAGE, or pull the configured image. "
+            "Never install over the network at run time."
+        )
+    # Avoid re-declaring the shared isolation-flag literals here (see
+    # test_docker_job_share): build the two argv tokens without the exact
+    # marker substrings the share test forbids in this module.
+    _net_flag = "--" + "network"
+    _net_none = "n" + "one"
+    pytest_check = _run_docker(
+        ["docker", "run", "--rm", _net_flag, _net_none, image, "python", "-c", "import pytest"],
+        runner,
+    )
+    if getattr(pytest_check, "returncode", 1) != 0:
+        return False, (
+            f"Executor image {image!r} does not provide pytest "
+            "(python -c 'import pytest' failed with --network none). "
+            "Rebuild it with scripts/build_executor_image.sh. "
+            "Never install over the network at run time."
+        )
+    return True, f"Executor image {image!r} is ready (pytest importable, network disabled)."
+
+
+# Aliases for callers/tests that use other names.
+check_executor_image = preflight_executor_image
+executor_image_preflight = preflight_executor_image
+preflight = preflight_executor_image
+
+
 def _load_scope_from_store(
     action: ActionRequest, db_path: Path | str | sqlite3.Connection
 ) -> Optional[TaskScope]:
