@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import unicodedata
 from typing import Iterable, Optional
 
 # Denial codes, as plain strings (the gateway maps them to ReasonCode; the
@@ -62,7 +63,12 @@ def _fold(segments: tuple[str, ...], case_insensitive: bool) -> tuple[str, ...]:
     """
     if not case_insensitive:
         return segments
-    return tuple(part.casefold() for part in segments)
+    # NFC before casefold: APFS (and some other default-macOS volumes) treat
+    # the composed and decomposed spellings of one name as the same file, so
+    # ``"e" + U+0301`` and ``"é"`` must fold together (#305).
+    return tuple(
+        unicodedata.normalize("NFC", part).casefold() for part in segments
+    )
 
 
 def volume_is_case_insensitive(root: str) -> Optional[bool]:
