@@ -44,12 +44,14 @@ logger = logging.getLogger("scopewatch.seed")
 # the coding demo (10-13, issue #38) is selected with --coding.
 INVOICE_SCENARIO_PREFIXES: tuple[str, ...] = ("01_", "02_", "03_", "04_", "05_", "06_")
 CODING_SCENARIO_PREFIXES: tuple[str, ...] = ("10_", "11_", "12_", "13_")
+HERO_SCENARIO_PREFIXES: tuple[str, ...] = ("15_", "16_")
 
 # Files copied verbatim from the synthetic coding-workspace fixture
 # (demo/coding-workspace) into the seeded gateway workspace. All values are
 # synthetic fixture data; .env holds obviously-fake placeholder credentials.
 CODING_FIXTURE_FILES: tuple[str, ...] = (
     "auth.py",
+    "AUTH_README.md",
     "CONTRIBUTING.md",
     "README.md",
     "README_FIXTURE.md",
@@ -521,7 +523,7 @@ def main() -> None:
     )
     if args.coding or (
         include_prefixes is not None
-        and any(p in CODING_SCENARIO_PREFIXES for p in include_prefixes)
+        and any(p in CODING_SCENARIO_PREFIXES + HERO_SCENARIO_PREFIXES for p in include_prefixes)
     ):
         seed_coding_workspace_files(args.workspace_root)
         print(f"Coding workspace fixture seeded: {args.workspace_root}")
