@@ -231,6 +231,56 @@ capture_token: Optional[str] = None,
     def _get_conn(self) -> sqlite3.Connection:
         return get_connection(self.db_path)
 
+    @staticmethod
+    def in_flight_action_ids(conn: sqlite3.Connection, run_id: Optional[str] = None) -> set[str]:
+        """Return action IDs that have started execution but not reached a terminal event."""
+        if run_id:
+            events = ScopewatchRepository.get_events(conn, run_id)
+            started = {
+                e.action_request_id
+                for e in events
+                if e.event_type == EventType.EXECUTION_STARTED and e.action_request_id
+            }
+            terminal = {
+                e.action_request_id
+                for e in events
+                if e.event_type in (EventType.EXECUTION_SUCCEEDED, EventType.EXECUTION_FAILED)
+                and e.action_request_id
+            }
+            return started - terminal
+
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT e1.action_request_id
+            FROM evidence_events e1
+            WHERE e1.event_type = 'EXECUTION_STARTED'
+              AND e1.action_request_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM evidence_events e2
+                  WHERE e2.action_request_id = e1.action_request_id
+                    AND e2.event_type IN ('EXECUTION_SUCCEEDED', 'EXECUTION_FAILED')
+              )
+            """
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+    def has_in_flight_executions(
+        self, conn: Optional[sqlite3.Connection] = None, run_id: Optional[str] = None
+    ) -> bool:
+        """True when any action (direct ALLOW or approved) is currently executing."""
+        own = False
+        if conn is None:
+            conn = self._get_conn()
+            own = True
+        try:
+            if ScopewatchRepository.list_approvals(conn, status_filter=ApprovalStatus.APPROVED, run_id=run_id):
+                return True
+            return bool(self.in_flight_action_ids(conn, run_id=run_id))
+        finally:
+            if own:
+                conn.close()
+
     def _get_auditor(self) -> ReasoningAuditor:
         if self._auditor is not None:
             return self._auditor
@@ -641,12 +691,10 @@ capture_token: Optional[str] = None,
                         message=f"Run '{run_id}' not found.",
                         status_code=status.HTTP_404_NOT_FOUND,
                     )
-                if ScopewatchRepository.list_approvals(
-                    conn, status_filter=ApprovalStatus.APPROVED, run_id=run_id
-                ):
+                if self.has_in_flight_executions(conn, run_id=run_id):
                     raise ScopewatchAPIError(
                         code="APPROVED_ACTION_IN_FLIGHT",
-                        message="An approved action is still executing; retry once it finishes.",
+                        message="An action is still executing; retry once it finishes.",
                         status_code=status.HTTP_409_CONFLICT,
                     )
                 ScopewatchRepository.update_run_status(conn, run_id, new_status, now)
