@@ -118,6 +118,7 @@ def _mocked_docker_run(monkeypatch, container_write) -> None:
             return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
         return real_run(cmd, **kwargs)
 
+    monkeypatch.setattr(docker_mod, "run_docker_process", fake_run)
     monkeypatch.setattr(docker_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(docker_mod, "is_docker_available", lambda *a, **k: True)
 
