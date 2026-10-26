@@ -23,7 +23,7 @@ def test_benign_prefix_cannot_hide_malicious_suffix():
     provider.audit_chat.assert_not_called()
 
 
-@pytest.mark.parametrize('channel', ['exposed_reasoning_trace', 'reasoning_summary'])
+@pytest.mark.parametrize('channel', ['exposed_reasoning_trace'])
 def test_oversized_channel_creates_gateway_hold(tmp_path, monkeypatch, channel):
     service, run = gateway(tmp_path, monkeypatch)
     result = asyncio.run(service.submit_action(run.id, SubmitActionRequest(

@@ -291,7 +291,12 @@ class SubmitActionRequest(BaseModel):
     def bound_argument_strings(cls, value: dict[str, Any]) -> dict[str, Any]:
         """Reject argument string values over MAX_ARGUMENT_STRING_CHARS (#304)."""
 
-        def check(node: Any) -> None:
+        # Iterative walk: a deeply nested payload must not be able to
+        # blow the Python recursion limit (and crash the process with no
+        # traceback) just by being deeply nested (#304).
+        stack: list[Any] = [value]
+        while stack:
+            node = stack.pop()
             if isinstance(node, str):
                 if len(node) > MAX_ARGUMENT_STRING_CHARS:
                     raise ValueError(
@@ -299,13 +304,9 @@ class SubmitActionRequest(BaseModel):
                         f"{MAX_ARGUMENT_STRING_CHARS} characters"
                     )
             elif isinstance(node, dict):
-                for child in node.values():
-                    check(child)
+                stack.extend(node.values())
             elif isinstance(node, list):
-                for child in node:
-                    check(child)
-
-        check(value)
+                stack.extend(node)
         return value
 
 
