@@ -326,6 +326,7 @@ class ResolveApprovalRequest(BaseModel):
     resolution_reason: Optional[str] = Field(
         None, max_length=MAX_RESOLUTION_REASON_CHARS
     )
+    reviewer_id: Optional[str] = None
 
 
 class ApprovalResolutionResponse(BaseModel):
@@ -344,3 +345,4 @@ class HealthResponse(BaseModel):
     # the dashboard uses it to offer the reviewer-token control only where a
     # token is actually required (#115). Never carries the token itself.
     demo_mode: bool = False
+    reviewer_auth: bool = False

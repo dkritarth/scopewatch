@@ -700,8 +700,10 @@ def test_failed_write_does_not_claim_success_or_bytes(
     )
     assert "result" not in resp
     assert resp["error"]["code"] == -32000
-    assert resp["error"]["data"]["error_code"] == "OVERSIZED_PAYLOAD"
-    assert resp["error"]["data"]["action_id"]
+    # Issue #304: oversized argument strings are now rejected by the Pydantic
+    # schema bound (422) before an action or execution record is created, so
+    # the gateway no longer reaches the executor's OVERSIZED_PAYLOAD path.
+    assert resp["error"].get("status_code") == 422 or "422" in str(resp["error"].get("message", ""))
 
     # Nothing was written, and the agent was not told it was.
     assert not (workspace / "outputs" / "too_big.txt").exists()

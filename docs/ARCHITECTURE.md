@@ -58,6 +58,17 @@ The gateway enforces, for actions routed through its API:
 - **Action-aware turn audit caching**: Turn-level reasoning audit caching is bound not only to `(run_id, turn_id, trace_hash)`, but also to the target action identity (`tool`, `operation`, `resource`, `arguments`). Actions within the same model turn targeting different resources trigger distinct auditor reviews instead of reusing earlier verdicts (issue #111).
 - **One Docker job builder**: The image pin, container hardening flags, in-container helper source, staged-workspace copy, and symlink-tolerant copy-back walk live in `backend/scopewatch/docker_job.py` and are imported by both the Docker backend and the `executor-runner` sidecar (`deploy/executor-runner/runner.py`), which previously re-declared them (issue #106). Staging leaves the run's `blocked_paths` out of the container's copy (by name and by resolved symlink target, verified after the copy, failing closed) and copy-back refuses blocked or out-of-workspace destinations, so code run by an allowlisted `run_command` cannot read or overwrite a blocked file (issue #183; what it can still reach is listed in `docs/operations/docker-executor.md`). `prepare_docker_job` returns a frozen `DockerJob` carrying its arguments and their JSON serialization together, following the `prepare_dispatch` model from #104, so the dispatched form and the serialized form cannot disagree. The shared module is stdlib-only by contract, because the sidecar is; `backend/tests/test_docker_job_share.py` asserts byte-identical argv across operations and argument shapes, that the module imports nothing outside the standard library, and that neither caller re-declares the flag list.
 
+### Ingress bounds (issue #304)
+
+Public request bodies are bounded before any handler or auth layer runs. A pure
+ASGI `BodySizeLimitMiddleware` (outermost, in `backend/scopewatch/ingress.py`)
+counts streamed `http.request` bytes and rejects oversized requests with a
+sanitized `413 {"error":"request body too large"}` that never echoes input;
+`GET`/`HEAD` and the SSE stream route are exempt. The default limit is 256 KiB
+and is configurable via `SCOPEWATCH_MAX_BODY_BYTES`. Pydantic bounds
+(`max_length`) on reasoning traces, summaries, and action-argument strings
+return a sanitized `422` without echoing the offending value.
+
 Key endpoints:
 - `POST /api/v1/runs`: Initialize an isolated run with an explicit task scope.
 - `GET /api/v1/runs`: List active and historical runs.
@@ -68,6 +79,12 @@ Key endpoints:
 - `GET /api/v1/approvals`: List pending, approved, or denied human review requests.
 - `POST /api/v1/approvals/{approval_id}/approve`: Single-use endpoint to authorize an action on hold.
 - `POST /api/v1/approvals/{approval_id}/deny`: Reject an action on hold.
+- `POST /api/v1/approvals/{approval_id}/expire`: End the agent's review wait. Atomically expires only a pending approval with a system-authored event, or returns the existing review state unchanged. The agent waits for a receipt when approval already won this race. The endpoint uses the same mutation authentication as approve and deny.
+
+Agent completion retries check the run's monotonic wall-clock deadline before
+each attempt. If approved execution defers completion beyond that deadline, the
+agent switches to failure and waits for the receipt before persisting FAILED.
+An execution that never settles can still leave this terminal wait pending.
 
 Run endpoints serialize `RunResponse`, not the `Run` storage model. The storage
 model carries the host-side per-run workspace path, which the service needs but
@@ -89,9 +106,11 @@ The policy engine (`backend/scopewatch/policy.py`) evaluates candidate actions a
 8. Checks if operation requires human approval (`HOLD`).
 9. Permits execution if all rules pass (`ALLOW`).
 
+For `run_command` the engine additionally enforces, before any path check: a shell-metacharacter screen on the raw submission, an argv prefix match against the scope's `allowed_commands`, and a default-deny flag allowlist (`RUN_COMMAND_ALLOWED_FLAGS` in `backend/scopewatch/models.py`): a post-prefix option that is not declared for the matched command prefix denies with `COMMAND_NOT_ALLOWED` (`RULE_RUN_COMMAND_FLAG_NOT_ALLOWED`), so behavioural flags with no path signal (`--maxfail`, `-x`, `-q`, `--tb`, `-p`, `-k`, `--deselect`, …) cannot ride through to execution. Allowed options (pytest's path-bearing `--rootdir`/`--junitxml`/`--confcutdir`/`--basetemp`/`-o`, bare python's `-c`/`-m`) still have their values checked by the path rules, and Docker dispatch revalidates prefix, flags, and paths against the staged workspace copy.
+
 Deterministic policy `DENY` is final. It bypasses the reasoning auditor and cannot be overridden by human approval.
 
-Every decision records the policy identity that produced it, as `policy_version` on the `policy_decisions` row and in the `details` of its `POLICY_*` event (issue #119, [ADR-0003](adr/0003-policy-identity-in-evidence.md)). The value is `"<revision label>+<rule-set fingerprint>"` — for example `2026-10-03.1+3f2a1b9c8d0e` — and is independent of the `schema_version` ("1") that describes the stored data shape. `evaluate_policy` stamps it at the single public entry point of the engine, while `PolicyDecision.policy_version` defaults to `None` so a read of a pre-version row stays visibly `unknown (legacy)` rather than being assigned the revision running today. Nothing backfills old rows, and no environment variable can override the identity. `ApprovalRequest.policy_version` is derived from the bound decision on read rather than stored twice, so the two cannot disagree. When an approval is resolved after the policy has moved on, it is honoured on the decision the reviewer saw and the drift is recorded explicitly on the event as `policy_version_current` / `policy_version_changed`.
+Every decision records the policy identity that produced it, as `policy_version` on the `policy_decisions` row and in the `details` of its `POLICY_*` event (issue #119, [ADR-0003](adr/0003-policy-identity-in-evidence.md)). The value is `"<revision label>+<rule-set fingerprint>"` — for example `2026-10-17.1+0c74fc627e49` — and is independent of the `schema_version` ("1") that describes the stored data shape. `evaluate_policy` stamps it at the single public entry point of the engine, while `PolicyDecision.policy_version` defaults to `None` so a read of a pre-version row stays visibly `unknown (legacy)` rather than being assigned the revision running today. Nothing backfills old rows, and no environment variable can override the identity. `ApprovalRequest.policy_version` is derived from the bound decision on read rather than stored twice, so the two cannot disagree. When an approval is resolved after the policy has moved on, it is honoured on the decision the reviewer saw and the drift is recorded explicitly on the event as `policy_version_current` / `policy_version_changed`.
 
 ### 3. Escalate-only reasoning auditor
 
@@ -107,7 +126,7 @@ The reasoning auditor (`backend/scopewatch/reasoning_audit.py`) audits agent rea
 
 Model routing is centralized in `backend/scopewatch/providers/` configured via `backend/config/providers.toml`:
 - `mock`: Deterministic offline execution for fast CI and tests.
-- `openrouter-dev`: Developer profile configured for `nvidia/nemotron-3.5-lightning`; live inference remains blocked by provider authentication.
+- `openrouter-dev`: Developer profile configured for `nvidia/nemotron-3.5-lightning`; live inference verified 2026-10-03 (20 calls, 0 non-200; 87.5% accuracy on the auditor eval, `docs/evaluation.md`).
 - `nebius-demo`: Production demo profile targeting Nebius Token Factory.
 - Normalized extraction distinguishes `PROVIDER_EXPOSED_TRACE` from `AGENT_AUTHORED_SUMMARY` or `UNAVAILABLE`.
 
