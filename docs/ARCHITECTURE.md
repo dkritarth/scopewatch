@@ -207,3 +207,22 @@ All tool actions go through the gateway API; actions that bypass the API are not
 | **10. Authorization is not execution** | ACP adapter requires an `EXECUTED` receipt before returning a success result; `FAILED`, `NOT_EXECUTED`, and missing receipts become sanitized tool errors carrying the real action ID. | `test_issue_122_123_acp_preflight_and_receipts.py::test_*receipt*`, `::test_allowed_but_failed_read_surfaces_as_tool_error` |
 | **11. Preflight agrees with the decision** | ACP permission preflight evaluates the same request and the same deterministic engine as submission, via the side-effect-free `actions/preview` seam; an `ALLOW` is labelled provisional. | `test_issue_122_123_acp_preflight_and_receipts.py::test_preflight_*` |
 | **12. Bounded, visible relay** | The ACP adapter, not the executor, decides how much receipt data reaches the agent: command streams and receipt error details are clipped with a visible marker (never silently), file content over `MAX_RELAYED_FILE_CHARS` is refused rather than clipped, listings are capped by count and name length, and integer receipt fields relay as integer or unknown. | `test_acp_adapter.py::test_terminal_run_*`, `::test_read_text_*`, `::test_failed_*_truncation_is_marked`, `::test_write_text_non_integer_byte_count_is_reported_as_unknown` |
+
+### Required reasoning for high-impact actions
+
+A task scope may opt into `"require_reasoning_for": ["write_text", "run_command", "delete_path"]`
+(use any subset; the default empty list preserves existing scopes). After deterministic
+policy evaluation, an otherwise allowed listed operation becomes `HOLD` with
+`REASONING_UNAVAILABLE` if both reasoning channels are empty/whitespace or if the
+operator disabled auditing with `SCOPEWATCH_REASONING_AUDIT=off`. A pending exact,
+single-use approval is created; no executor starts before reviewer approval.
+Deterministic `DENY` remains final, and an existing policy `HOLD` stays a hold.
+`POLICY_HELD` evidence distinguishes `missing_text` from `audit_disabled`.
+
+Either a nonempty trace or a nonempty summary can be reviewed. This requirement
+checks availability of reviewable evidence, not whether the text is faithful or
+benign, and never promotes caller text to verified provider provenance. Caller
+assertions, summaries and synthetic fixtures retain their labels. An attempted
+provider audit that fails still holds with `REASONING_AUDIT_FAILED`; there is no
+fallback from a required failed review to execution. Reads and operations omitted
+from this option keep the baseline semantics.

@@ -249,3 +249,48 @@ def test_inactive_run_rejected(sample_workspace: Path, active_run: Run) -> None:
     decision = evaluate_policy(action, active_run, sample_workspace)
     assert decision.outcome == PolicyOutcome.DENY
     assert decision.reason_code == ReasonCode.OPERATION_NOT_ALLOWED
+
+
+@pytest.mark.parametrize("destinations", [[], ["https://allowed.example"], ["https://other.example"]])
+@pytest.mark.parametrize("operation,resource", [
+    ("read_text", "invoices/approved/vendor-a.txt"),
+    ("write_text", "outputs/new.txt"),
+])
+def test_network_destination_metadata_does_not_disable_workspace_actions(
+    sample_workspace: Path, active_run: Run, destinations: list[str], operation: str, resource: str,
+) -> None:
+    active_run.task_scope.allowed_network_destinations = destinations
+    action = ActionRequest(
+        id=str(uuid.uuid4()), run_id=active_run.id, tool="workspace",
+        operation=operation, resource=resource,
+        arguments={"content": "synthetic output"} if operation == "write_text" else {},
+        requested_at=datetime.now(timezone.utc).isoformat(),
+    )
+    decision = evaluate_policy(action, active_run, sample_workspace)
+    assert decision.outcome == PolicyOutcome.ALLOW
+    from scopewatch.executor import execute_action
+    from scopewatch.models import ExecutionStatus
+    receipt = execute_action(action, sample_workspace, policy_decision=decision, task_scope=active_run.task_scope)
+    assert receipt.status == ExecutionStatus.EXECUTED
+
+
+@pytest.mark.parametrize("destinations", [[], ["https://allowed.example"], ["https://other.example"]])
+def test_network_request_stays_denied_with_destination_metadata(
+    sample_workspace: Path, active_run: Run, destinations: list[str],
+) -> None:
+    active_run.task_scope.allowed_network_destinations = destinations
+    action = ActionRequest(
+        id=str(uuid.uuid4()), run_id=active_run.id, tool="workspace",
+        operation="network_request", resource="https://allowed.example",
+        requested_at=datetime.now(timezone.utc).isoformat(),
+    )
+    decision = evaluate_policy(action, active_run, sample_workspace)
+    assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.NETWORK_DISABLED
+    from scopewatch.executor import ExecutionSecurityError, execute_action
+    from scopewatch.models import ExecutionStatus
+    receipt = execute_action(action, sample_workspace, policy_decision=decision, task_scope=active_run.task_scope)
+    assert receipt.status == ExecutionStatus.NOT_EXECUTED
+    forged_allow = decision.model_copy(update={"outcome": PolicyOutcome.ALLOW})
+    with pytest.raises(ExecutionSecurityError, match="Network requests are forbidden"):
+        execute_action(action, sample_workspace, policy_decision=forged_allow, task_scope=active_run.task_scope)
