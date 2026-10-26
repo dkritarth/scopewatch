@@ -4,42 +4,81 @@ On a case-insensitive volume (macOS default, Windows), ``outputs/PRIVATE/x``
 and ``outputs/private/x`` name the same file, so an upper-case alias of a
 blocked path must be refused. On a case-sensitive volume (typical Linux) the
 two are genuinely distinct and the upper-case spelling must keep its normal,
-non-blocked meaning. The matcher takes the real volume behaviour as a flag;
-these tests exercise both settings directly so they run identically on any CI
-host, plus a live probe test guarded by the host's actual volume.
+non-blocked meaning.
 
-All fixtures are synthetic.
+The volume probe answers three states, and the matcher uses them differently:
+``True`` folds case for both the blocked and the allowed comparison,
+``False`` folds neither, and ``None`` (probe failed) folds the blocked
+comparison only. That asymmetry is the point of the design: an undetectable
+volume may tighten the scope, never widen it (``allowed=["outputs"]`` must not
+accept ``OUTPUTS/x`` when we cannot prove the volume folds case).
+
+Coverage: the matcher units, the probe's cache, and integration tests showing
+that policy, the executor's pre-I/O check, and the runner sidecar all pass the
+same verdict and reach the same answer. The probe is monkeypatched in the
+integration tests, so they behave identically on every host and never touch a
+network or a real model provider. All fixtures are synthetic.
 """
 from __future__ import annotations
 
-import os
+from datetime import datetime, timezone
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
 import tempfile
+import time
+import uuid
 
 import pytest
 
+import scopewatch.scope_paths as scope_paths
+from scopewatch.executor import ExecutionSecurityError, _verify_scoped_target
+from scopewatch.models import PolicyOutcome, ReasonCode
+from scopewatch.policy import evaluate_policy
+from scopewatch.schemas import ActionRequest, Run, TaskScope
 from scopewatch.scope_paths import (
     BLOCKED_PATH,
     PATH_NOT_ALLOWED,
+    clear_case_probe_cache,
     normalize_relative_segments as N,
     scoped_path_denial,
     segments_within,
     volume_is_case_insensitive,
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RUNNER_PATH = REPO_ROOT / "deploy" / "executor-runner" / "runner.py"
+
 ALLOWED = ("outputs",)
 BLOCKED = ("outputs/private",)
 
 
-def _denial(alias: str, resolved: str, *, case_insensitive: bool):
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@pytest.fixture(autouse=True)
+def _empty_probe_cache() -> None:
+    """No cached volume verdict may leak between tests."""
+    clear_case_probe_cache()
+    yield
+    clear_case_probe_cache()
+
+
+def _denial(alias: str, resolved: str, *, case_insensitive: bool | None):
     return scoped_path_denial(
         N(alias), N(resolved), ALLOWED, BLOCKED, case_insensitive=case_insensitive
     )
 
 
-# --- the bypass itself -------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The matcher: the bypass itself
+# ---------------------------------------------------------------------------
 
-def test_lowercase_blocked_is_denied_either_way():
-    for ci in (False, True):
+
+def test_lowercase_blocked_is_denied_in_every_volume_state():
+    for ci in (False, True, None):
         code, prefix = _denial(
             "outputs/private/synthetic.txt",
             "outputs/private/synthetic.txt",
@@ -71,7 +110,45 @@ def test_case_variant_alias_is_distinct_on_sensitive_volume(alias):
     assert _denial(alias, alias, case_insensitive=False) is None
 
 
-# --- the acceptance criteria's edge cases -----------------------------------
+# ---------------------------------------------------------------------------
+# The matcher: the three states must not widen the allowed set
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_volume_folds_blocks_but_not_allows():
+    """A failed probe tightens blocked matching and leaves allowlists exact."""
+    # Blocked side folds on unknown, so the alias is refused.
+    assert _denial(
+        "outputs/PRIVATE/x.txt", "outputs/PRIVATE/x.txt", case_insensitive=None
+    ) == (BLOCKED_PATH, "outputs/private")
+    # Allowed side does not fold on unknown: OUTPUTS is not the allowed dir.
+    assert _denial(
+        "OUTPUTS/x.txt", "OUTPUTS/x.txt", case_insensitive=None
+    ) == (PATH_NOT_ALLOWED, None)
+
+
+def test_unknown_volume_default_is_the_safe_one():
+    """Omitting the verdict is the same as not knowing it."""
+    assert scoped_path_denial(
+        N("outputs/PRIVATE/x.txt"), N("outputs/PRIVATE/x.txt"), ALLOWED, BLOCKED
+    ) == (BLOCKED_PATH, "outputs/private")
+    assert scoped_path_denial(
+        N("OUTPUTS/x.txt"), N("OUTPUTS/x.txt"), ALLOWED, BLOCKED
+    ) == (PATH_NOT_ALLOWED, None)
+
+
+def test_confirmed_insensitive_volume_does_not_widen_the_sensitive_case():
+    """Only a confirmed True folds the allowlist (the intended macOS behaviour)."""
+    assert _denial("OUTPUTS/x.txt", "OUTPUTS/x.txt", case_insensitive=True) is None
+    assert _denial(
+        "OUTPUTS/x.txt", "OUTPUTS/x.txt", case_insensitive=False
+    ) == (PATH_NOT_ALLOWED, None)
+
+
+# ---------------------------------------------------------------------------
+# The matcher: the acceptance criteria's edge cases
+# ---------------------------------------------------------------------------
+
 
 def test_allowed_case_variant_not_falsely_rejected_on_insensitive_volume():
     # A case-variant of an *allowed* path must stay allowed, not become
@@ -103,20 +180,368 @@ def test_segments_within_folds_only_when_asked():
     assert segments_within(up, "outputs/private", case_insensitive=True) is True
 
 
-# --- the live volume probe ---------------------------------------------------
+# ---------------------------------------------------------------------------
+# The live volume probe and its cache
+# ---------------------------------------------------------------------------
+
 
 def test_volume_probe_matches_this_host():
     # Empirical, not a platform guess. Create two spellings of one name and
     # see whether the volume treats them as the same file; the probe must
     # agree with that observation on whatever volume the tests run on.
     with tempfile.TemporaryDirectory() as d:
-        marker = os.path.join(d, "ProbeCaseCheck")
-        with open(marker, "w") as fh:
-            fh.write("synthetic")
-        observed_ci = os.path.exists(os.path.join(d, "probecasecheck"))
+        marker = Path(d) / "ProbeCaseCheck"
+        marker.write_text("synthetic", encoding="utf-8")
+        observed_ci = (Path(d) / "probecasecheck").exists()
         assert volume_is_case_insensitive(d) == observed_ci
 
 
-def test_probe_fails_closed_on_unusable_dir():
-    # An undetectable volume (bad path) is treated as the bypass-prone case.
-    assert volume_is_case_insensitive("/nonexistent-scopewatch-probe-dir-xyz") is True
+def test_probe_returns_unknown_for_an_unusable_dir():
+    # An undetectable volume is "unknown", never a guess in either direction.
+    assert volume_is_case_insensitive("/nonexistent-scopewatch-probe-dir-xyz") is None
+
+
+def test_probe_leaves_no_file_behind():
+    with tempfile.TemporaryDirectory() as d:
+        volume_is_case_insensitive(d)
+        assert [p.name for p in Path(d).iterdir()] == []
+
+
+def test_confirmed_probe_result_is_cached_per_root(monkeypatch: pytest.MonkeyPatch):
+    calls: list[str] = []
+    real_probe = scope_paths._probe_case_insensitivity
+
+    def counting_probe(root: str):
+        calls.append(root)
+        return real_probe(root)
+
+    monkeypatch.setattr(scope_paths, "_probe_case_insensitivity", counting_probe)
+    with tempfile.TemporaryDirectory() as d:
+        first = volume_is_case_insensitive(d)
+        second = volume_is_case_insensitive(d)
+        third = volume_is_case_insensitive(d + "/.")
+    assert first is not None
+    assert second == first == third
+    # One probe for the same root, even when spelled slightly differently.
+    assert len(calls) == 1
+
+
+def test_unknown_probe_result_is_not_cached(monkeypatch: pytest.MonkeyPatch):
+    calls: list[str] = []
+    answers: list[bool | None] = [None, None, False]
+
+    def fake_probe(root: str):
+        calls.append(root)
+        return answers.pop(0)
+
+    monkeypatch.setattr(scope_paths, "_probe_case_insensitivity", fake_probe)
+    with tempfile.TemporaryDirectory() as d:
+        assert volume_is_case_insensitive(d) is None
+        assert volume_is_case_insensitive(d) is None
+        # A volume that becomes usable later is re-probed and then cached.
+        assert volume_is_case_insensitive(d) is False
+        assert volume_is_case_insensitive(d) is False
+    assert len(calls) == 3
+
+
+# ---------------------------------------------------------------------------
+# Integration: policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def case_workspace(tmp_path: Path) -> Path:
+    ws = tmp_path / "workspace"
+    (ws / "outputs").mkdir(parents=True)
+    (ws / "outputs" / "old.txt").write_text("synthetic output", encoding="utf-8")
+    return ws
+
+
+@pytest.fixture
+def case_run() -> Run:
+    scope = TaskScope(
+        schema_version="1",
+        task_description="Write only inside outputs.",
+        allowed_paths=["outputs"],
+        blocked_paths=["outputs/private"],
+        allowed_tools=["workspace"],
+        allowed_operations=["write_text", "read_text"],
+        allowed_network_destinations=[],
+        requires_approval=[],
+        created_at=_now(),
+    )
+    return Run(
+        id="run-305",
+        name="Case variant run",
+        task_scope=scope,
+        created_at=_now(),
+        updated_at=_now(),
+        synthetic=True,
+        interception_coverage="Synthetic test gateway",
+        reasoning_availability="Unavailable",
+    )
+
+
+def _write_action(run: Run, resource: str) -> ActionRequest:
+    return ActionRequest(
+        id=str(uuid.uuid4()),
+        run_id=run.id,
+        tool="workspace",
+        operation="write_text",
+        resource=resource,
+        arguments={"content": "synthetic"},
+        requested_at=_now(),
+    )
+
+
+def _patch_policy_probe(monkeypatch: pytest.MonkeyPatch, verdict: bool | None) -> list[str]:
+    seen: list[str] = []
+
+    def probe(root: str):
+        seen.append(root)
+        return verdict
+
+    monkeypatch.setattr("scopewatch.policy.volume_is_case_insensitive", probe)
+    return seen
+
+
+def test_policy_denies_case_variant_alias_when_volume_folds_case(
+    monkeypatch: pytest.MonkeyPatch, case_workspace: Path, case_run: Run
+) -> None:
+    seen = _patch_policy_probe(monkeypatch, True)
+    decision = evaluate_policy(
+        _write_action(case_run, "outputs/PRIVATE/x.txt"), case_run, case_workspace
+    )
+    assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.BLOCKED_PATH
+    assert decision.matched_rule == "RULE_BLOCKED_PATH_MATCHED"
+    assert "outputs/private" in decision.explanation
+    # Policy asked the probe about the workspace it matched against.
+    assert seen and seen[0].endswith("workspace")
+    assert not (case_workspace / "outputs" / "PRIVATE").exists()
+
+
+def test_policy_helper_asserts_allow_side_still_works_when_volume_folds_case(
+    monkeypatch: pytest.MonkeyPatch, case_workspace: Path, case_run: Run
+) -> None:
+    _patch_policy_probe(monkeypatch, True)
+    decision = evaluate_policy(
+        _write_action(case_run, "OUTPUTS/x.txt"), case_run, case_workspace
+    )
+    assert decision.outcome == PolicyOutcome.ALLOW, decision
+    assert decision.reason_code == ReasonCode.ALLOWED_TOOL_AND_RESOURCE
+
+
+def test_policy_allows_the_same_path_when_volume_is_confirmed_sensitive(
+    monkeypatch: pytest.MonkeyPatch, case_workspace: Path, case_run: Run
+) -> None:
+    _patch_policy_probe(monkeypatch, False)
+    decision = evaluate_policy(
+        _write_action(case_run, "outputs/PRIVATE/x.txt"), case_run, case_workspace
+    )
+    assert decision.outcome == PolicyOutcome.ALLOW, decision
+    assert decision.reason_code == ReasonCode.ALLOWED_TOOL_AND_RESOURCE
+
+
+def test_policy_unknown_volume_blocks_alias_and_refuses_to_widen_scope(
+    monkeypatch: pytest.MonkeyPatch, case_workspace: Path, case_run: Run
+) -> None:
+    _patch_policy_probe(monkeypatch, None)
+
+    blocked = evaluate_policy(
+        _write_action(case_run, "outputs/PRIVATE/x.txt"), case_run, case_workspace
+    )
+    assert blocked.outcome == PolicyOutcome.DENY
+    assert blocked.reason_code == ReasonCode.BLOCKED_PATH
+
+    # The security bug this test exists for: with an unknown volume, an
+    # upper-case spelling of an allowed directory is a *different* directory
+    # on a case-sensitive disk and must not inherit the allowlist entry.
+    widened = evaluate_policy(
+        _write_action(case_run, "OUTPUTS/x.txt"), case_run, case_workspace
+    )
+    assert widened.outcome == PolicyOutcome.DENY
+    assert widened.reason_code == ReasonCode.PATH_NOT_ALLOWED
+
+
+# ---------------------------------------------------------------------------
+# Integration: executor pre-I/O check
+# ---------------------------------------------------------------------------
+
+
+def test_executor_scope_check_denies_case_variant_alias(
+    monkeypatch: pytest.MonkeyPatch, case_workspace: Path, case_run: Run
+) -> None:
+    monkeypatch.setattr("scopewatch.executor.volume_is_case_insensitive", lambda root: True)
+    with pytest.raises(ExecutionSecurityError) as excinfo:
+        _verify_scoped_target(case_workspace, "outputs/PRIVATE/x.txt", case_run.task_scope)
+    assert excinfo.value.code == "SCOPE_VIOLATION"
+    assert not (case_workspace / "outputs" / "PRIVATE").exists()
+
+
+def test_executor_scope_check_allows_same_path_on_sensitive_volume(
+    monkeypatch: pytest.MonkeyPatch, case_workspace: Path, case_run: Run
+) -> None:
+    monkeypatch.setattr("scopewatch.executor.volume_is_case_insensitive", lambda root: False)
+    target = _verify_scoped_target(
+        case_workspace, "outputs/PRIVATE/x.txt", case_run.task_scope
+    )
+    assert target == (case_workspace / "outputs" / "PRIVATE" / "x.txt").resolve()
+
+
+def test_executor_scope_check_unknown_volume_matches_policy(
+    monkeypatch: pytest.MonkeyPatch, case_workspace: Path, case_run: Run
+) -> None:
+    monkeypatch.setattr("scopewatch.executor.volume_is_case_insensitive", lambda root: None)
+    with pytest.raises(ExecutionSecurityError) as blocked:
+        _verify_scoped_target(case_workspace, "outputs/PRIVATE/x.txt", case_run.task_scope)
+    assert blocked.value.code == "SCOPE_VIOLATION"
+    with pytest.raises(ExecutionSecurityError) as widened:
+        _verify_scoped_target(case_workspace, "OUTPUTS/x.txt", case_run.task_scope)
+    assert widened.value.code == "SCOPE_VIOLATION"
+
+
+# ---------------------------------------------------------------------------
+# Integration: runner sidecar dispatch
+# ---------------------------------------------------------------------------
+
+
+def _load_runner():
+    spec = importlib.util.spec_from_file_location("executor_runner_305", RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _runner_config(runner_mod, tmp_path: Path, run_workspace: str):
+    config = runner_mod.RunnerConfig()
+    config.token = "synthetic"
+    config.signing_key = "synthetic-independent-signing-key"
+    config.workspace = tmp_path / "volume"
+    ws = config.workspace / run_workspace
+    (ws / "outputs").mkdir(parents=True)
+    (ws / "outputs" / "old.txt").write_text("synthetic output", encoding="utf-8")
+    return config
+
+
+def _runner_body(
+    runner_mod, run_workspace: str, task_scope: dict, key: str, resource: str
+) -> dict:
+    from scopewatch.executor_remote import sign_dispatch_payload
+
+    action = {
+        "id": "action-305",
+        "run_id": "run-305",
+        "operation": "write_text",
+        "resource": resource,
+        "arguments": {"content": "synthetic"},
+    }
+    decision = {
+        "id": "d-305",
+        "action_request_id": "action-305",
+        "outcome": "ALLOW",
+    }
+    body = {
+        "issued_at": time.time(),
+        "dispatch_token": f"token-{uuid.uuid4().hex}",
+        "run_workspace": run_workspace,
+        "action_digest": runner_mod.canonical_action_digest(
+            action, decision, run_workspace, task_scope
+        ),
+        "action": action,
+        "policy_decision": decision,
+        "approval": None,
+        "task_scope": task_scope,
+    }
+    body["dispatch_signature"] = sign_dispatch_payload(body, key)
+    return body
+
+
+def _patch_runner_for_dispatch(runner_mod, monkeypatch: pytest.MonkeyPatch, verdict) -> list[str]:
+    """Fake the volume probe and a successful container, never a real one."""
+    seen: list[str] = []
+
+    def probe(root: str):
+        seen.append(root)
+        return verdict
+
+    def fake_run(cmd, **kwargs):
+        payload = {
+            "status": "EXECUTED",
+            "result": {"operation": "write_text", "bytes_written": 9},
+            "error_code": None,
+        }
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps(payload).encode(), stderr=b""
+        )
+
+    monkeypatch.setattr(runner_mod, "volume_is_case_insensitive", probe)
+    monkeypatch.setattr(runner_mod, "run_docker_process", fake_run)
+    monkeypatch.setattr(runner_mod, "best_effort_remove", lambda *a, **k: None)
+    return seen
+
+
+def _runner_scope() -> dict:
+    return {
+        "allowed_paths": ["outputs"],
+        "blocked_paths": ["outputs/private"],
+        "allowed_commands": [],
+    }
+
+
+def test_runner_refuses_case_variant_alias_when_volume_folds_case(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runner_mod = _load_runner()
+    run_workspace = "run-305-ws"
+    config = _runner_config(runner_mod, tmp_path, run_workspace)
+    seen = _patch_runner_for_dispatch(runner_mod, monkeypatch, True)
+    body = _runner_body(
+        runner_mod, run_workspace, _runner_scope(), config.signing_key,
+        "outputs/PRIVATE/x.txt",
+    )
+
+    status, payload = runner_mod.handle_execute(body, config, runner_mod.DispatchTokenStore())
+
+    assert status == 403, payload
+    assert payload == {"error": "resource violates task scope"}
+    assert seen, "runner must probe the staged workspace volume"
+    assert not (config.workspace / run_workspace / "outputs" / "PRIVATE").exists()
+
+
+def test_runner_allows_the_same_path_when_volume_is_confirmed_sensitive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runner_mod = _load_runner()
+    run_workspace = "run-305-ws"
+    config = _runner_config(runner_mod, tmp_path, run_workspace)
+    _patch_runner_for_dispatch(runner_mod, monkeypatch, False)
+    body = _runner_body(
+        runner_mod, run_workspace, _runner_scope(), config.signing_key,
+        "outputs/PRIVATE/x.txt",
+    )
+
+    status, payload = runner_mod.handle_execute(body, config, runner_mod.DispatchTokenStore())
+
+    assert status == 200, payload
+    assert payload["status"] == "EXECUTED", payload
+
+
+def test_runner_unknown_volume_matches_policy_on_both_sides(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runner_mod = _load_runner()
+    run_workspace = "run-305-ws"
+    config = _runner_config(runner_mod, tmp_path, run_workspace)
+    _patch_runner_for_dispatch(runner_mod, monkeypatch, None)
+
+    for resource in ("outputs/PRIVATE/x.txt", "OUTPUTS/x.txt"):
+        body = _runner_body(
+            runner_mod, run_workspace, _runner_scope(), config.signing_key, resource
+        )
+        status, payload = runner_mod.handle_execute(
+            body, config, runner_mod.DispatchTokenStore()
+        )
+        assert status == 403, (resource, status, payload)
+        assert payload == {"error": "resource violates task scope"}
