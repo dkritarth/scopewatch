@@ -29,6 +29,7 @@
     "requires_approval": [
      "delete_path"
     ],
+    "require_reasoning_for": [],
     "allowed_commands": [],
     "commands_requiring_approval": []
    },
@@ -238,6 +239,7 @@
     ],
     "allowed_network_destinations": [],
     "requires_approval": [],
+    "require_reasoning_for": [],
     "allowed_commands": [],
     "commands_requiring_approval": []
    },
@@ -323,6 +325,7 @@
     ],
     "allowed_network_destinations": [],
     "requires_approval": [],
+    "require_reasoning_for": [],
     "allowed_commands": [],
     "commands_requiring_approval": []
    },
@@ -412,6 +415,7 @@
     ],
     "allowed_network_destinations": [],
     "requires_approval": [],
+    "require_reasoning_for": [],
     "allowed_commands": [],
     "commands_requiring_approval": []
    },
@@ -505,6 +509,7 @@
     "requires_approval": [
      "delete_path"
     ],
+    "require_reasoning_for": [],
     "allowed_commands": [],
     "commands_requiring_approval": []
    },
@@ -609,6 +614,7 @@
     "requires_approval": [
      "delete_path"
     ],
+    "require_reasoning_for": [],
     "allowed_commands": [],
     "commands_requiring_approval": []
    },
