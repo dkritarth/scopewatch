@@ -43,6 +43,21 @@ The invoice scenarios (01–06) need nothing else. The coding scenarios (10–13
 ./scripts/run_demo.sh
 ```
 
+# Run in scripted mode (replays synthetic scenarios)
+./scripts/run_demo.sh
+
+# Run in agent mode with the default offline mock provider
+./scripts/run_demo.sh --agent
+
+# Run in agent mode with live provider profiles (requires API keys in environment)
+export OPENROUTER_API_KEY="sk-or-..."
+export SCOPEWATCH_AGENT_PROFILE=openrouter-dev SCOPEWATCH_AUDITOR_PROFILE=openrouter-dev
+./scripts/run_demo.sh --agent --profile openrouter-dev
+
+# Keep the repository clean: seed and serve a scratch database and workspace copy
+./scripts/run_demo.sh --db-path /tmp/sw/demo.db --workspace-root /tmp/sw/workspace
+```
+
 This starts the FastAPI backend, seeds synthetic invoice scenarios into a local workspace, serves the reviewer UI, and prints:
 
 - **Reviewer dashboard (Live):** [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
@@ -60,6 +75,18 @@ export NEBIUS_API_KEY="sk-..."   # Token Factory key
 ```
 
 This runs the Scopewatch agent loop against the `nebius-demo` profile (`nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory). The dashboard shows live provider calls. Nebius exposes no reasoning field, so this profile has no provider-exposed trace. What the gateway records depends on whether Nemotron also writes text into `content` on tool-call turns, which has not been observed live (issue #214): if it does, the agent loop forwards that text as an agent-authored summary (`AGENT_AUTHORED_SUMMARY`) and the auditor reads it, so scenario 06 may `HOLD`, on agent-written text rather than a provider trace; if `content` is empty, provenance is `UNAVAILABLE`, the auditor is skipped, and 06 stays `ALLOW` (see `docs/submission/nebius-nvidia.md` §1, Table 1, and `backend/config/providers.toml`).
+```
+
+### 2b. Live gateway mode (`?live=1` / `?live=0`)
+
+The reviewer UI at `http://127.0.0.1:8000/` accepts two query-string flags on the **backend port** (default 8000):
+
+- `?live=1` — Enables live mode: the page connects to the gateway's live run stream and shows active runs. With no `?live` parameter, the default gateway port (`8000`) or the `__SCOPEWATCH_LIVE__` flag enables live mode.
+- `?live=0` — Disables live mode: the page shows fixture/simulated runs even when a live gateway is running. This takes precedence over the port default; i.e. `?live=0` on port 8000 still shows static fixtures.
+
+On any other port, `?live=1` is also accepted and enables live mode against that port. Without `?live`, the page defaults to fixture mode on non-8000 ports.
+
+See `frontend/scripts/app.js:isLiveRequested` for the full derivation logic.
 
 ### 3. Run the Scopewatch agent loop CLI
 
@@ -78,12 +105,14 @@ PYTHONPATH=backend python3 -m scopewatch.agent --scenario demo/scenarios/06_invo
 Evaluate auditor accuracy, false-negative rate, false-hold rate, and latency against held-out test cases (`backend/scripts/evaluate_reasoning_audit.py:217-308`; method in `docs/evaluation.md:42-72`):
 
 ```bash
-# Offline evaluation using mock auditor rules
-PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile mock --split heldout
+# Offline evaluation using mock auditor rules (agent and auditor both mock)
+PYTHONPATH=backend SCOPEWATCH_AGENT_PROFILE=mock SCOPEWATCH_AUDITOR_PROFILE=mock python3 backend/scripts/evaluate_reasoning_audit.py --profile mock --split heldout
 
-# Live evaluation on OpenRouter or Nebius (requires API key)
-PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile openrouter-dev --split heldout
-PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py --profile nebius-demo --split heldout
+# Live evaluation on OpenRouter (requires OPENROUTER_API_KEY in environment)
+OPENROUTER_API_KEY="sk-or-..." PYTHONPATH=backend SCOPEWATCH_AGENT_PROFILE=openrouter-dev SCOPEWATCH_AUDITOR_PROFILE=openrouter-dev python3 backend/scripts/evaluate_reasoning_audit.py --profile openrouter-dev --split heldout
+
+# Live evaluation on Nebius (requires NEBIUS_API_KEY in environment)
+NEBIUS_API_KEY="..." PYTHONPATH=backend SCOPEWATCH_AGENT_PROFILE=nebius-demo SCOPEWATCH_AUDITOR_PROFILE=nebius-demo python3 backend/scripts/evaluate_reasoning_audit.py --profile nebius-demo --split heldout
 ```
 
 ### 5. Run clean-room validation

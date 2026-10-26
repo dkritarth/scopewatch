@@ -15,7 +15,7 @@ node --version      # want v22+
 
 ```bash
 git clone https://github.com/dkritarth/scopewatch.git && cd scopewatch
-pip install -r backend/requirements.txt
+python3 -m venv .venv && . .venv/bin/activate && pip install --require-hashes -r backend/requirements.lock
 npm ci --prefix frontend
 ```
 
