@@ -49,6 +49,8 @@ this hook's preview must not be presented as a reasoning-audit substitute.
    export SCOPEWATCH_HOOK_WORKSPACE=/absolute/path/to/synthetic-native-workspace
    ```
 
+   `SCOPEWATCH_HOOK_WORKSPACE` must be an existing directory: the hook
+   resolves it strictly and denies the action if the path is missing.
    Only loopback HTTP gateway URLs are accepted. Existing DEMO_TOKEN is sent
    only as an HTTP header if needed and never included in output. Use the same
    Python executable in the settings command as the environment containing

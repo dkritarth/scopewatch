@@ -90,6 +90,9 @@ def test_command_emits_deny_json_for_malformed_or_oversized_stdin(body: bytes) -
     import sys
     env = dict(os.environ)
     env.pop('SCOPEWATCH_HOOK_RUN_ID', None)
+    # CI runs pytest from the repo root without PYTHONPATH, so the subprocess
+    # cannot otherwise import the package that lives under backend/.
+    env['PYTHONPATH'] = str(Path(__file__).resolve().parents[1])
     result = subprocess.run([sys.executable, '-m', 'scopewatch.claude_hook'], input=body,
                             capture_output=True, env=env, timeout=5)
     assert result.returncode == 0
