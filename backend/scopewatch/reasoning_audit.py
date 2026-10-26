@@ -350,9 +350,10 @@ def build_turn_audit_messages(
     max_recent_actions: int = DEFAULT_MAX_RECENT_ACTIONS,
 ) -> list[dict[str, str]]:
     """Build hardened auditor chat messages with XML-isolated boundaries."""
-    bounded_trace = escape_untrusted_trace(
-        truncate_reasoning_trace(trace_text, max_chars=max_trace_chars)
-    )
+    bounded_trace = escape_untrusted_trace(trace_text)
+    if len(trace_text) > max_trace_chars or len(bounded_trace) > max_trace_chars:
+        raise ReasoningAuditException(AuditErrorCode.INPUT_TOO_LARGE.value,
+                                      "Complete reasoning exceeds the audit context limit.")
     bounded_recent = recent_actions[-max_recent_actions:] if recent_actions else []
 
     # #186: every interpolated value below is escaped. Tool, operation,
@@ -1162,7 +1163,7 @@ class ReasoningAuditor:
         Invariants:
         - Fails closed on any provider failure, timeout, schema error, or ungrounded excerpt.
         - Sanitized error handling: no raw trace or provider response body appears in messages.
-        - Bounded trace length capped with truncation marker.
+        - Over-bound reasoning fails closed before any provider request.
         - Grounded excerpt validation: every flagged excerpt must be an exact substring of trace.
         """
         start_time = time.monotonic()
@@ -1209,8 +1210,20 @@ class ReasoningAuditor:
         # Normalize trace. The auditor only ever sees the escaped trace, so
         # grounded-excerpt validation below runs against that same text.
         raw_trace = reasoning_text or ""
-        bounded_trace = truncate_reasoning_trace(raw_trace, max_chars=self.max_trace_chars)
-        sanitized_trace = escape_untrusted_trace(bounded_trace)
+        sanitized_trace = escape_untrusted_trace(raw_trace)
+        # Check after escaping too: boundary neutralization can expand text.
+        # Never let a bounded prefix stand in for an unreviewed malicious suffix.
+        if len(raw_trace) > self.max_trace_chars or len(sanitized_trace) > self.max_trace_chars:
+            result = ReasoningAuditResult(
+                verdict=ReasoningAuditVerdict.FAILED,
+                explanation="Audit failed closed: complete reasoning exceeds the audit context limit.",
+                model=self.model, profile=self.profile,
+                latency_ms=(time.monotonic() - start_time) * 1000,
+                total_tokens=0, error_code=AuditErrorCode.INPUT_TOO_LARGE.value,
+            )
+            if raise_on_failure:
+                raise ReasoningAuditException(result.error_code, result.explanation)
+            return result
 
         messages = build_turn_audit_messages(
             scope=scope_obj,
