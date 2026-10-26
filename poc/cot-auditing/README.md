@@ -28,6 +28,8 @@ Agent LLM output (with exposed reasoning)
         |
         v
   Feed into Policy Gate     -- (proposed in PR #6; not implemented)
+                                (Update: the reasoning auditor is now implemented in
+                                backend/scopewatch/reasoning_audit.py, issue #28)
 ```
 
 ## What's here
@@ -155,4 +157,4 @@ This PoC is a parallel workstream to the tool-call gating architecture proposed 
 | CoT auditing (this PoC) | Possible scope drift in exposed reasoning | After output is supplied to the pipeline; pre-tool timing unverified |
 | Tool-call gating (PR #6 proposal, not implemented) | Would evaluate tool actions independently of reasoning | Would require integration before execution |
 
-The proposed integration feeds reasoning evidence into the ALLOW/HOLD/DENY decision without overriding deterministic policy. That integration is not implemented. Neither layer replaces the other.
+The proposed integration feeds reasoning evidence into the ALLOW/HOLD/DENY decision without overriding deterministic policy. That integration is not implemented. Neither layer replaces the other. (Update: reasoning auditing for the gateway is now implemented in backend/scopewatch/reasoning_audit.py, issue #28 — audit concerns can escalate an ALLOW to HOLD, and the PoC's auditor design carried into it.)
