@@ -92,13 +92,15 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     const origin = `http://127.0.0.1:${port}/?live=1`;
 
     await page.goto(origin);
-    await page.locator("#timeline button").first().waitFor();
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    await page.locator("#run-buttons button").first().waitFor();
 
     // 1. Verify always-visible safety statement
+    await page.locator(".boundary-details summary").click();
     const bannerText = await page.locator("#synthetic-banner").innerText();
     assert.match(
       bannerText,
-      /This local baseline mediates only actions submitted through its synthetic demo gateway\. It does not intercept arbitrary host or agent operations\./
+      /Only submitted actions are mediated in a bounded synthetic workspace\./
     );
 
     // 2. Verify gateway status shows live connection
@@ -108,12 +110,13 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     }, { timeout: 10000 });
 
     // 3. Switch to the live run
-    const liveRunButton = page.locator('#run-buttons button:has-text("Live")').first();
+    const liveRunButton = page.locator("#run-buttons button").first();
     await liveRunButton.waitFor();
     await liveRunButton.click();
     assert.equal(await liveRunButton.getAttribute("aria-pressed"), "true");
 
     // 4. Test safe action simulation (safe_read preset)
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "safe_read");
     assert.equal(await page.inputValue("#action-resource"), "invoices/approved/vendor-a.txt");
     await page.click("#submit-action-btn");
@@ -124,6 +127,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     }, { timeout: 8000 });
 
     // Verify timeline updated with executed action
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
     const executedEventBtn = page.locator('.timeline-event:has-text("vendor-a.txt")').first();
     await executedEventBtn.waitFor({ timeout: 8000 });
     await executedEventBtn.click();
@@ -131,7 +135,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     // Verify five-part evidence panel and reasoning labels
     const evidenceText = await page.locator("#event-evidence").innerText();
     assert.match(evidenceText, /1\. Action observation/i);
-    assert.match(evidenceText, /2\. Deterministic policy decision/i);
+    assert.match(evidenceText, /2\. Gateway decision \(policy and audit\)/i);
     assert.match(evidenceText, /3\. Human approval/i);
     assert.match(evidenceText, /4\. Controlled synthetic execution/i);
     assert.match(evidenceText, /5\. Reasoning/i);
@@ -145,6 +149,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     );
 
     // 5. Test blocked action simulation (blocked_path)
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "blocked_path");
     await page.click("#submit-action-btn");
     await page.waitForFunction(() => {
@@ -153,6 +158,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     }, { timeout: 8000 });
 
     // 6. Test approval workflow (approval_required preset)
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "approval_required");
     await page.click("#submit-action-btn");
     await page.waitForFunction(() => {
@@ -161,6 +167,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     }, { timeout: 8000 });
 
     // Verify approval card appears in approvals panel
+    await page.locator('.rail-nav [data-view-target="requests"]').click();
     const approvalCard = page.locator(".approval-card").first();
     await approvalCard.waitFor({ timeout: 8000 });
     assert.match(await approvalCard.innerText(), /delete_path/);
@@ -244,7 +251,8 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     const origin = `http://127.0.0.1:${port}/?live=1`;
 
     await page.goto(origin);
-    await page.locator("#timeline button").first().waitFor();
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    await page.locator("#run-buttons button").first().waitFor();
 
     // 1. Create a new run via REST API while page is open (#114)
     const newRunRes = await fetch(`http://127.0.0.1:${port}/api/v1/runs`, {

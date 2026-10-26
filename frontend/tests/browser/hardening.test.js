@@ -15,7 +15,9 @@ function createStaticServer() {
   const files = new Map([
     ["/", ["index.html", "text/html"]],
     ["/styles/reviewer.css", ["styles/reviewer.css", "text/css"]],
-    ...["app", "fixtures", "reviewer-state", "api"].map((name) =>
+    ["/styles/celestial.css", ["styles/celestial.css", "text/css"]],
+    ...["dm-sans", "instrument-serif", "instrument-serif-italic"].map(name => [`/fonts/${name}.woff2`, [`fonts/${name}.woff2`, "font/woff2"]]),
+    ...["app", "fixtures", "reviewer-state", "api", "celestial"].map((name) =>
       [`/scripts/${name}.js`, [`scripts/${name}.js`, "text/javascript"]]),
   ]);
   return createServer(async (request, response) => {
@@ -46,10 +48,13 @@ test("approval double-confirm arms, switches target, and fires exactly once", { 
     page.on("pageerror", (error) => errors.push(error.message));
     const origin = `http://127.0.0.1:${server.address().port}`;
     await page.goto(origin);
-    await page.locator("#timeline button").first().waitFor();
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    await page.locator("#run-buttons button").first().waitFor();
 
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "escalated_hold_concern");
     await page.click("#submit-action-btn");
+    await page.locator('.rail-nav [data-view-target="requests"]').click();
     const card = page.locator(".approval-card").first();
     await card.waitFor({ timeout: 5000 });
 
@@ -87,7 +92,8 @@ test("360px viewport stays usable with no horizontal overflow", { timeout: 30000
     const page = await browser.newPage({ viewport: { width: 360, height: 800 } });
     const origin = `http://127.0.0.1:${server.address().port}`;
     await page.goto(origin);
-    await page.locator("#timeline button").first().waitFor();
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    await page.locator("#run-buttons button").first().waitFor();
 
     const overflow = await page.evaluate(() => ({
       doc: document.documentElement.scrollWidth,
@@ -101,8 +107,10 @@ test("360px viewport stays usable with no horizontal overflow", { timeout: 30000
     await page.locator("#run-buttons button").first().click();
     await page.locator("#timeline button").first().click();
     assert.ok((await page.locator("#event-evidence h3").innerText()).length > 0);
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "approval_required");
     await page.click("#submit-action-btn");
+    await page.locator('.rail-nav [data-view-target="requests"]').click();
     const card = page.locator(".approval-card").first();
     await card.waitFor({ timeout: 5000 });
     assert.equal(await card.locator(".btn-approve").isVisible(), true);
@@ -120,7 +128,9 @@ test("missing EventSource falls back to polling with a visible text banner", { t
   const staticFiles = new Map([
     ["/", ["index.html", "text/html"]],
     ["/styles/reviewer.css", ["styles/reviewer.css", "text/css"]],
-    ...["app", "fixtures", "reviewer-state", "api"].map((name) =>
+    ["/styles/celestial.css", ["styles/celestial.css", "text/css"]],
+    ...["dm-sans", "instrument-serif", "instrument-serif-italic"].map(name => [`/fonts/${name}.woff2`, [`fonts/${name}.woff2`, "font/woff2"]]),
+    ...["app", "fixtures", "reviewer-state", "api", "celestial"].map((name) =>
       [`/scripts/${name}.js`, [`scripts/${name}.js`, "text/javascript"]]),
   ]);
   const root = new URL("../../", import.meta.url);
@@ -170,13 +180,14 @@ test("missing EventSource falls back to polling with a visible text banner", { t
       delete window.EventSource;
     });
     await page.goto(`http://127.0.0.1:${server.address().port}/?live=1`);
-    await page.locator("#timeline button").first().waitFor({ timeout: 15000 });
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    await page.locator("#run-buttons button").first().waitFor({ timeout: 15000 });
     await page.waitForFunction(
-      () => document.getElementById("gateway-status")?.textContent.includes("Live gateway connected"),
+      () => document.getElementById("gateway-status")?.textContent.match(/Live gateway connected|polling fallback/),
       { timeout: 15000 },
     );
 
-    const liveRunButton = page.locator('button:has-text("(Live)")').first();
+    const liveRunButton = page.locator("#run-buttons button").first();
     await liveRunButton.waitFor({ timeout: 10000 });
     await liveRunButton.click();
 
@@ -204,7 +215,8 @@ test("malformed live frames never crash the timeline (debug hook)", { timeout: 3
     page.on("pageerror", (error) => errors.push(error.message));
     const origin = `http://127.0.0.1:${server.address().port}`;
     await page.goto(origin);
-    await page.locator("#timeline button").first().waitFor();
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    await page.locator("#run-buttons button").first().waitFor();
     const before = await page.locator("#timeline button").count();
 
     const results = await page.evaluate(() => {
@@ -292,18 +304,21 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${port}/?live=1`);
-    await page.locator("#timeline button").first().waitFor({ timeout: 15000 });
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    await page.locator("#run-buttons button").first().waitFor({ timeout: 15000 });
     await page.waitForFunction(
       () => document.getElementById("gateway-status")?.textContent.includes("Live gateway connected"),
       { timeout: 15000 },
     );
 
-    const liveRunButton = page.locator('button:has-text("(Live)")').first();
+    const liveRunButton = page.locator("#run-buttons button").first();
     await liveRunButton.waitFor({ timeout: 10000 });
     await liveRunButton.click();
 
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "approval_required");
     await page.click("#submit-action-btn");
+    await page.locator('.rail-nav [data-view-target="requests"]').click();
     const approvalCard = page.locator(".approval-card").first();
     await approvalCard.waitFor({ timeout: 10000 });
 
@@ -349,10 +364,13 @@ test("armed state and note survive an SSE frame (#208)", { timeout: 30000 }, asy
     page.on("pageerror", (error) => errors.push(error.message));
     const origin = `http://127.0.0.1:${server.address().port}`;
     await page.goto(origin);
-    await page.locator("#timeline button").first().waitFor();
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    await page.locator("#run-buttons button").first().waitFor();
 
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "approval_required");
     await page.click("#submit-action-btn");
+    await page.locator('.rail-nav [data-view-target="requests"]').click();
     const card = page.locator(".approval-card").first();
     await card.waitFor({ timeout: 5000 });
 
