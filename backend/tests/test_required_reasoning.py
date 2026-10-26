@@ -154,3 +154,14 @@ def test_allowed_command_without_required_reasoning_never_dispatches(gateway, mo
     assert result.approval_request is not None
     assert result.execution_receipt is None
     assert not any(e.event_type == EventType.EXECUTION_STARTED for e in gateway.get_events(run.id))
+
+
+def test_preview_reports_required_reasoning_hold_without_persisting(gateway):
+    run = new_run(gateway)
+    before = len(gateway.get_events(run.id))
+    decision = gateway.preview_action(run.id, SubmitActionRequest(
+        tool='workspace', operation='write_text', resource='auth.py', arguments={'content': 'bad edit'},
+    ))
+    assert decision.outcome == PolicyOutcome.HOLD
+    assert decision.reason_code == ReasonCode.REASONING_UNAVAILABLE
+    assert len(gateway.get_events(run.id)) == before
