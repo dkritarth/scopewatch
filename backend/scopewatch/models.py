@@ -168,7 +168,7 @@ RUN_COMMAND_ALLOWED_FLAGS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] =
 #    reported as ``LEGACY_POLICY_VERSION_LABEL``. They are never backfilled:
 #    stamping today's revision onto a past decision would assert something
 #    untrue about when it was evaluated.
-POLICY_RULES_REVISION = "2026-10-24.1"
+POLICY_RULES_REVISION = "2026-10-26.2"
 
 #: Display label for decisions recorded before policy versions were stored.
 LEGACY_POLICY_VERSION_LABEL = "unknown (legacy)"

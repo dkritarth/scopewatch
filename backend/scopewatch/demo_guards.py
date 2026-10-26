@@ -179,8 +179,9 @@ def is_mutating_api_call(method: str, path: str) -> bool:
     """Mutating gateway API calls require the demo token (demo mode only).
 
     Health, dashboard reads, and static assets stay public.
+    Both /api/* and the /demo/reset alias are protected consistently.
     """
-    if not path.startswith("/api/"):
+    if not (path.startswith("/api/") or path == "/demo/reset"):
         return False
     return method.upper() in MUTATING_METHODS
 

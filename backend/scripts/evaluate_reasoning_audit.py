@@ -107,9 +107,12 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     correct = 0
 
     latencies: list[float] = []
-    total_tokens = 0
+    available_tokens = 0
+    total_only_cases = 0
+    component_cases = 0
     prompt_tokens = 0
     completion_tokens = 0
+    total_tokens_populated_cases = 0
 
     # Group by category
     by_category: dict[str, list[dict[str, Any]]] = {}
@@ -121,11 +124,22 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         exp = r.get("expected_verdict")
         actual = r.get("actual_verdict")
         latencies.append(r.get("latency_ms", 0.0))
-        total_tokens += r.get("total_tokens") or 0
         # Real provider usage when present; mock/offline backends report none
         # and honestly sum to 0. Never hard-code when usage exists.
         prompt_tokens += r.get("prompt_tokens") or 0
         completion_tokens += r.get("completion_tokens") or 0
+        tt = r.get("total_tokens")
+        components = (r.get("prompt_tokens") or 0) + (r.get("completion_tokens") or 0)
+        # Prefer components per case, not globally: a provider may expose a
+        # breakdown for one turn and only a total for another. Count both.
+        if components > 0:
+            component_cases += 1
+            total_tokens_populated_cases += 1
+            available_tokens += components
+        elif tt is not None:
+            total_only_cases += 1
+            total_tokens_populated_cases += 1
+            available_tokens += tt
 
         if actual == ReasoningAuditVerdict.FAILED.value:
             failures += 1
@@ -187,7 +201,20 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         "failure_rate": round(fail_rate, 4),
         "accuracy": round(acc, 4),
         "latency_ms": calculate_percentiles(latencies),
-        "tokens": {"total": total_tokens, "prompt": prompt_tokens, "completion": completion_tokens},
+        "tokens": (
+            {
+                "total": available_tokens,
+                "prompt": prompt_tokens,
+                "completion": completion_tokens,
+                "aggregation": "available_case_usage",
+                "partial": total_tokens_populated_cases < total_cases,
+                "populated_cases": total_tokens_populated_cases,
+                "component_cases": component_cases,
+            }
+            if total_only_cases and available_tokens > 0
+            else {"total": prompt_tokens + completion_tokens,
+                  "prompt": prompt_tokens, "completion": completion_tokens}
+        ),
         "category_metrics": cat_metrics,
     }
 
@@ -357,6 +384,14 @@ def evaluate_reasoning_auditor(
         match = audit_res.verdict.value == expected_verdict
         # Privacy: omit raw trace AND auditor explanation from the report.
         # Keep ids, verdicts, counts, and error codes only.
+        prompt_toks = last_usage.get("prompt_tokens") or 0
+        completion_toks = last_usage.get("completion_tokens") or 0
+        case_total_tokens = audit_res.total_tokens
+        if case_total_tokens is None and last_usage:
+            case_total_tokens = last_usage.get("total_tokens")
+            if case_total_tokens is None and (prompt_toks or completion_toks):
+                case_total_tokens = prompt_toks + completion_toks
+
         record = {
             "case_id": case_id,
             "category": category,
@@ -368,9 +403,9 @@ def evaluate_reasoning_auditor(
             "latency_ms": round(audit_res.latency_ms, 2),
             "error_code": audit_res.error_code,
             "flagged_excerpts_count": len(audit_res.flagged_excerpts),
-            "total_tokens": audit_res.total_tokens,
-            "prompt_tokens": last_usage.get("prompt_tokens") or 0,
-            "completion_tokens": last_usage.get("completion_tokens") or 0,
+            "total_tokens": case_total_tokens,
+            "prompt_tokens": prompt_toks,
+            "completion_tokens": completion_toks,
         }
         case_results.append(record)
 
@@ -579,6 +614,51 @@ def verify_evaluation_report(
                         f"summary_metrics.{key}={summary[key]!r} does not match "
                         f"recomputed {value!r} from per-case results"
                     )
+
+            # Cross-check token component consistency (issue #151):
+            # summary_metrics.tokens.total must equal prompt + completion, or be
+            # explicitly labelled partial with a populated-case count.
+            summary_tokens = summary.get("tokens")
+            if isinstance(summary_tokens, dict):
+                tot = summary_tokens.get("total")
+                prompt = summary_tokens.get("prompt")
+                completion = summary_tokens.get("completion")
+                if not isinstance(tot, (int, float)):
+                    errors.append(f"summary_metrics.tokens.total is not a number: {tot!r}")
+                elif not isinstance(prompt, (int, float)) or not isinstance(completion, (int, float)):
+                    errors.append(
+                        f"summary_metrics.tokens prompt/completion not numbers: prompt={prompt!r}, completion={completion!r}"
+                    )
+                else:
+                    expected_total = prompt + completion
+                    if tot != expected_total:
+                        is_partial = (
+                            summary_tokens.get("partial") is True
+                            or summary_tokens.get("total_is_partial") is True
+                            or summary_tokens.get("is_partial") is True
+                        )
+                        pop_count = (
+                            summary_tokens.get("populated_cases")
+                            if summary_tokens.get("populated_cases") is not None
+                            else summary_tokens.get("populated_cases_count")
+                        )
+                        # A total-only provider breakdown is unavailable, not
+                        # zero. Recomputed metadata above pins both coverage and
+                        # total, including complete coverage (partial=False).
+                        available_usage = (
+                            summary_tokens.get("aggregation") == "available_case_usage"
+                            and isinstance(pop_count, int)
+                            and 0 < pop_count <= len(results)
+                            and isinstance(summary_tokens.get("component_cases"), int)
+                            and 0 <= summary_tokens["component_cases"] < pop_count
+                            and tot >= expected_total >= 0
+                        )
+                        if not (available_usage or (is_partial and isinstance(pop_count, int) and pop_count > 0)):
+                            errors.append(
+                                f"summary_metrics.tokens components disagree: "
+                                f"total ({tot}) != prompt ({prompt}) + completion ({completion}) = {expected_total} "
+                                f"(and is not explicitly labelled partial with a populated-case count)"
+                            )
 
     if isinstance(meta, dict) and meta.get("dataset_cases_count") != len(results):
         errors.append(
