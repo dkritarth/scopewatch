@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -33,9 +34,10 @@ import uuid
 import pytest
 
 import scopewatch.scope_paths as scope_paths
+from scopewatch import docker_job
 from scopewatch.executor import ExecutionSecurityError, _verify_scoped_target
 from scopewatch.models import PolicyOutcome, ReasonCode
-from scopewatch.policy import evaluate_policy
+from scopewatch.policy import evaluate_policy, revalidate_run_command_in_workspace
 from scopewatch.schemas import ActionRequest, Run, TaskScope
 from scopewatch.scope_paths import (
     BLOCKED_PATH,
@@ -426,16 +428,17 @@ def _runner_config(runner_mod, tmp_path: Path, run_workspace: str):
 
 
 def _runner_body(
-    runner_mod, run_workspace: str, task_scope: dict, key: str, resource: str
+    runner_mod, run_workspace: str, task_scope: dict, key: str, resource: str,
+    *, operation: str = "write_text", arguments: dict | None = None,
 ) -> dict:
     from scopewatch.executor_remote import sign_dispatch_payload
 
     action = {
         "id": "action-305",
         "run_id": "run-305",
-        "operation": "write_text",
+        "operation": operation,
         "resource": resource,
-        "arguments": {"content": "synthetic"},
+        "arguments": arguments or {"content": "synthetic"},
     }
     decision = {
         "id": "d-305",
@@ -545,3 +548,262 @@ def test_runner_unknown_volume_matches_policy_on_both_sides(
         )
         assert status == 403, (resource, status, payload)
         assert payload == {"error": "resource violates task scope"}
+
+
+# ---------------------------------------------------------------------------
+# Round 2 of the #305 fix: no blocked-path comparison may stay case-sensitive
+# ---------------------------------------------------------------------------
+
+
+def _run_command_run() -> Run:
+    """A run whose scope actually permits a synthetic ``cat`` command."""
+    scope = TaskScope(
+        schema_version="1",
+        task_description="Run only synthetic cat commands inside outputs.",
+        allowed_paths=["outputs"],
+        blocked_paths=["outputs/private"],
+        allowed_tools=["workspace"],
+        allowed_operations=["run_command"],
+        allowed_network_destinations=[],
+        requires_approval=[],
+        allowed_commands=[["cat"]],
+        created_at=_now(),
+    )
+    return Run(
+        id="run-305-rc",
+        name="Case variant run command",
+        task_scope=scope,
+        created_at=_now(),
+        updated_at=_now(),
+        synthetic=True,
+        interception_coverage="Synthetic test gateway",
+        reasoning_availability="Unavailable",
+    )
+
+
+def _run_command_action(
+    run: Run, argv: list[str], resource: str = "."
+) -> ActionRequest:
+    return ActionRequest(
+        id=str(uuid.uuid4()),
+        run_id=run.id,
+        tool="workspace",
+        operation="run_command",
+        resource=resource,
+        arguments={"argv": argv, "timeout_s": 5},
+        requested_at=_now(),
+    )
+
+
+# --- Policy: run_command argv blocked checks now fold too ------------------
+
+
+def test_run_command_argv_case_variant_blocked_when_volume_folds_case(
+    monkeypatch: pytest.MonkeyPatch, case_workspace: Path, docker_backend: None
+) -> None:
+    """`cat outputs/PRIVATE/secret.txt` must be DENIED on a folding volume."""
+    seen = _patch_policy_probe(monkeypatch, True)
+    run = _run_command_run()
+    decision = evaluate_policy(
+        _run_command_action(run, ["cat", "outputs/PRIVATE/secret.txt"]),
+        run,
+        case_workspace,
+    )
+    assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.BLOCKED_PATH
+    assert decision.matched_rule == "RULE_RUN_COMMAND_BLOCKED_PATH_MATCHED"
+    assert "outputs/private" in decision.explanation
+    assert seen and seen[0].endswith("workspace")
+
+
+def test_run_command_argv_case_variant_blocked_when_volume_unknown(
+    monkeypatch: pytest.MonkeyPatch, case_workspace: Path, docker_backend: None
+) -> None:
+    """A failed probe still refuses the alias (fail closed on the blocked side)."""
+    _patch_policy_probe(monkeypatch, None)
+    run = _run_command_run()
+    decision = evaluate_policy(
+        _run_command_action(run, ["cat", "outputs/PRIVATE/secret.txt"]),
+        run,
+        case_workspace,
+    )
+    assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.BLOCKED_PATH
+    assert decision.matched_rule == "RULE_RUN_COMMAND_BLOCKED_PATH_MATCHED"
+
+
+def test_run_command_argv_case_variant_allowed_when_volume_is_sensitive(
+    monkeypatch: pytest.MonkeyPatch, case_workspace: Path, docker_backend: None
+) -> None:
+    """Linux semantics preserved: PRIVATE is a different path, so it is allowed."""
+    _patch_policy_probe(monkeypatch, False)
+    run = _run_command_run()
+    decision = evaluate_policy(
+        _run_command_action(run, ["cat", "outputs/PRIVATE/secret.txt"]),
+        run,
+        case_workspace,
+    )
+    assert decision.outcome == PolicyOutcome.ALLOW, decision
+    assert decision.reason_code == ReasonCode.ALLOWED_TOOL_AND_RESOURCE
+
+
+# --- Policy: the staged resolved-target check now folds too ----------------
+
+
+def _staged_alias_workspace(tmp_path: Path) -> Path:
+    staged = tmp_path / "staged"
+    (staged / "outputs" / "PRIVATE").mkdir(parents=True)
+    (staged / "outputs" / "PRIVATE" / "secret.txt").write_text("synthetic", encoding="utf-8")
+    (staged / "outputs" / "alias.txt").symlink_to("PRIVATE/secret.txt")
+    return staged
+
+
+def test_staged_resolved_target_case_variant_blocked_when_volume_folds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A resolved alias into a blocked dir is refused when the volume folds."""
+    monkeypatch.setattr("scopewatch.policy.volume_is_case_insensitive", lambda root: True)
+    staged = _staged_alias_workspace(tmp_path)
+    denial = revalidate_run_command_in_workspace(
+        _run_command_action(_run_command_run(), ["cat", "outputs/alias.txt"]),
+        _run_command_run().task_scope,
+        staged,
+    )
+    assert denial is not None
+    assert denial[0] == ReasonCode.BLOCKED_PATH
+    assert denial[2] == "RULE_RUN_COMMAND_BLOCKED_PATH_MATCHED"
+
+
+def test_staged_resolved_target_case_variant_allowed_when_volume_is_sensitive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("scopewatch.policy.volume_is_case_insensitive", lambda root: False)
+    staged = _staged_alias_workspace(tmp_path)
+    denial = revalidate_run_command_in_workspace(
+        _run_command_action(_run_command_run(), ["cat", "outputs/alias.txt"]),
+        _run_command_run().task_scope,
+        staged,
+    )
+    assert denial is None
+
+
+# --- Runner: _argv_scope_denial and handle_execute now fold ---------------
+
+
+def test_argv_scope_denial_blocks_case_variant_blocked_argument(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runner_mod = _load_runner()
+    config = _runner_config(runner_mod, tmp_path, "run-305-ws")
+    task_scope = {
+        "allowed_paths": ["outputs"],
+        "blocked_paths": ["outputs/private"],
+        "allowed_commands": [["cat"]],
+    }
+    root = config.workspace / "run-305-ws"
+    assert runner_mod._argv_scope_denial(
+        ["cat", "outputs/PRIVATE/secret.txt"], root, task_scope, case_insensitive=True
+    ) is not None
+    assert runner_mod._argv_scope_denial(
+        ["cat", "outputs/PRIVATE/secret.txt"], root, task_scope, case_insensitive=False
+    ) is None
+
+
+def test_runner_handle_execute_denies_case_variant_argv_when_volume_folds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runner_mod = _load_runner()
+    run_workspace = "run-305-ws"
+    config = _runner_config(runner_mod, tmp_path, run_workspace)
+    _patch_runner_for_dispatch(runner_mod, monkeypatch, True)
+    body = _runner_body(
+        runner_mod,
+        run_workspace,
+        {
+            "allowed_paths": ["outputs"],
+            "blocked_paths": ["outputs/private"],
+            "allowed_commands": [["cat"]],
+        },
+        config.signing_key,
+        ".",
+        operation="run_command",
+        arguments={"argv": ["cat", "outputs/PRIVATE/secret.txt"], "timeout_s": 5},
+    )
+
+    status, payload = runner_mod.handle_execute(body, config, runner_mod.DispatchTokenStore())
+
+    assert status == 403
+    assert payload == {
+        "error": "command argument violates blocked path 'outputs/private'"
+    }
+
+
+# --- docker_job: staging and copy-back fold the blocked comparison --------
+
+
+def test_docker_job_blocked_checks_fold_case_variants() -> None:
+    blocked = (("outputs", "private"),)
+    assert docker_job._is_blocked(("outputs", "PRIVATE"), blocked, case_insensitive=True)
+    assert not docker_job._is_blocked(("outputs", "PRIVATE"), blocked, case_insensitive=False)
+    assert docker_job._is_blocked(
+        ("outputs", "PRIVATE", "secret.txt"), blocked, case_insensitive=True
+    )
+    assert docker_job._contains_blocked(
+        ("outputs",), (("OUTPUTS", "Private"),), case_insensitive=True
+    )
+    assert not docker_job._contains_blocked(
+        ("outputs",), (("OUTPUTS", "Private"),), case_insensitive=False
+    )
+
+
+def test_staging_excludes_case_variant_blocked_dir_when_volume_folds(
+    tmp_path: Path,
+) -> None:
+    ws = tmp_path / "ws"
+    (ws / "outputs" / "PRIVATE").mkdir(parents=True)
+    (ws / "outputs" / "PRIVATE" / "secret.txt").write_text("SYNTHETIC", encoding="utf-8")
+    (ws / "outputs" / "ok.txt").write_text("synthetic", encoding="utf-8")
+
+    staging_root, copy = docker_job.stage_workspace_copy(
+        ws, ["outputs/private"], case_insensitive=True
+    )
+    try:
+        assert not (copy / "outputs" / "PRIVATE").exists()
+        assert not (copy / "outputs" / "PRIVATE" / "secret.txt").exists()
+        assert (copy / "outputs" / "ok.txt").is_file()
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def test_copy_back_refuses_case_variant_blocked_dir_when_volume_folds(
+    tmp_path: Path,
+) -> None:
+    ws = tmp_path / "ws"
+    (ws / "outputs" / "private").mkdir(parents=True)
+    (ws / "outputs" / "private" / "secret.txt").write_text("host-original", encoding="utf-8")
+    staged = tmp_path / "staged"
+    (staged / "outputs" / "PRIVATE").mkdir(parents=True)
+    (staged / "outputs" / "PRIVATE" / "secret.txt").write_text(
+        "OVERWRITTEN_BY_CONTAINER", encoding="utf-8"
+    )
+
+    refused = docker_job.sync_copy_back(staged, ws, ["outputs/private"], case_insensitive=True)
+
+    assert "outputs/PRIVATE" in refused
+    assert (ws / "outputs" / "private" / "secret.txt").read_text(encoding="utf-8") == (
+        "host-original"
+    )
+
+
+# --- The fold itself: NFD vs NFC when folding is on -----------------------
+
+
+def test_nfd_vs_nfc_blocked_alias_is_caught_when_folding_is_on() -> None:
+    nfc_blocked = "outputs/privé"
+    nfd_blocked = "outputs/priv" + "e\u0301"
+    nfc_alias = nfc_blocked + "/secret.txt"
+    nfd_alias = nfd_blocked + "/secret.txt"
+    for blocked, alias in ((nfc_blocked, nfd_alias), (nfd_blocked, nfc_alias)):
+        assert scoped_path_denial(
+            N(alias), N(alias), ALLOWED, (blocked,), case_insensitive=True
+        ) == (BLOCKED_PATH, blocked)
