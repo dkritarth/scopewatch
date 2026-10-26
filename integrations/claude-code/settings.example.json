@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -m scopewatch.claude_hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

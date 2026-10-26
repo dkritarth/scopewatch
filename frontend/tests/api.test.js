@@ -271,6 +271,7 @@ test("fetchJson sends X-Demo-Token only on mutating API requests (#115)", async 
     setReviewerToken("judge-token-abc");
     await fetchJson("/api/v1/runs", { method: "POST", body: {} });
     assert.equal(seen.at(-1).headers["X-Demo-Token"], "judge-token-abc");
+    assert.equal(seen.at(-1).headers["X-Reviewer-Token"], "judge-token-abc");
 
     // Reads stay credential-free even with a token held.
     await fetchJson("/api/v1/runs");
@@ -340,4 +341,29 @@ test("parseApiErrorBody falls back to the status line for unknown bodies", () =>
     message: "HTTP error 500 (Server Error)",
     details: null,
   });
+});
+
+test("approveAction sends JSON content-type and reviewer payload (#185)", async () => {
+  const { approveAction, denyAction } = await import("../scripts/api.js");
+  const origFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url, options = {}) => {
+    seen.push({ url: String(url), options });
+    return { ok: true, status: 200, statusText: "OK", json: async () => ({}) };
+  };
+  try {
+    setReviewerToken("reviewer-secret");
+    await approveAction("appr-123", "Looks good", "lead-judge");
+    const last = seen.at(-1);
+    assert.equal(last.url, "/api/v1/approvals/appr-123/approve");
+    assert.equal(last.options.method, "POST");
+    assert.equal(last.options.headers["Content-Type"], "application/json");
+    assert.equal(last.options.headers["X-Reviewer-Token"], "reviewer-secret");
+    const sentBody = JSON.parse(last.options.body);
+    assert.equal(sentBody.resolution_reason, "Looks good");
+    assert.equal(sentBody.reviewer_id, "lead-judge");
+  } finally {
+    clearReviewerToken();
+    globalThis.fetch = origFetch;
+  }
 });

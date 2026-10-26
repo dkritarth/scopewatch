@@ -282,6 +282,7 @@ class ResolveApprovalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     resolution_reason: Optional[str] = None
+    reviewer_id: Optional[str] = None
 
 
 class ApprovalResolutionResponse(BaseModel):
@@ -300,3 +301,4 @@ class HealthResponse(BaseModel):
     # the dashboard uses it to offer the reviewer-token control only where a
     # token is actually required (#115). Never carries the token itself.
     demo_mode: bool = False
+    reviewer_auth: bool = False

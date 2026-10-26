@@ -473,7 +473,7 @@ def test_invariant_3_approval_cannot_authorize_policy_denied_action(e2e_env: dic
     assert bad_approve_resp.json()["error"]["code"] == "DENIED_ACTION_CANNOT_BE_APPROVED"
 
     # 2. Attempting to approve non-existent approval returns 404
-    missing_resp = client.post("/api/v1/approvals/non-existent-approval-id/approve")
+    missing_resp = client.post("/api/v1/approvals/non-existent-approval-id/approve", json={})
     assert missing_resp.status_code == 404
     assert missing_resp.json()["error"]["code"] == "APPROVAL_NOT_FOUND"
 
