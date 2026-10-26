@@ -561,3 +561,17 @@ def test_smoke_default_targets_caddys_published_http_port() -> None:
     assert '"${HTTP_HOST_PORT:-80}:80"' in raw_published_ports(
         service_block(COMPOSE.read_text(), "caddy")
     )
+
+
+@pytest.mark.parametrize("canonical,fallback", [
+    ("SCOPEWATCH_API_KEY", "API_KEY"),
+    ("SCOPEWATCH_REVIEWER_TOKEN", "REVIEWER_TOKEN"),
+    ("SCOPEWATCH_REVIEWER_ID", "DEFAULT_REVIEWER_IDENTITY"),
+    ("SCOPEWATCH_ALLOW_RESET", "ALLOW_DEMO_RESET"),
+    ("SCOPEWATCH_CORS_ALLOW_ORIGINS", "CORS_ALLOW_ORIGINS"),
+    ("SCOPEWATCH_CORS_ALLOW_CREDENTIALS", "CORS_ALLOW_CREDENTIALS"),
+])
+def test_compose_gateway_passes_through_canonical_auth_and_cors_env(canonical: str, fallback: str) -> None:
+    gateway = service_block(COMPOSE.read_text(encoding="utf-8"), "gateway")
+    assert canonical in gateway, f"gateway service must contain {canonical}"
+    assert fallback in gateway, f"gateway service must contain {fallback} fallback"

@@ -9,7 +9,9 @@ closed to "unknown" instead of claiming a revision that never ran.
 """
 
 import os
+import re
 import shlex
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Union
@@ -20,8 +22,10 @@ from scopewatch.path_access import (
     is_descendant_or_equal as _is_descendant_or_equal,
     normalize_relative_path as _normalize_relative_path,
     scoped_path_reason,
+    volume_is_case_insensitive,
 )
 from scopewatch.models import (
+    RUN_COMMAND_ALLOWED_FLAGS,
     RUN_COMMAND_METACHARACTERS,
     PolicyOutcome,
     ReasonCode,
@@ -266,9 +270,20 @@ def _evaluate_policy_rules(
         )
 
     # Step 12: Check both the submitted alias and its canonical target.
+    # On a case-insensitive volume, `Path.resolve()` only canonicalises the
+    # casing of path components that exist on disk, so a nonexistent write
+    # target keeps the requested casing and an upper-case alias of a blocked
+    # path would slip the raw string match. The probe answers insensitive /
+    # sensitive / unknown; the matcher folds the blocked side on insensitive
+    # *or* unknown and the allowed side only on insensitive, so an
+    # undetectable volume can tighten but never widen the scope (#305).
     canonical_rel = candidate_path.relative_to(resolved_workspace)
     scope_error = scoped_path_reason(
-        normalized_rel, canonical_rel, scope.allowed_paths, scope.blocked_paths
+        normalized_rel,
+        canonical_rel,
+        scope.allowed_paths,
+        scope.blocked_paths,
+        case_insensitive=volume_is_case_insensitive(str(resolved_workspace)),
     )
     if scope_error is not None:
         reason, blocked = scope_error
@@ -354,12 +369,85 @@ def _argv_matches_prefix(argv: list[str], prefixes: list[list[str]]) -> bool:
     return _match_prefix_len(argv, prefixes) > 0
 
 
+def _allowed_flags_for(prefix: list[str]) -> tuple[str, ...]:
+    """Return the declared option allowlist for a matched command prefix.
+
+    Fails closed: a prefix the scope allows but the rule set has never
+    audited accepts no options at all, so an unknown option name denies
+    instead of sliding through to the path rules (V1 gap 6).
+    """
+    key = tuple(prefix)
+    for known_prefix, flags in RUN_COMMAND_ALLOWED_FLAGS:
+        if key == known_prefix:
+            return flags
+    return ()
+
+
+def _is_pytest_prefix(prefix: list[str]) -> bool:
+    """Return True if the matched command prefix represents pytest."""
+    if not prefix:
+        return False
+    if len(prefix) == 1:
+        return Path(prefix[0]).name == "pytest"
+    if len(prefix) == 3 and prefix[1] == "-m" and prefix[2] == "pytest":
+        name = Path(prefix[0]).name
+        return bool(re.match(r"^python(\d+(\.\d+)?)?$", name)) or prefix[0] == sys.executable
+    return False
+
+
+def _check_run_command_flags(
+    argv: list[str], matched_len: int, allowed_flags: tuple[str, ...]
+) -> tuple[ReasonCode, str, str] | None:
+    """Return a denial tuple if any post-prefix option is disallowed.
+
+    Closes the ``-o addopts=...`` override channel (V1 gap 6): ``-o`` is
+    allowlisted for path/ini values, but ``addopts`` re-injects arbitrary
+    flags, so an ini override naming ``addopts`` is denied when executing
+    pytest. Other override channels are not on the allowlist at all.
+    """
+    prefix = argv[:matched_len]
+    is_pytest = _is_pytest_prefix(prefix)
+    i = matched_len
+    n = len(argv)
+    while i < n:
+        item = argv[i]
+        if item.startswith("-"):
+            option = item.split("=", 1)[0]
+            if option not in allowed_flags:
+                return (
+                    ReasonCode.COMMAND_NOT_ALLOWED,
+                    f"Option '{option}' is not in the allowlist for this command.",
+                    "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
+                )
+            if option == "-o":
+                if "=" in item:
+                    value = item.split("=", 1)[1]
+                elif i + 1 < n:
+                    value = argv[i + 1]
+                    i += 1
+                else:
+                    value = ""
+                if is_pytest:
+                    key = value.split("=", 1)[0].strip() if value else ""
+                    if key.lower() == "addopts" or value.strip().lower().startswith(
+                        "addopts"
+                    ):
+                        return (
+                            ReasonCode.COMMAND_NOT_ALLOWED,
+                            "Option '-o addopts=...' (ini override) is not allowed.",
+                            "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
+                        )
+        i += 1
+    return None
+
+
 def _check_run_command_path(
     value: str,
     *,
     describe: str,
     scope: TaskScope,
     workspace_root: Path,
+    case_insensitive: Optional[bool] = None,
 ) -> Union[tuple[ReasonCode, str, str], None]:
     """Apply the existing path rules to one run_command path value.
 
@@ -367,6 +455,12 @@ def _check_run_command_path(
     escape, blocked paths) but deliberately omits the allowed_paths
     membership requirement: command arguments and the command cwd only need
     traversal/blocked/containment validation.
+
+    ``case_insensitive`` is the volume's three-state verdict from
+    :func:`scopewatch.path_access.volume_is_case_insensitive` (#305); the
+    blocked check folds case when the volume folds case (``True``) or when it
+    is unknown (``None``), so an alias of a blocked path can never slip through
+    on an undetectable volume.
     """
     if "\x00" in value:
         return (
@@ -445,11 +539,12 @@ def _check_run_command_path(
                 "RULE_RUN_COMMAND_MALFORMED_PATH",
             )
     canonical = candidate.relative_to(resolved_workspace)
+    blocked_folds = case_insensitive is None or case_insensitive is True
     for blocked in scope.blocked_paths:
         blocked_norm = _normalize_relative_path(blocked)
         if blocked_norm and (
-            _is_descendant_or_equal(normalized, blocked_norm)
-            or _is_descendant_or_equal(canonical, blocked_norm)
+            _is_descendant_or_equal(normalized, blocked_norm, case_insensitive=blocked_folds)
+            or _is_descendant_or_equal(canonical, blocked_norm, case_insensitive=blocked_folds)
         ):
             return (
                 ReasonCode.BLOCKED_PATH,
@@ -465,6 +560,7 @@ def _check_staged_resolved_target(
     describe: str,
     scope: TaskScope,
     staged_root: Path,
+    case_insensitive: Optional[bool] = None,
 ) -> Union[tuple[ReasonCode, str, str], None]:
     """Check where a staged path value actually resolves (symlinks followed).
 
@@ -474,6 +570,11 @@ def _check_staged_resolved_target(
     target to stay in-bounds and outside every blocked path. Unresolvable
     values fail closed. Nonexistent paths resolve non-strictly to their
     would-be location, so output files that do not exist yet still pass.
+
+    ``case_insensitive`` is the volume's three-state verdict from
+    :func:`scopewatch.path_access.volume_is_case_insensitive` (#305); the
+    blocked check folds case when the volume folds case (``True``) or when it
+    is unknown (``None``), so a resolved alias of a blocked path is refused.
     """
     normalized = _normalize_relative_path(value)
     if normalized is None:
@@ -491,30 +592,29 @@ def _check_staged_resolved_target(
             "RULE_RUN_COMMAND_MALFORMED_PATH",
         )
     try:
-        resolved.relative_to(staged_root)
+        resolved_relative = resolved.relative_to(staged_root)
     except ValueError:
         return (
             ReasonCode.SYMLINK_ESCAPE,
             f"{describe} escapes the workspace boundary at dispatch.",
             "RULE_RUN_COMMAND_SYMLINK_ESCAPE_REJECTED",
         )
+    resolved_parts = resolved_relative.parts
+    blocked_folds = case_insensitive is None or case_insensitive is True
     for blocked in scope.blocked_paths:
         blocked_norm = _normalize_relative_path(blocked)
         if blocked_norm is None:
             continue
-        try:
-            blocked_base = _resolve(staged_root / blocked_norm)
-        except (OSError, RuntimeError):
-            continue
-        try:
-            resolved.relative_to(blocked_base)
+        if not blocked_norm.parts or _is_descendant_or_equal(
+            Path(*resolved_parts), blocked_norm, case_insensitive=blocked_folds
+        ):
+            # ``blocked_norm`` empty means the blocked path is the workspace
+            # root itself; anything resolved inside it is blocked.
             return (
                 ReasonCode.BLOCKED_PATH,
                 f"{describe} resolves into blocked path '{blocked}' at dispatch.",
                 "RULE_RUN_COMMAND_BLOCKED_PATH_MATCHED",
             )
-        except ValueError:
-            continue
     return None
 
 
@@ -527,11 +627,12 @@ def revalidate_run_command_in_workspace(
 
     Defence in depth for the Docker executor (issue #68): re-derives the
     argv from the action (never a shell), re-checks the allowlist prefix,
-    re-applies the lexical path rules rooted at the staged copy, and
-    additionally verifies every path-bearing argument and the cwd resolve
-    to in-bounds, non-blocked targets. Returns a denial triple on the
-    first violation, else None. Never raises for malformed input: every
-    failure mode returns a denial so dispatch fails closed.
+    re-applies the flag allowlist (default-deny options) and the lexical
+    path rules rooted at the staged copy, and additionally verifies every
+    path-bearing argument and the cwd resolve to in-bounds, non-blocked
+    targets. Returns a denial triple on the first violation, else None.
+    Never raises for malformed input: every failure mode returns a denial
+    so dispatch fails closed.
     """
     arguments = action.arguments or {}
     raw_command = arguments.get("command")
@@ -591,6 +692,12 @@ def revalidate_run_command_in_workspace(
             "RULE_RUN_COMMAND_MALFORMED_PATH",
         )
 
+    # Same default-deny flag rule as the policy path (R7), so a scope or
+    # allowlist drift cannot re-widen the option surface at dispatch.
+    allowed_flags = _allowed_flags_for(argv[:matched_len])
+    flag_denial = _check_run_command_flags(argv, matched_len, allowed_flags)
+    if flag_denial is not None:
+        return flag_denial
     for item in argv[matched_len:]:
         candidates = [item]
         if "=" in item:
@@ -602,6 +709,7 @@ def revalidate_run_command_in_workspace(
                     describe=f"Command argument '{candidate}'",
                     scope=scope,
                     workspace_root=staged,
+                    case_insensitive=volume_is_case_insensitive(str(staged)),
                 )
             except (OSError, RuntimeError):
                 return (
@@ -616,6 +724,7 @@ def revalidate_run_command_in_workspace(
                 describe=f"Command argument '{candidate}'",
                 scope=scope,
                 staged_root=staged,
+                case_insensitive=volume_is_case_insensitive(str(staged)),
             )
             if resolved_denial is not None:
                 return resolved_denial
@@ -628,6 +737,7 @@ def revalidate_run_command_in_workspace(
             describe="Working directory",
             scope=scope,
             workspace_root=staged,
+            case_insensitive=volume_is_case_insensitive(str(staged)),
         )
     except (OSError, RuntimeError):
         return (
@@ -642,6 +752,7 @@ def revalidate_run_command_in_workspace(
         describe="Working directory",
         scope=scope,
         staged_root=staged,
+        case_insensitive=volume_is_case_insensitive(str(staged)),
     )
 
 
@@ -655,8 +766,9 @@ def _evaluate_run_command(
     """Deterministically evaluate a run_command action (issue #36).
 
     Order: docker-only gate, argument extraction, scope operation gate,
-    metacharacter rejection, shlex parsing, allowlist prefix match, argument
-    path rules, cwd validation, approval hold, else allow.
+    metacharacter rejection, shlex parsing, allowlist prefix match, flag
+    allowlist (default-deny), argument path rules, cwd validation,
+    approval hold, else allow.
     """
 
     def deny(reason_code: ReasonCode, explanation: str, matched_rule: str) -> PolicyDecision:
@@ -766,9 +878,22 @@ def _evaluate_run_command(
             "RULE_COMMAND_NOT_ALLOWED",
         )
 
-    # R7: path-like arguments use the existing path rules. Only the
+    # R7: options are default-deny. A post-prefix token starting with '-'
+    # must name an option declared for the matched command prefix (the flag
+    # allowlist, closing V1 gap 6), so behavioural flags with no path
+    # signal (--maxfail, -x, -q, --tb, -p, ...) can no
+    # longer ride through; allowed options still pass through the path
+    # rules below, so '--rootdir=/abs' keeps its path denial.
+    allowed_flags = _allowed_flags_for(argv[:matched_len])
+    flag_denial = _check_run_command_flags(argv, matched_len, allowed_flags)
+    if flag_denial is not None:
+        reason_code, explanation, matched_rule = flag_denial
+        return deny(reason_code, explanation, matched_rule)
+
+    # Path-like arguments use the existing path rules. Only the
     # post-prefix arguments are checked; flag values after '=' are checked
     # as well so '--output=/abs/path' cannot smuggle an absolute path.
+    case_insensitive = volume_is_case_insensitive(str(workspace_root))
     for item in argv[matched_len:]:
         candidates = [item]
         if "=" in item:
@@ -779,6 +904,7 @@ def _evaluate_run_command(
                 describe=f"Command argument '{candidate}'",
                 scope=scope,
                 workspace_root=workspace_root,
+                case_insensitive=case_insensitive,
             )
             if denial is not None:
                 reason_code, explanation, matched_rule = denial
@@ -792,6 +918,7 @@ def _evaluate_run_command(
         describe="Working directory",
         scope=scope,
         workspace_root=workspace_root,
+        case_insensitive=case_insensitive,
     )
     if cwd_denial is not None:
         reason_code, explanation, matched_rule = cwd_denial

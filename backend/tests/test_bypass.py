@@ -487,10 +487,13 @@ def test_docker_executor_rechecks_staged_workspace(
     decision = evaluate_policy(action, bypass_run, bypass_workspace)
     assert decision.outcome == PolicyOutcome.ALLOW
 
-    # The stager also receives the run's blocked paths (issue #183). This stub
-    # ignores them on purpose: it simulates a swap that lands in the copy
-    # anyway, so the post-staging target check is what must refuse dispatch.
-    def stage_with_changed_link(root: Path, blocked_paths=()) -> tuple[Path, Path]:
+    # The stager also receives the run's blocked paths (issue #183) and the
+    # volume verdict (issue #305). This stub ignores them on purpose: it
+    # simulates a swap that lands in the copy anyway, so the post-staging
+    # target check is what must refuse dispatch.
+    def stage_with_changed_link(
+        root: Path, blocked_paths=(), case_insensitive=None
+    ) -> tuple[Path, Path]:
         staging = tmp_path / "stage"
         copy = staging / "workspace"
         shutil.copytree(root, copy, symlinks=True)
@@ -667,18 +670,20 @@ def test_bypass_pytest_rootdir_traversal(
     )
 
 
-def test_bypass_pytest_plugin_flag_is_unchecked_KNOWN_GAP(
+def test_bypass_pytest_plugin_flag_denied(
     cmd_workspace: Path, cmd_run: Run, docker_backend: None
 ) -> None:
-    """KNOWN GAP (documented V1 limitation): non-path option values such as
-    ``-p <plugin>`` carry no path signal, so the gateway cannot judge them
-    and containment rests entirely on the Docker sandbox (no network,
-    non-root, pids/memory limits)."""
+    """Former KNOWN GAP (documented V1 limitation, now closed by the
+    run_command flag allowlist): non-path option values such as
+    ``-p <plugin>`` carry no path signal, so they used to ALLOW with
+    containment resting entirely on the Docker sandbox. Every option not
+    declared for the matched command prefix now denies strictly."""
     action = _run_command_action(
         cmd_run, argv=["pytest", "-p", "no:cacheprovider", "tests/"]
     )
     decision = evaluate_policy(action, cmd_run, cmd_workspace)
-    assert decision.outcome == PolicyOutcome.ALLOW
+    assert decision.outcome == PolicyOutcome.DENY
+    assert decision.reason_code == ReasonCode.COMMAND_NOT_ALLOWED
 
 
 def test_bypass_pytest_confcutdir_blocked(

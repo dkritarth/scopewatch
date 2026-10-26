@@ -399,3 +399,121 @@ def test_check_cli_fails_tampered_report(
     with pytest.raises(SystemExit) as exc:
         harness_main()
     assert exc.value.code == 1
+
+
+# ---------------- Token consistency & mutation tests (issue #151) ----------------
+
+
+def test_verify_rejects_mutated_token_total() -> None:
+    """Issue #151: mutating tokens.total fails verification with component mismatch."""
+    report = evaluate_reasoning_auditor(profile="mock", split="dev", quiet=True)
+    tampered = copy.deepcopy(report)
+    # Give it genuine non-zero prompt and completion
+    tampered["summary_metrics"]["tokens"] = {
+        "total": 150,
+        "prompt": 100,
+        "completion": 50,
+    }
+    # Per-case results matching the genuine tokens
+    tampered["results"][0]["prompt_tokens"] = 100
+    tampered["results"][0]["completion_tokens"] = 50
+    tampered["results"][0]["total_tokens"] = 150
+
+    # With consistent totals, it recomputes clean:
+    assert verify_evaluation_report(tampered) == []
+
+    # Now tamper total:
+    tampered_bad = copy.deepcopy(tampered)
+    tampered_bad["summary_metrics"]["tokens"]["total"] = 999
+    errors = verify_evaluation_report(tampered_bad)
+    assert any("summary_metrics.tokens" in e for e in errors)
+    assert any("components disagree" in e and "999" in e for e in errors)
+
+
+def test_verify_rejects_inconsistent_token_components() -> None:
+    """Issue #151: a report whose token components disagree without a partial label fails."""
+    report = evaluate_reasoning_auditor(profile="mock", split="dev", quiet=True)
+    tampered = copy.deepcopy(report)
+    # The exact numbers from the 2026-10-03 run:
+    tampered["summary_metrics"]["tokens"] = {
+        "total": 33855,
+        "prompt": 84715,
+        "completion": 5477,
+    }
+    errors = verify_evaluation_report(tampered)
+    assert any("components disagree" in e for e in errors)
+    assert any("33855" in e and "90192" in e for e in errors)
+
+
+def test_verify_accepts_consistent_tokens_and_explicit_partial() -> None:
+    """Issue #151: consistent total (prompt + completion) and explicit partial reports both verify."""
+    report = evaluate_reasoning_auditor(profile="mock", split="dev", quiet=True)
+
+    # 1. Consistent: total == prompt + completion (90,192 == 84,715 + 5,477)
+    consistent = copy.deepcopy(report)
+    consistent["summary_metrics"]["tokens"] = {
+        "total": 90192,
+        "prompt": 84715,
+        "completion": 5477,
+    }
+    consistent["results"][0]["prompt_tokens"] = 84715
+    consistent["results"][0]["completion_tokens"] = 5477
+    consistent["results"][0]["total_tokens"] = 90192
+    assert verify_evaluation_report(consistent) == []
+
+    # 2. Explicit partial: labelled with partial=True and populated_cases
+    partial_report = copy.deepcopy(report)
+    partial_report["summary_metrics"]["tokens"] = {
+        "total": 33855,
+        "prompt": 84715,
+        "completion": 5477,
+        "partial": True,
+        "populated_cases": 18,
+    }
+    # Even if per-case results differ, verify the token component cross-check accepts explicit partial
+    errors = verify_evaluation_report(partial_report)
+    assert not any("components disagree" in e for e in errors)
+
+
+def test_check_cli_fails_mutated_tokens_total(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """Issue #151: --check CLI exits non-zero and prints failure on mutated token totals."""
+    out = tmp_path / "dev_report.json"
+    report = evaluate_reasoning_auditor(
+        profile="mock", split="dev", output_path=str(out), quiet=True
+    )
+    tampered = copy.deepcopy(report)
+    tampered["summary_metrics"]["tokens"]["total"] = 424242
+    bad = tmp_path / "bad_tokens.json"
+    bad.write_text(json.dumps(tampered), encoding="utf-8")
+    monkeypatch.setattr(
+        sys, "argv", ["evaluate_reasoning_audit.py", "--check", str(bad)]
+    )
+    with pytest.raises(SystemExit) as exc:
+        harness_main()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "REPORT CHECK FAILED" in err
+    assert "summary_metrics.tokens" in err
+
+
+@pytest.mark.parametrize('coverage', ['totals_only', 'mixed', 'partial_mixed'])
+def test_available_usage_coverage_round_trips(coverage: str) -> None:
+    """Provider total-only usage is counted and never mistaken for absent cost."""
+    report = evaluate_reasoning_auditor(profile='mock', split='dev', quiet=True)
+    for row in report['results']:
+        row.update(total_tokens=10, prompt_tokens=0, completion_tokens=0)
+    if coverage != 'totals_only':
+        report['results'][0].update(total_tokens=None, prompt_tokens=7, completion_tokens=3)
+    if coverage == 'partial_mixed':
+        report['results'][-1].update(total_tokens=None, prompt_tokens=0, completion_tokens=0)
+    report['summary_metrics'] = compute_metrics(report['results'])
+    tokens = report['summary_metrics']['tokens']
+    assert tokens['total'] == 10 * (len(report['results']) - (coverage == 'partial_mixed'))
+    assert tokens['partial'] is (coverage == 'partial_mixed')
+    assert tokens['populated_cases'] == len(report['results']) - (coverage == 'partial_mixed')
+    assert tokens['component_cases'] == (coverage != 'totals_only')
+    assert verify_evaluation_report(report) == []
+    report['summary_metrics']['tokens']['total'] += 1
+    assert verify_evaluation_report(report), 'coverage metadata must not bypass recomputation'

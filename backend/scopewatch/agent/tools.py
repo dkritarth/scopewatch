@@ -257,6 +257,7 @@ class GatewayDispatcher:
         timeout_s: float = 30.0,
         capture_token: Optional[str] = None,
         demo_token: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.capture_token = (
@@ -265,10 +266,15 @@ class GatewayDispatcher:
         self.demo_token = (
             demo_token if demo_token is not None else os.environ.get("DEMO_TOKEN")
         )
+        self.api_key = (
+            api_key if api_key is not None else os.environ.get("SCOPEWATCH_API_KEY")
+        )
         self._external_client = http_client is not None
         default_headers: dict[str, str] = {}
         if self.demo_token:
             default_headers["X-Demo-Token"] = self.demo_token
+        if self.api_key:
+            default_headers["X-API-Key"] = self.api_key
         self._client = http_client or httpx.Client(
             base_url=self.base_url,
             transport=transport,
@@ -280,6 +286,8 @@ class GatewayDispatcher:
         headers: dict[str, str] = {}
         if self.demo_token:
             headers["X-Demo-Token"] = self.demo_token
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
         if extra:
             headers.update(extra)
         return headers
