@@ -1,5 +1,22 @@
 # Scopewatch reviewer dashboard
 
+The working reviewer UI now uses the supplied celestial design: a moon dashboard,
+Home / Activity / Requests / Test / Badges navigation, Sunbeam and Moonlit themes,
+and local DM Sans / Instrument Serif fonts. Gateway data, SSE updates, exact
+approval controls, provenance labels, and the action simulator remain connected.
+In live mode, fixture-only runs are hidden; approval cards fetch full stored
+action arguments before approval. Badges mark page-session navigation only,
+never a security score. This dashboard is separate from the public `site/`.
+
+Local redesign verification (2026-10-25): 76 frontend unit tests and all 17 browser
+tests passed, including real-gateway denial/no execution, safe submissions,
+authentication, SSE, and both themes at 320/390/768/1440px. Backend-wide validation
+has separate platform/image failures documented in the accompanying audit; these
+frontend results do not certify a public deployment or live model inference.
+
+Open the gateway with `?live=1`; use `?live=0` explicitly for static fixtures.
+
+
 A dependency-free vanilla HTML, CSS, and JavaScript dashboard for reviewing
 synthetic agent runs. No build step, no framework: plain ES modules served over
 HTTP. It renders three invented replay runs from `scripts/fixtures.js` and, in

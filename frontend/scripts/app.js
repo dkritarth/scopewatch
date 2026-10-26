@@ -34,6 +34,7 @@ import {
   createRun,
   denyAction,
   getApprovals,
+  getAction,
   getEvents,
   getReviewerToken,
   getRuns,
@@ -274,7 +275,7 @@ export function formatLiveRun(backendRun, rawEvents = []) {
   const scope = backendRun?.task_scope;
   return {
     id: backendRun.id,
-    name: `${backendRun.name} (Live)`,
+    name: backendRun.name,
     task: scope?.task_description || "Synthetic live run",
     status: backendRun.status || "ACTIVE",
     promptVersion: backendRun.prompt_version || null,
@@ -480,7 +481,7 @@ const elements = typeof document !== "undefined" ? {
   timelineStatus: document.getElementById("timeline-status"),
 } : {};
 
-let activeRuns = [...fixtureRuns];
+let activeRuns = typeof window !== "undefined" && isLiveRequested(window.location.search, window.location.port, window.__SCOPEWATCH_LIVE__) ? [] : [...fixtureRuns];
 // Baseline timestamps per run, used to turn event timestamps into relative
 // durations instead of synthetic sequence numbers (#211).
 const timestampOffsetBaseline = new Map();
@@ -657,7 +658,7 @@ function renderRunButtons() {
           clearStores();
         }
         state.runId = run.id;
-        state.eventId = run.events[0]?.id;
+        state.eventId = run.events.find(e => e.status === "pending-approval" || e.status === "held")?.id || run.events[0]?.id;
         if (isLiveMode && run.isLive) {
           subscribeToRun(run.id);
           refreshApprovals();
@@ -801,7 +802,7 @@ function renderEvidence() {
   polSec.className = "evidence-section";
   const polTitle = document.createElement("h4");
   polTitle.className = "evidence-section-title";
-  polTitle.textContent = "2. Deterministic policy decision";
+  polTitle.textContent = "2. Gateway decision (policy and audit)";
   const polItems = [
     { label: "Outcome", value: event.policyOutcome || event.statusLabel },
     { label: "Reason code", value: event.reasonCode || "EVALUATED" },
@@ -1097,7 +1098,21 @@ function timelineButton(event, run) {
   return button;
 }
 
+export function reviewCounts(events = []) {
+  const unique = (type, fallback) => new Set(events.filter(e => e.eventType === type || (!e.eventType && e.status === fallback)).map(e => e.action_request_id || e.actionRequestId || e.id)).size;
+  return { executed: unique("EXECUTION_SUCCEEDED", "executed"), denied: unique("POLICY_DENIED", "blocked") };
+}
+
+function publishReviewSummary() {
+  if (typeof document?.dispatchEvent !== "function") return;
+  const run = getSelectedRun();
+  document.dispatchEvent(new CustomEvent("scopewatch:summary", { detail: {
+    runName: run?.name, ...reviewCounts(run?.events), pending: pendingApprovals.length, live: isLiveMode,
+  }}));
+}
+
 function renderTimeline() {
+  publishReviewSummary();
   const run = getSelectedRun();
   if (!run || !elements.timeline || !elements.timelineCount) return;
   reconcileRunActionStates(run.events);
@@ -1236,6 +1251,13 @@ export function updateApprovalCard(card, appr) {
     argsEl.textContent = `Arguments: ${data.argsPreview}`;
   }
 
+  const fullArgs = card.querySelector(".approval-full-arguments");
+  if (fullArgs) fullArgs.textContent = appr.detailsError
+    ? "Could not load the proposed action. Retry loading approvals before approving."
+    : JSON.stringify(appr.arguments || {}, null, 2);
+  const approveControl = card.querySelector(".btn-approve");
+  if (approveControl && appr.detailsError) approveControl.disabled = true;
+
   const requestedTime = (appr.requested_at || appr.created_at || "").slice(11, 19);
   const metaEl = card.querySelector(".approval-card-meta");
   if (metaEl) {
@@ -1294,6 +1316,16 @@ export function createApprovalCard(appr) {
   const argsEl = document.createElement("p");
   argsEl.className = "approval-card-args";
   card.append(argsEl);
+
+  const proposed = document.createElement("details");
+  proposed.className = "approval-proposed-action";
+  proposed.open = true;
+  const proposedTitle = document.createElement("summary");
+  proposedTitle.textContent = "Full proposed action arguments";
+  const fullArguments = document.createElement("pre");
+  fullArguments.className = "approval-full-arguments";
+  proposed.append(proposedTitle, fullArguments);
+  card.append(proposed);
 
   const meta = document.createElement("p");
   meta.className = "approval-card-meta";
@@ -1438,6 +1470,7 @@ export function createApprovalCard(appr) {
 export function renderApprovals() {
   if (!elements.approvalsList || !elements.pendingApprovalsCount) return;
   elements.pendingApprovalsCount.textContent = String(pendingApprovals.length);
+  publishReviewSummary();
 
   if (pendingApprovals.length === 0) {
     elements.approvalsList.replaceChildren();
@@ -1499,8 +1532,27 @@ export async function refreshApprovals() {
   try {
     const fetched = await withRetry(() => getApprovals("PENDING", run.id), { retries: 2, baseDelayMs: 300 });
     if (Array.isArray(fetched)) {
-      pendingApprovals = fetched;
+      const enriched = await Promise.all(fetched.map(async approval => {
+        try {
+          const detail = await getAction(run.id, approval.action_request_id);
+          if (getSelectedRun()?.id === run.id) {
+            for (const rawEvent of detail.events || []) {
+              const transformed = transformApiEvent(rawEvent, { runId: run.id, actionRequest: detail.action_request, reasoningAudit: detail.reasoning_audit });
+              const existing = run.events.find(event => event.id === transformed.id);
+              if (existing) Object.assign(existing, transformed);
+            }
+          }
+          return { ...approval, operation: detail.action_request.operation, resource: detail.action_request.resource,
+            arguments: detail.action_request.arguments, detailsLoaded: true };
+        } catch {
+          return { ...approval, detailsError: true };
+        }
+      }));
+      if (getSelectedRun()?.id !== run.id) return;
+      pendingApprovals = enriched;
       renderApprovals();
+      renderTimeline();
+      renderEvidence();
     }
     if (elements.approvalsStatus) {
       renderPanelStatus(
@@ -2178,10 +2230,8 @@ function subscribeToRun(runId) {
           renderScope();
         }
         renderTimeline();
-        if (state.eventId === formatted.id || !state.eventId) {
-          state.eventId = formatted.id;
-          renderEvidence();
-        }
+        if (!state.eventId) state.eventId = formatted.id;
+        renderEvidence();
       }
       refreshApprovals();
     },
@@ -2657,7 +2707,7 @@ async function bootstrap() {
     updateGatewayStatus("Live gateway connected", "connected");
     const bannerMode = document.getElementById("synthetic-banner-mode");
     if (bannerMode) {
-      bannerMode.textContent = "Connected to a live gateway; mutations require a reviewer token.";
+      bannerMode.textContent = "Connected to the gateway. Hosted demos may require a reviewer token for changes.";
     }
     // Demo mode means the gate requires the reviewer token for every mutating
     // call (#115), so offer the credential panel up front instead of letting a
@@ -2714,8 +2764,10 @@ async function bootstrap() {
 
       // Keep synthetic fixtures available as a fallback, but show live runs first
       // and open on a live run with a pending approval when one exists.
-      activeRuns = [...formattedLiveRuns, ...fixtureRuns];
+      activeRuns = formattedLiveRuns;
+      elements.runButtons?.replaceChildren();
       const preferredLiveRun =
+        formattedLiveRuns.find(run => run.events.some(e => e.reasonCode === "REASONING_SCOPE_CONCERN")) ||
         formattedLiveRuns.find((run) =>
           (Array.isArray(run.events) && run.events.length > 0) &&
           (
@@ -2727,7 +2779,7 @@ async function bootstrap() {
         null;
       if (preferredLiveRun) {
         state.runId = preferredLiveRun.id;
-        state.eventId = preferredLiveRun.events?.[0]?.id || null;
+        state.eventId = preferredLiveRun.events.find(e => e.reasonCode === "REASONING_SCOPE_CONCERN")?.id || preferredLiveRun.events.find(e => e.status === "pending-approval" || e.status === "held")?.id || preferredLiveRun.events?.[0]?.id || null;
       }
       // Keep selection valid when new runs arrive; prefer the first live run
       // with held events so the M1 escalation headline is one click away.
@@ -2735,7 +2787,8 @@ async function bootstrap() {
       renderScope();
       renderTimeline();
       renderEvidence();
-      refreshApprovals();
+      if (preferredLiveRun) subscribeToRun(preferredLiveRun.id);
+      await refreshApprovals();
 
       if (typeof window !== "undefined") {
         if (window.__runRefreshInterval) {
@@ -2762,7 +2815,9 @@ async function bootstrap() {
     }
   } else {
     isLiveMode = false;
-    updateGatewayStatus("Static replay mode", "disconnected");
+    updateGatewayStatus("Gateway unavailable", "disconnected");
+    const error = document.getElementById("connection-error");
+    if (error) { error.hidden = false; error.textContent = "Could not connect to the gateway. No live data is being shown. Check the server and reload, or explicitly open ?live=0 for a static replay."; }
   }
 }
 
