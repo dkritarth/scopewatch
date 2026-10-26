@@ -74,6 +74,11 @@ DOCKER_IMAGE = (
 
 CONTAINER_WORKSPACE = "/workspace"
 DOCKER_USER = "65534:65534"  # Debian 'nobody', non-root
+
+# Network isolation flags used by every `docker run` invocation, including the
+# executor-image preflight probe. Single source so the gateway (and any future
+# caller) cannot drift from the shared hardening flag list.
+DOCKER_NETWORK_FLAGS = ("--network", "none")
 DOCKER_MEMORY = "256m"
 DOCKER_CPUS = "1.0"
 DOCKER_PIDS_LIMIT = "64"

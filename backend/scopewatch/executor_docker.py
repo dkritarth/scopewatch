@@ -49,6 +49,7 @@ from scopewatch.path_access import volume_is_case_insensitive
 # monkeypatch-based tests patch them here, not in the shared module.
 from scopewatch.docker_job import (
     CONTAINER_WORKSPACE,
+    DOCKER_NETWORK_FLAGS,
     DOCKER_CPUS,
     DOCKER_IMAGE,
     DOCKER_MEMORY,
@@ -160,7 +161,14 @@ def preflight_executor_image(image: Optional[str] = None, runner=None) -> tuple[
     Returns ``(ok, message)``. Never installs anything over the network.
     """
     image = resolve_executor_image(image)
-    exists = _run_docker(["docker", "image", "inspect", image], runner)
+    try:
+        exists = _run_docker(["docker", "image", "inspect", image], runner)
+    except Exception as exc:  # docker binary missing or runner erroring: fail closed
+        return False, (
+            f"Docker is unavailable or failed to run while inspecting executor "
+            f"image {image!r}: {exc}. Install/start Docker and retry. "
+            "Never install over the network at run time."
+        )
     if getattr(exists, "returncode", 1) != 0:
         return False, (
             f"Executor image {image!r} is not available locally. "
@@ -169,15 +177,17 @@ def preflight_executor_image(image: Optional[str] = None, runner=None) -> tuple[
             "SCOPEWATCH_EXECUTOR_IMAGE, or pull the configured image. "
             "Never install over the network at run time."
         )
-    # Avoid re-declaring the shared isolation-flag literals here (see
-    # test_docker_job_share): build the two argv tokens without the exact
-    # marker substrings the share test forbids in this module.
-    _net_flag = "--" + "network"
-    _net_none = "n" + "one"
-    pytest_check = _run_docker(
-        ["docker", "run", "--rm", _net_flag, _net_none, image, "python", "-c", "import pytest"],
-        runner,
-    )
+    try:
+        pytest_check = _run_docker(
+            ["docker", "run", "--rm", *DOCKER_NETWORK_FLAGS, image, "python", "-c", "import pytest"],
+            runner,
+        )
+    except Exception as exc:  # docker binary missing or runner erroring: fail closed
+        return False, (
+            f"Docker is unavailable or failed to run while probing executor "
+            f"image {image!r} for pytest: {exc}. Install/start Docker and retry. "
+            "Never install over the network at run time."
+        )
     if getattr(pytest_check, "returncode", 1) != 0:
         return False, (
             f"Executor image {image!r} does not provide pytest "
