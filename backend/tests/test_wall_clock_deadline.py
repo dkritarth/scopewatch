@@ -237,3 +237,15 @@ def test_approval_polling_terminates_on_wall_clock_deadline(test_env: dict[str, 
     run_resp = client.get(f"/api/v1/runs/{run_id}")
     assert run_resp.status_code == 200
     assert run_resp.json()["status"] == RunStatus.FAILED.value
+
+    # Assert wall-clock approval wait timeout transitioned approval to EXPIRED and emitted APPROVAL_EXPIRED (#283)
+    approvals_resp = client.get("/api/v1/approvals", params={"run_id": run_id})
+    assert approvals_resp.status_code == 200
+    approvals = approvals_resp.json()
+    assert len(approvals) == 1
+    assert approvals[0]["status"] == "EXPIRED"
+
+    events_resp = client.get(f"/api/v1/runs/{run_id}/events")
+    assert events_resp.status_code == 200
+    kinds = [e["event_type"] for e in events_resp.json()]
+    assert "APPROVAL_EXPIRED" in kinds
