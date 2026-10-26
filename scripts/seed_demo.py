@@ -146,6 +146,7 @@ async def seed_scenarios(
     scenarios_dir: Path,
     auto_approve_last: bool = False,
     include_prefixes: tuple[str, ...] | list[str] | None = None,
+    complete_settled: bool = False,
 ) -> list[dict[str, object]]:
     """Load JSON scenarios from disk and submit them through ScopewatchService."""
     scenario_files = _select_scenario_files(scenarios_dir, include_prefixes)
@@ -231,6 +232,9 @@ async def seed_scenarios(
 
             scenario_actions.append(res)
 
+        if complete_settled and not service.list_approvals(ApprovalStatus.PENDING, run.id):
+            run, _ = service.complete_run(run.id)
+            print("     Seed lifecycle: completed (no pending approvals)")
         results.append({"run": run, "actions": scenario_actions})
 
     return results
@@ -489,11 +493,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seed only scenario files starting with PREFIX (repeatable; "
         "overrides the default set selection)",
     )
+    parser.add_argument(
+        "--complete-settled", action="store_true",
+        help="Complete scripted seed runs with no pending approvals; held runs remain reviewable.",
+    )
     return parser
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.complete_settled and args.mode != "scripted":
+        parser.error("--complete-settled requires --mode scripted")
 
     if args.coding:
         include_prefixes: list[str] | None = list(CODING_SCENARIO_PREFIXES)
@@ -555,6 +566,7 @@ def main() -> None:
                 scenarios_dir=args.scenarios_dir,
                 auto_approve_last=args.auto_approve,
                 include_prefixes=include_prefixes,
+                complete_settled=args.complete_settled,
             )
         )
 
