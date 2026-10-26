@@ -107,7 +107,9 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     correct = 0
 
     latencies: list[float] = []
-    case_total_tokens = 0
+    available_tokens = 0
+    total_only_cases = 0
+    component_cases = 0
     prompt_tokens = 0
     completion_tokens = 0
     total_tokens_populated_cases = 0
@@ -127,9 +129,17 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         prompt_tokens += r.get("prompt_tokens") or 0
         completion_tokens += r.get("completion_tokens") or 0
         tt = r.get("total_tokens")
-        if tt is not None:
+        components = (r.get("prompt_tokens") or 0) + (r.get("completion_tokens") or 0)
+        # Prefer components per case, not globally: a provider may expose a
+        # breakdown for one turn and only a total for another. Count both.
+        if components > 0:
+            component_cases += 1
             total_tokens_populated_cases += 1
-            case_total_tokens += tt
+            available_tokens += components
+        elif tt is not None:
+            total_only_cases += 1
+            total_tokens_populated_cases += 1
+            available_tokens += tt
 
         if actual == ReasoningAuditVerdict.FAILED.value:
             failures += 1
@@ -193,22 +203,17 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         "latency_ms": calculate_percentiles(latencies),
         "tokens": (
             {
-                "total": prompt_tokens + completion_tokens,
+                "total": available_tokens,
                 "prompt": prompt_tokens,
                 "completion": completion_tokens,
+                "aggregation": "available_case_usage",
+                "partial": total_tokens_populated_cases < total_cases,
+                "populated_cases": total_tokens_populated_cases,
+                "component_cases": component_cases,
             }
-            if (prompt_tokens > 0 or completion_tokens > 0)
-            else (
-                {
-                    "total": case_total_tokens,
-                    "prompt": 0,
-                    "completion": 0,
-                    "partial": total_tokens_populated_cases < total_cases,
-                    "populated_cases": total_tokens_populated_cases,
-                }
-                if (total_tokens_populated_cases > 0 and case_total_tokens > 0)
-                else {"total": 0, "prompt": 0, "completion": 0}
-            )
+            if total_only_cases and available_tokens > 0
+            else {"total": prompt_tokens + completion_tokens,
+                  "prompt": prompt_tokens, "completion": completion_tokens}
         ),
         "category_metrics": cat_metrics,
     }
@@ -637,7 +642,18 @@ def verify_evaluation_report(
                             if summary_tokens.get("populated_cases") is not None
                             else summary_tokens.get("populated_cases_count")
                         )
-                        if not (is_partial and isinstance(pop_count, int) and pop_count > 0):
+                        # A total-only provider breakdown is unavailable, not
+                        # zero. Recomputed metadata above pins both coverage and
+                        # total, including complete coverage (partial=False).
+                        available_usage = (
+                            summary_tokens.get("aggregation") == "available_case_usage"
+                            and isinstance(pop_count, int)
+                            and 0 < pop_count <= len(results)
+                            and isinstance(summary_tokens.get("component_cases"), int)
+                            and 0 <= summary_tokens["component_cases"] < pop_count
+                            and tot >= expected_total >= 0
+                        )
+                        if not (available_usage or (is_partial and isinstance(pop_count, int) and pop_count > 0)):
                             errors.append(
                                 f"summary_metrics.tokens components disagree: "
                                 f"total ({tot}) != prompt ({prompt}) + completion ({completion}) = {expected_total} "
