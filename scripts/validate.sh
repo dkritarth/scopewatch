@@ -100,3 +100,4 @@ fi
 echo ""
 echo "[7/7] Running clean-room demo scenario verification..."
 "${REPO_ROOT}/scripts/verify_scenario.sh"
+

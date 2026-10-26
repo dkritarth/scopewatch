@@ -321,14 +321,18 @@ Not interchangeable, and the difference shows up in the evidence a reviewer sees
 | --- | --- | --- |
 | Endpoint | `api.openrouter.ai` | `api.tokenfactory.nebius.com` |
 | Model served | `nvidia/nemotron-3.5-lightning` | `nvidia/Nemotron-3_5-Lightning` |
-| Reasoning field observed | non-empty `message.reasoning`, including on tool-call turns | `message.reasoning` and `message.reasoning_content` both present and **`None`** |
-| Recorded provenance | `PROVIDER_EXPOSED_TRACE` (with capture credential) | **`UNAVAILABLE`** |
+| Reasoning field observed | non-empty `message.reasoning`, including on tool-call turns | on a plain completion, `message.reasoning` and `message.reasoning_content` both present and **`None`** |
+| Recorded provenance | `PROVIDER_EXPOSED_TRACE` (with capture credential) | no provider trace; `AGENT_AUTHORED_SUMMARY` if tool-call turns carry `content` text, else `UNAVAILABLE` (not yet observed, #214) |
 
-Nebius writes its thinking into `content` rather than a reasoning field, and the
-256-token cap is consumed by it (`finish_reason: length`). Per ADR-0001
-decision 5 text inside `content` is not provider-exposed reasoning, so the
-gateway records `UNAVAILABLE`. That is the honest outcome, but it means a
-Nebius-backed demo shows no provider reasoning trace in the evidence panel.
+On a plain completion Nebius wrote its thinking into `content` rather than a
+reasoning field, and it consumed the 256-token cap (`finish_reason: length`).
+Per ADR-0001 decision 5 text inside `content` is never a provider-exposed trace,
+so a Nebius-backed demo shows no provider trace in the evidence panel. On
+tool-call turns the agent loop forwards `content` text as an agent-authored
+summary, and the auditor reads summaries: if Nemotron writes text there,
+scenario 06 may `HOLD` on agent-written text; if `content` is empty, provenance
+is `UNAVAILABLE`, the audit is skipped, and 06 stays `ALLOW`. What a Nebius
+tool-call turn actually records has not been observed (issue #214).
 
 Full evidence, including how the original `NEBIUS_API_KEY` was diagnosed as an
 AI Cloud service-account key rather than a Token Factory key:

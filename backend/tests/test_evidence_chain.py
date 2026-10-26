@@ -309,6 +309,7 @@ def test_held_decision_permits_later_execution() -> None:
     chain = EvidenceChain(run_id=RUN_A)
     chain.append("ACTION_REQUESTED", action_id="act-h", payload={})
     chain.append("POLICY_HELD", action_id="act-h", payload={})
+    chain.append("APPROVAL_REQUESTED", action_id="act-h", payload={})
     chain.append("APPROVAL_GRANTED", action_id="act-h", payload={})
     chain.append("EXECUTION_SUCCEEDED", action_id="act-h", payload={})
     assert chain.verify().ok is True

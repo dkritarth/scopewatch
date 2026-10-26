@@ -11,6 +11,8 @@ they run with no daemon present.
 """
 
 import json
+import os
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,6 +101,7 @@ def _mock_docker(monkeypatch: pytest.MonkeyPatch, calls: list, payload: dict | N
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload).encode(), b"")
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
+    monkeypatch.setattr(docker_mod, "run_docker_process", _fake)
     monkeypatch.setattr(docker_mod.subprocess, "run", _fake)
 
 
@@ -148,6 +151,72 @@ def test_helper_detects_swap_to_blocked_target(
     assert denial is not None
     reason_code, _explanation, _rule = denial
     assert reason_code == ReasonCode.BLOCKED_PATH
+
+
+def test_helper_rejects_symlink_loop_at_dispatch(
+    swap_workspace: Path, swap_run: Run, docker_backend: None
+) -> None:
+    """A post-decision swap to a symlink loop fails closed, never raises.
+
+    Python 3.13 stopped raising on loops in non-strict ``Path.resolve()``;
+    the staged check must still refuse the loop on every version.
+    """
+    action = _cat_action(swap_run)
+    assert evaluate_policy(action, swap_run, swap_workspace).outcome == PolicyOutcome.ALLOW
+    (swap_workspace / "link").unlink()
+    (swap_workspace / "link").symlink_to("loop")
+    (swap_workspace / "loop").symlink_to("link")
+    denial = revalidate_run_command_in_workspace(
+        action, swap_run.task_scope, swap_workspace
+    )
+    assert denial is not None
+    reason_code, _explanation, _rule = denial
+    assert reason_code == ReasonCode.MALFORMED_REQUEST
+
+
+def _resolve_like_py313(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``Path.resolve`` behave as on 3.13 whatever CI runs.
+
+    3.13's non-strict resolve returns a looping link unresolved instead of
+    raising ``RuntimeError``; ``os.path.realpath`` already does that on
+    3.12, so the policy checks get exercised the 3.13 way on every version.
+    """
+    monkeypatch.setattr(
+        Path, "resolve", lambda self, strict=False: Path(os.path.realpath(self))
+    )
+
+
+def test_loop_denied_when_resolve_does_not_raise(
+    swap_workspace: Path,
+    swap_run: Run,
+    docker_backend: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (swap_workspace / "link").unlink()
+    (swap_workspace / "link").symlink_to("loop")
+    (swap_workspace / "loop").symlink_to("link")
+    _resolve_like_py313(monkeypatch)
+    action = _cat_action(swap_run)
+    assert evaluate_policy(action, swap_run, swap_workspace).outcome == PolicyOutcome.DENY
+    denial = revalidate_run_command_in_workspace(
+        action, swap_run.task_scope, swap_workspace
+    )
+    assert denial is not None
+    assert denial[0] == ReasonCode.MALFORMED_REQUEST
+
+
+def test_blocked_path_loop_does_not_raise_or_block_other_targets(
+    swap_workspace: Path, swap_run: Run, docker_backend: None
+) -> None:
+    """A blocked path that is itself a loop is skipped, not raised out of."""
+    shutil.rmtree(swap_workspace / "secrets")
+    (swap_workspace / "secrets").symlink_to("secrets")
+    action = _cat_action(swap_run, ["cat", "tests/allowed.txt"])
+    assert evaluate_policy(action, swap_run, swap_workspace).outcome == PolicyOutcome.ALLOW
+    assert (
+        revalidate_run_command_in_workspace(action, swap_run.task_scope, swap_workspace)
+        is None
+    )
 
 
 def test_helper_rejects_mutated_unallowlisted_prefix(

@@ -17,6 +17,10 @@ DEMO_REVIEWER_ID = "demo-reviewer (synthetic)"
 DEFAULT_EXPIRY_SECONDS = int(os.environ.get("SCOPEWATCH_APPROVAL_TTL", "300"))
 MAX_READ_BYTES = 64 * 1024  # 64 KiB
 MAX_WRITE_BYTES = 64 * 1024  # 64 KiB
+MAX_DIR_ENTRIES = 1000
+MAX_COPY_BACK_BYTES = 10 * 1024 * 1024  # 10 MiB
+MAX_COPY_BACK_FILES = 10000
+MAX_CONTAINER_OUTPUT_BYTES = 2 * 1024 * 1024  # 2 MiB
 
 # --- Gateway-native demo guards (issues #76 / #77) ---------------------------
 # Demo mode engages when DEMO_TOKEN is set; see scopewatch.demo_guards for the

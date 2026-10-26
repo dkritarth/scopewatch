@@ -16,3 +16,5 @@ Rules that still apply: synthetic data only, no secrets, and label reasoning evi
 | Experiment | Status |
 | --- | --- |
 | [cot-auditing](cot-auditing/README.md) | Active. Hardened auditor being ported into the backend (#28) |
+| [mcp-gateway](mcp-gateway/README.md) | Active prototype. Gateway-mediated MCP adapter: five MCP tools routed only through `POST /api/v1/runs/{id}/actions` (#51) |
+| [severity-levels](severity-levels/README.md) | Active prototype. Display-and-triage severity mapping over reason codes and auditor signals; never changes a decision (#50) |
