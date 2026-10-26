@@ -17,6 +17,7 @@ from scopewatch.scope_paths import (
     normalize_relative_segments as _normalize_segments,
     scoped_path_denial as _scoped_path_denial,
     segments_within as _segments_within,
+    volume_is_case_insensitive,
 )
 
 
@@ -43,10 +44,20 @@ def scoped_path_reason(
     resolved: Path,
     allowed_paths: Iterable[str],
     blocked_paths: Iterable[str],
+    *,
+    case_insensitive: bool = False,
 ) -> tuple[ReasonCode, str | None] | None:
-    """Check both names; an allowed alias cannot authorize a blocked target."""
+    """Check both names; an allowed alias cannot authorize a blocked target.
+
+    ``case_insensitive`` is forwarded to the shared matcher so a case-variant
+    alias of a blocked path is caught on a case-insensitive volume (#305).
+    """
     denial = _scoped_path_denial(
-        requested.parts, resolved.parts, allowed_paths, blocked_paths
+        requested.parts,
+        resolved.parts,
+        allowed_paths,
+        blocked_paths,
+        case_insensitive=case_insensitive,
     )
     if denial is None:
         return None
@@ -62,4 +73,5 @@ __all__ = [
     "matching_path",
     "normalize_relative_path",
     "scoped_path_reason",
+    "volume_is_case_insensitive",
 ]

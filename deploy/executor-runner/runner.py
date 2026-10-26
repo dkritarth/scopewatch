@@ -135,6 +135,7 @@ from scopewatch.scope_paths import (  # noqa: E402
     normalize_relative_segments,
     scoped_path_denial,
     segments_within,
+    volume_is_case_insensitive,
 )  # noqa: E402
 
 # Single-use dispatch tokens expire after 60s (issue #78).
@@ -582,7 +583,14 @@ def handle_execute(
         if allowed or blocked:
             require_allowed = (operation != "run_command")
             eff_allowed = allowed if require_allowed else ["."]
-            denial = scoped_path_denial(req_segments, res_segments, eff_allowed, blocked)
+            # Re-apply the gateway's case decision on this side of the wire
+            # (#184/#305): on a case-insensitive staged volume an upper-case
+            # alias of a blocked path must be refused here too.
+            case_insensitive = volume_is_case_insensitive(str(workspace))
+            denial = scoped_path_denial(
+                req_segments, res_segments, eff_allowed, blocked,
+                case_insensitive=case_insensitive,
+            )
             if denial is not None:
                 return 403, {"error": "resource violates task scope"}
         elif res_segments != req_segments:
@@ -656,7 +664,11 @@ def handle_execute(
             if allowed or blocked:
                 require_allowed = (operation != "run_command")
                 eff_allowed = allowed if require_allowed else ["."]
-                denial = scoped_path_denial(req_segments, res_copy_segments, eff_allowed, blocked)
+                case_insensitive = volume_is_case_insensitive(str(workspace_copy))
+                denial = scoped_path_denial(
+                    req_segments, res_copy_segments, eff_allowed, blocked,
+                    case_insensitive=case_insensitive,
+                )
                 if denial is not None:
                     return 403, {"error": "resource violates task scope"}
             elif res_copy_segments != req_segments:

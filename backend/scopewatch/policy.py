@@ -20,6 +20,7 @@ from scopewatch.path_access import (
     is_descendant_or_equal as _is_descendant_or_equal,
     normalize_relative_path as _normalize_relative_path,
     scoped_path_reason,
+    volume_is_case_insensitive,
 )
 from scopewatch.models import (
     RUN_COMMAND_METACHARACTERS,
@@ -266,9 +267,18 @@ def _evaluate_policy_rules(
         )
 
     # Step 12: Check both the submitted alias and its canonical target.
+    # On a case-insensitive volume, `Path.resolve()` only canonicalises the
+    # casing of path components that exist on disk, so a nonexistent write
+    # target keeps the requested casing and an upper-case alias of a blocked
+    # path would slip the raw string match. Fold case for the comparison when
+    # the workspace volume itself folds case (#305).
     canonical_rel = candidate_path.relative_to(resolved_workspace)
     scope_error = scoped_path_reason(
-        normalized_rel, canonical_rel, scope.allowed_paths, scope.blocked_paths
+        normalized_rel,
+        canonical_rel,
+        scope.allowed_paths,
+        scope.blocked_paths,
+        case_insensitive=volume_is_case_insensitive(str(resolved_workspace)),
     )
     if scope_error is not None:
         reason, blocked = scope_error
