@@ -730,6 +730,25 @@ capture_token: Optional[str] = None,
                         message="An action is still executing; retry once it finishes.",
                         status_code=status.HTTP_409_CONFLICT,
                     )
+                run_events = ScopewatchRepository.get_events(conn, run_id)
+                started_actions = {
+                    event.action_request_id
+                    for event in run_events
+                    if event.event_type == EventType.EXECUTION_STARTED
+                    and event.action_request_id
+                }
+                terminal_actions = {
+                    event.action_request_id
+                    for event in run_events
+                    if event.event_type in (EventType.EXECUTION_SUCCEEDED, EventType.EXECUTION_FAILED)
+                    and event.action_request_id
+                }
+                if started_actions - terminal_actions:
+                    raise ScopewatchAPIError(
+                        code="APPROVED_ACTION_IN_FLIGHT",
+                        message="An action is still executing; retry once it finishes.",
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
                 ScopewatchRepository.update_run_status(conn, run_id, new_status, now)
                 event = ScopewatchRepository.append_event(
                     conn,

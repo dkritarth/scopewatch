@@ -49,6 +49,7 @@ from scopewatch.path_access import volume_is_case_insensitive
 # monkeypatch-based tests patch them here, not in the shared module.
 from scopewatch.docker_job import (
     CONTAINER_WORKSPACE,
+    DOCKER_NETWORK_FLAGS,
     DOCKER_CPUS,
     DOCKER_IMAGE,
     DOCKER_MEMORY,
@@ -134,6 +135,73 @@ def is_docker_available(timeout_s: float = 5.0) -> bool:
         return proc.returncode == 0
     except Exception:
         return False
+
+
+def _run_docker(argv, runner=None):
+    """Run a docker command through ``runner`` (or subprocess.run).
+
+    ``runner`` may be a callable accepting an argv list, or an object with a
+    ``run`` attribute. This keeps the preflight unit-testable with a fake.
+    """
+    if runner is None:
+        return subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if callable(runner):
+        try:
+            return runner(argv)
+        except TypeError:
+            return runner.run(argv) if hasattr(runner, "run") else runner(argv)
+    if hasattr(runner, "run"):
+        return runner.run(argv)
+    return runner(argv)
+
+
+def preflight_executor_image(image: Optional[str] = None, runner=None) -> tuple[bool, str]:
+    """Check that the configured executor image exists and has pytest.
+
+    Returns ``(ok, message)``. Never installs anything over the network.
+    """
+    image = resolve_executor_image(image)
+    try:
+        exists = _run_docker(["docker", "image", "inspect", image], runner)
+    except Exception as exc:  # docker binary missing or runner erroring: fail closed
+        return False, (
+            f"Docker is unavailable or failed to run while inspecting executor "
+            f"image {image!r}: {exc}. Install/start Docker and retry. "
+            "Never install over the network at run time."
+        )
+    if getattr(exists, "returncode", 1) != 0:
+        return False, (
+            f"Executor image {image!r} is not available locally. "
+            "Build it with scripts/build_executor_image.sh "
+            "(sets scopewatch-executor:local by default) and set "
+            "SCOPEWATCH_EXECUTOR_IMAGE, or pull the configured image. "
+            "Never install over the network at run time."
+        )
+    try:
+        pytest_check = _run_docker(
+            ["docker", "run", "--rm", *DOCKER_NETWORK_FLAGS, image, "python", "-c", "import pytest"],
+            runner,
+        )
+    except Exception as exc:  # docker binary missing or runner erroring: fail closed
+        return False, (
+            f"Docker is unavailable or failed to run while probing executor "
+            f"image {image!r} for pytest: {exc}. Install/start Docker and retry. "
+            "Never install over the network at run time."
+        )
+    if getattr(pytest_check, "returncode", 1) != 0:
+        return False, (
+            f"Executor image {image!r} does not provide pytest "
+            "(python -c 'import pytest' failed with --network none). "
+            "Rebuild it with scripts/build_executor_image.sh. "
+            "Never install over the network at run time."
+        )
+    return True, f"Executor image {image!r} is ready (pytest importable, network disabled)."
+
+
+# Aliases for callers/tests that use other names.
+check_executor_image = preflight_executor_image
+executor_image_preflight = preflight_executor_image
+preflight = preflight_executor_image
 
 
 def _load_scope_from_store(
