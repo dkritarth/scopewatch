@@ -360,3 +360,15 @@ not because of a policy outcome. Full evidence, including the per-cause verdict
 on #136, is in `docs/spikes/2026-10-nemotron-provider-verification.md`. A live
 `nebius-demo` run is blocked on a working key.
 
+
+### Token-usage coverage
+
+The evaluation harness prefers prompt plus completion usage for each case.
+When some cases expose only a total, it also counts those totals instead of
+silently dropping their usage. Such summaries carry
+`aggregation: available_case_usage`, `populated_cases`, `component_cases`, and
+`partial` (whether any case has no usage). Prompt/completion fields describe
+only the available breakdown; zero does not establish a provider-reported
+zero cost. `--check` recomputes both the amount and coverage metadata, so a
+complete total-only report can verify without pretending a breakdown exists.
+Previously recorded historical reports and metrics remain unchanged.
