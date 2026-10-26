@@ -156,9 +156,6 @@ sys.exit(0 if is_docker_available() else 1)'; then
       export SCOPEWATCH_EXECUTOR=docker
       echo ""
       echo "Executor: docker (Docker daemon detected; run_command scenarios execute)."
-      echo "  If a coding run_command reports 'No module named pytest', the executor"
-      echo "  image has no test runner: build backend/executor/Dockerfile and set"
-      echo "  SCOPEWATCH_EXECUTOR_IMAGE (see docs/operations/docker-executor.md)."
     else
       echo "" >&2
       echo "WARNING: --coding needs the Docker executor, and no Docker daemon was" >&2
@@ -174,6 +171,21 @@ sys.exit(0 if is_docker_available() else 1)'; then
   else
     echo ""
     echo "Executor: ${SCOPEWATCH_EXECUTOR} (from the environment)."
+  fi
+
+  # Preflight for the Docker executor image (issue #302): the configured image
+  # must exist locally and provide pytest, probed with --network none. We never
+  # install over the network at run time.
+  if [[ "${SCOPEWATCH_EXECUTOR:-}" == "docker" ]]; then
+    export SCOPEWATCH_EXECUTOR_IMAGE="${SCOPEWATCH_EXECUTOR_IMAGE:-scopewatch-executor:local}"
+    if ! "${PYTHON}" "${REPO_ROOT}/scripts/preflight_executor_image.py"; then
+      echo "" >&2
+      echo "ERROR: coding demo requires a Docker executor image with pytest, and" >&2
+      echo "the configured image (${SCOPEWATCH_EXECUTOR_IMAGE}) is not ready." >&2
+      echo "Build it locally (no network at run time) with:" >&2
+      echo "  ${REPO_ROOT}/scripts/build_executor_image.sh" >&2
+      exit 1
+    fi
   fi
 fi
 
