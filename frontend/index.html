@@ -1,49 +1,14 @@
 <!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="color-scheme" content="light dark" />
-    <title>Scopewatch | Synthetic replay reviewer</title>
-    <link rel="stylesheet" href="./styles/reviewer.css" />
-  </head>
-  <body>
-    <a class="skip-link" href="#main">Skip to dashboard</a>
-    <div class="app-shell">
-      <header class="app-header">
-        <div class="header-main">
-          <div class="header-brand">
-            <span class="brand-emblem" aria-hidden="true">
-              <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
-                <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.75" stroke-opacity="0.35" />
-                <circle cx="12" cy="12" r="6" stroke="currentColor" stroke-width="1.75" stroke-dasharray="2.5 2.5" />
-                <circle cx="12" cy="12" r="2.5" fill="currentColor" />
-                <line x1="12" y1="2" x2="12" y2="5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-                <line x1="12" y1="19" x2="12" y2="22" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-                <line x1="2" y1="12" x2="5" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-                <line x1="19" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-              </svg>
-            </span>
-            <div class="brand-text">
-              <p class="eyebrow">Scopewatch</p>
-              <h1>Reviewer dashboard</h1>
-            </div>
-          </div>
-          <p class="header-subtitle">Human review for agent activity within assigned task scope.</p>
-          <div class="header-status-wrap">
-            <span class="gateway-status" id="gateway-status" role="status">Initializing gateway...</span>
-          </div>
-        </div>
-        <p class="safety-banner" id="synthetic-banner">
-          <strong>Synthetic demo gateway.</strong> This local baseline mediates only actions submitted through its synthetic demo gateway. It does not intercept arbitrary host or agent operations. No actual enforcement outside the synthetic sandbox. <span id="synthetic-banner-mode">Preview controls change this page only.</span>
-        </p>
-          <p class="mediation-boundary" id="mediation-boundary">
-            <strong>Mediation boundary.</strong> All tool actions go through the gateway API; actions that bypass the API are not observed, blocked, or recorded. See docs/ARCHITECTURE.md (Mediation boundary).
-          </p>
-          <div class="stale-banner" id="sse-banner" role="status" hidden>
-            <span id="sse-banner-text"></span>
-            <button type="button" id="sse-retry">Retry live stream</button>
-          </div>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark"><title>Scopewatch · Your review, in orbit</title>
+<link rel="stylesheet" href="./styles/reviewer.css"><link rel="stylesheet" href="./styles/celestial.css">
+</head><body data-theme="sunbeam" data-view="home">
+<a class="skip-link" href="#main">Skip to dashboard</a>
+<div class="celestial-backdrop" aria-hidden="true"><svg viewBox="0 0 1440 1080" preserveAspectRatio="xMidYMid slice"><defs><linearGradient id="ribbon-peach"><stop stop-color="#ffd3bf" stop-opacity="0"/><stop offset="1" stop-color="#ffd3bf" stop-opacity=".6"/></linearGradient><linearGradient id="ribbon-blue"><stop stop-color="#b7d3ff" stop-opacity=".5"/><stop offset="1" stop-color="#b7d3ff" stop-opacity=".05"/></linearGradient></defs><path d="M1500 -40C1180 120 1060 300 1180 520S1080 900 820 1120L940 1120C1180 920 1380 760 1270 520S1300 140 1560 20Z" fill="url(#ribbon-peach)"/><path d="M-80 760C220 640 420 820 640 700S980 640 1200 520L1210 560C990 690 870 640 660 760S230 720 -60 840Z" fill="url(#ribbon-peach)"/><path d="M300 -60C380 140 260 260 420 420S480 640 560 760L600 740C520 620 570 500 460 400S430 130 360 -60Z" fill="url(#ribbon-blue)"/><g fill="#9d8cff" opacity=".7"><circle cx="330" cy="170" r="2"/><circle cx="840" cy="94" r="2"/><circle cx="1320" cy="700" r="3"/><circle cx="720" cy="950" r="2"/></g></svg></div>
+<aside class="celestial-rail"><a href="#home" class="rail-logo" aria-label="Scopewatch home"><svg width="42" height="42" viewBox="-23 -23 46 46" aria-hidden="true"><circle r="20" fill="none" stroke="currentColor" stroke-dasharray="1 4"/><path d="M0 -10C1 -2 2 -1 10 0C2 1 1 2 0 10C-1 2 -2 1 -10 0C-2 -1 -1 -2 0 -10Z" fill="currentColor"/></svg></a><nav class="rail-nav" aria-label="Sections"><button type="button" data-view-target="home" aria-current="page"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 3a8 8 0 1 0 3 13A8 8 0 0 1 18 3Z"/></svg><span>Home</span></button><button type="button" data-view-target="activity" aria-current="false"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 17v-5l6-4 6 4v5M12 8V4"/><circle cx="12" cy="3" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="19" r="2"/></svg><span>Activity</span></button><button type="button" data-view-target="requests" aria-current="false"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7h14v14H5zM9 7V4h6v3M9 12h6M12 9v6"/></svg><span>Requests</span><span id="nav-request-count" class="nav-count" hidden>0</span></button><button type="button" data-view-target="test" aria-current="false"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 5 8 2v14l-8-2zm18 0-8 2v14l8-2z"/></svg><span>Test</span></button><button type="button" data-view-target="badges" aria-current="false"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 17 5-9 7 9 4-13"/><circle cx="4" cy="17" r="2"/><circle cx="9" cy="8" r="2"/><circle cx="16" cy="17" r="2"/><circle cx="20" cy="4" r="2"/></svg><span>Badges</span></button></nav><div class="theme-switch" role="group" aria-label="Appearance"><button type="button" data-theme-target="moonlit" aria-label="Moonlit theme" aria-pressed="false">☾</button><button type="button" data-theme-target="sunbeam" aria-label="Sunbeam theme" aria-pressed="true">☼</button></div></aside>
+<div class="app-shell"><header class="app-header"><div class="header-main"><div class="header-brand"><span class="eyebrow">Scopewatch</span></div><div class="header-status-wrap"><span class="gateway-status" id="gateway-status" role="status">Connecting gateway…</span><span class="review-progress" id="review-progress">Your review space</span></div></div>
+<div class="stale-banner" id="sse-banner" role="status" hidden><span id="sse-banner-text"></span><button type="button" id="sse-retry">Retry live stream</button></div>
+<p class="panel-status" id="connection-error" role="alert" hidden></p>
           <form class="reviewer-access" id="reviewer-access-panel" hidden>
             <h2 class="reviewer-access-heading">Reviewer access</h2>
             <p class="reviewer-access-note">
@@ -72,73 +37,17 @@
               <span class="reviewer-access-state" id="reviewer-access-state" role="status">No token set: mutating actions are refused by the demo gate. Reading runs, events, and evidence still works.</span>
             </div>
           </form>
-      </header>
-
-      <noscript>This synthetic replay viewer needs JavaScript. No live actions are connected.</noscript>
-      <main id="main" class="dashboard-grid" tabindex="-1">
-        <section class="panel runs-panel" aria-labelledby="runs-heading">
-          <div class="panel-heading">
-            <h2 id="runs-heading">Runs</h2>
-            <p>Select a synthetic run or replay.</p>
-          </div>
-          <div class="run-buttons" id="run-buttons" role="group" aria-label="Select synthetic replay run"></div>
-          <p class="panel-status" id="runs-status" role="status" hidden></p>
-          <button type="button" id="runs-retry" class="retry-btn" hidden>Retry loading runs</button>
-          <section class="scope-card" aria-labelledby="scope-heading">
-            <h3 id="scope-heading">Task scope</h3>
-            <p id="run-task"></p>
-            <ul id="run-scope" class="scope-list"></ul>
-          </section>
-
-          <section class="simulator-card" id="simulator-panel" aria-labelledby="simulator-heading">
-            <h3 id="simulator-heading">Action simulator</h3>
-            <p class="simulator-subtitle">Simulate agent actions against task scope.</p>
-            
-            <div class="preset-group">
-              <label for="action-preset">Presets</label>
-              <select id="action-preset">
-                <option value="safe_list">Safe: List approved directory</option>
-                <option value="safe_read">Safe: Read approved invoice</option>
-                <option value="blocked_path">Blocked: Read private payroll</option>
-                <option value="traversal">Traversal: Read parent ../etc/passwd</option>
-                <option value="network">Disallowed: External HTTP request</option>
-                <option value="approval_required">Approval: Delete old report</option>
-                <option value="escalated_hold_concern">Escalated Hold: Exfiltration concern in trace</option>
-              </select>
-            </div>
-
-            <form id="action-form" class="action-form">
-              <div class="form-row">
-                <label for="action-tool">Tool</label>
-                <input id="action-tool" name="tool" value="workspace" required />
-              </div>
-              <div class="form-row">
-                <label for="action-operation">Operation</label>
-                <input id="action-operation" name="operation" value="list_directory" required />
-              </div>
-              <div class="form-row">
-                <label for="action-resource">Resource</label>
-                <input id="action-resource" name="resource" value="invoices/approved" required />
-              </div>
-              <div class="form-row">
-                <label for="action-summary">Reasoning summary (agent-authored)</label>
-                <input id="action-summary" name="summary" value="Reviewing approved invoice listing" />
-              </div>
-              <div class="form-row">
-                <label for="action-trace">Exposed reasoning trace (provider)</label>
-                <textarea id="action-trace" name="trace" rows="3" placeholder="Optional raw reasoning trace..."></textarea>
-              </div>
-              <div class="form-row">
-                <label for="action-arguments">Arguments (JSON)</label>
-                <textarea id="action-arguments" name="arguments" rows="2" placeholder="{}">{}</textarea>
-              </div>
-              <button type="submit" id="submit-action-btn" class="primary-btn">Submit simulated action</button>
-            </form>
-            <p id="action-status-msg" class="action-status-msg" role="status" hidden></p>
-          </section>
-        </section>
-
-        <section class="panel timeline-panel" aria-labelledby="timeline-heading">
+</header>
+<noscript>This dashboard needs JavaScript to load runs and review actions.</noscript>
+<main id="main" class="dashboard-grid" tabindex="-1">
+<section class="celestial-page" data-page="home" aria-labelledby="home-heading">
+<div class="home-hero"><div class="moon-scene"><svg viewBox="-180 -180 360 360" role="img" aria-label="Decorative moon, review activity shown beside it"><defs><radialGradient id="moon-lit" cx="36%" cy="30%"><stop stop-color="#fff8e8"/><stop offset="1" stop-color="#ffc48a"/></radialGradient><radialGradient id="moon-halo"><stop stop-color="#ffb487" stop-opacity=".55"/><stop offset="1" stop-color="#ffb487" stop-opacity="0"/></radialGradient><clipPath id="moon-clip"><circle r="82"/></clipPath></defs><circle r="145" fill="url(#moon-halo)"/><circle r="158" fill="none" stroke="currentColor" opacity=".2" stroke-dasharray="1 7"/><circle r="125" fill="none" stroke="currentColor" opacity=".2" stroke-dasharray="20 10 2 10"/><circle r="82" fill="url(#moon-lit)"/><g fill="#e59a5c" opacity=".22"><circle cx="-30" cy="-30" r="17"/><circle cx="23" cy="36" r="23"/><circle cx="38" cy="-32" r="10"/></g><g clip-path="url(#moon-clip)"><circle cx="55" cy="-12" r="81" fill="var(--moon-shadow, #e4defa)"/></g><g transform="translate(-113 -90)"><path d="M0 -10C1 -2 2 -1 10 0C2 1 1 2 0 10C-1 2 -2 1 -10 0C-2 -1 -1 -2 0 -10Z" fill="currentColor"/></g><g transform="translate(121 89)"><path d="M0 -10C1 -2 2 -1 10 0C2 1 1 2 0 10C-1 2 -2 1 -10 0C-2 -1 -1 -2 0 -10Z" fill="currentColor"/></g></svg>
+<div class="orbit-stat stat-executed"><strong id="home-executed">0</strong><span>Executed</span></div><div class="orbit-stat stat-denied"><strong id="home-denied">0</strong><span>Denied</span></div><div class="orbit-stat stat-pending"><strong id="home-pending">0</strong><span>Requests</span></div></div>
+<div class="hero-copy"><p class="eyebrow">A little clarity, before the next step</p><h1 id="home-heading">Welcome <em>back</em></h1><p id="home-run-name">Your agent’s activity, in one quiet place.</p><p class="hero-note">See what happened. Read the evidence.<br>Decide what happens next.</p><button type="button" class="primary-btn" data-view-target="activity">Explore activity <span aria-hidden="true">↗</span></button></div></div>
+<section class="journey-card" aria-labelledby="journey-heading"><div class="journey-heading"><h2 id="journey-heading">Your review journey</h2><span>One step at a time</span></div><div class="journey-steps"><button type="button" class="journey-step" data-view-target="activity"><span class="journey-node">1</span><strong>Read the story</strong><span>Explore this run’s activity</span></button><button type="button" class="journey-step" data-view-target="requests"><span class="journey-node">2</span><strong>Answer a request</strong><span id="journey-pending">Loading pending requests</span></button><button type="button" class="journey-step" data-view-target="test"><span class="journey-node">3</span><strong>Try the gateway</strong><span>Submit a synthetic action</span></button></div></section>
+</section>
+<section class="run-selector" aria-labelledby="runs-heading"><div class="selector-heading"><h2 id="runs-heading">Your runs</h2><span id="run-mode-label">Connecting to gateway</span></div><div class="run-buttons" id="run-buttons" role="group" aria-label="Select run"></div><p class="panel-status" id="runs-status" role="status" hidden></p><button type="button" id="runs-retry" class="retry-btn" hidden>Retry loading runs</button></section>
+<section class="celestial-page" data-page="activity" hidden aria-labelledby="activity-heading"><div class="page-heading"><p class="eyebrow">Every action has a story</p><h1 id="activity-heading">What it <em>did</em></h1><p>Open a step to see what was requested, what the rules said, and what actually ran.</p></div><div class="activity-grid">        <section class="panel timeline-panel" aria-labelledby="timeline-heading">
           <div class="panel-heading filters-heading">
             <div>
               <h2 id="timeline-heading">Timeline</h2>
@@ -175,20 +84,7 @@
             <button type="button" id="empty-reset">Clear filters</button>
           </div>
 
-          <section class="approvals-card" id="approvals-panel" aria-labelledby="approvals-heading">
-            <div class="approvals-header">
-              <h3 id="approvals-heading">Pending human approvals</h3>
-              <span id="pending-approvals-count" class="badge-pending">0</span>
-            </div>
-            <div id="approvals-list" class="approvals-list">
-              <p id="no-approvals-msg" class="no-approvals-msg">No pending approvals.</p>
-            </div>
-            <p class="panel-status" id="approvals-status" role="status" hidden></p>
-            <button type="button" id="approvals-retry" class="retry-btn" hidden>Retry loading approvals</button>
-          </section>
-        </section>
-
-        <section class="panel evidence-panel" aria-labelledby="evidence-heading">
+        </section>        <section class="panel evidence-panel" aria-labelledby="evidence-heading">
           <div class="panel-heading">
             <h2 id="evidence-heading">Selected evidence</h2>
             <p id="evidence-caption"></p>
@@ -200,15 +96,74 @@
             traces. Missing traces remain unavailable; intent is not inferred.
           </p>
         </section>
-      </main>
+</div></section>
+<section class="celestial-page" data-page="requests" hidden aria-labelledby="requests-page-heading"><div class="page-heading"><p class="eyebrow">The next step is yours</p><h1 id="requests-page-heading">A request from your <em>agent</em></h1><p>Read the proposed action and its evidence before you decide. Decisions are single-use.</p></div>          <section class="approvals-card" id="approvals-panel" aria-labelledby="approvals-heading">
+            <div class="approvals-header">
+              <h3 id="approvals-heading">Pending human approvals</h3>
+              <span id="pending-approvals-count" class="badge-pending">0</span>
+            </div>
+            <div id="approvals-list" class="approvals-list">
+              <p id="no-approvals-msg" class="no-approvals-msg">No pending approvals.</p>
+            </div>
+            <p class="panel-status" id="approvals-status" role="status" hidden></p>
+            <button type="button" id="approvals-retry" class="retry-btn" hidden>Retry loading approvals</button>
+          </section>
+</section>
+<section class="celestial-page" data-page="test" hidden aria-labelledby="test-heading"><div class="page-heading"><p class="eyebrow">Curiosity, within scope</p><h1 id="test-heading">Draw a <em>card</em></h1><p>Pick an action, inspect its details, and send it through the gateway’s synthetic workspace.</p></div><div class="preset-deck"><button type="button" class="preset-card" data-preset="network"><span class="eyebrow">I</span><span class="card-symbol" aria-hidden="true">◎</span><strong>Send data to a website</strong><span>A destination outside the scope</span></button><button type="button" class="preset-card" data-preset="safe_read"><span class="eyebrow">II</span><span class="card-symbol" aria-hidden="true">♧</span><strong>Read an invoice</strong><span>Part of the assigned task</span></button><button type="button" class="preset-card" data-preset="approval_required"><span class="eyebrow">III</span><span class="card-symbol" aria-hidden="true">♜</span><strong>Delete a file</strong><span>Check the scope and approval rules</span></button></div>          <section class="simulator-card" id="simulator-panel" aria-labelledby="simulator-heading">
+            <h3 id="simulator-heading">Action simulator</h3>
+            <p class="simulator-subtitle">Simulate agent actions against task scope.</p>
+            
+            <div class="preset-group">
+              <label for="action-preset">Presets</label>
+              <select id="action-preset">
+                <option value="safe_list">Safe: List approved directory</option>
+                <option value="safe_read">Safe: Read approved invoice</option>
+                <option value="blocked_path">Blocked: Read private payroll</option>
+                <option value="traversal">Traversal: Read parent ../etc/passwd</option>
+                <option value="network">Disallowed: External HTTP request</option>
+                <option value="approval_required">Approval: Delete old report</option>
+                <option value="escalated_hold_concern">Escalated Hold: Exfiltration concern in trace</option>
+              </select>
+            </div>
 
-      <footer class="app-footer">
-        <p>
-          Synthetic replay fixtures for interface review. Statuses separate what the fixture observed
-          from its policy outcomes. No fake execute approvals are offered or represented.
-        </p>
-      </footer>
-    </div>
-    <script type="module" src="./scripts/app.js"></script>
-  </body>
-</html>
+            <form id="action-form" class="action-form">
+              <div class="form-row">
+                <label for="action-tool">Tool</label>
+                <input id="action-tool" name="tool" value="workspace" required />
+              </div>
+              <div class="form-row">
+                <label for="action-operation">Operation</label>
+                <input id="action-operation" name="operation" value="list_directory" required />
+              </div>
+              <div class="form-row">
+                <label for="action-resource">Resource</label>
+                <input id="action-resource" name="resource" value="invoices/approved" required />
+              </div>
+              <div class="form-row">
+                <label for="action-summary">Reasoning summary (agent-authored)</label>
+                <input id="action-summary" name="summary" value="Reviewing approved invoice listing" />
+              </div>
+              <div class="form-row">
+                <label for="action-trace">Reasoning trace (caller-asserted, unverified)</label>
+                <textarea id="action-trace" name="trace" rows="3" placeholder="Optional raw reasoning trace..."></textarea>
+              </div>
+              <div class="form-row">
+                <label for="action-arguments">Arguments (JSON)</label>
+                <textarea id="action-arguments" name="arguments" rows="2" placeholder="{}">{}</textarea>
+              </div>
+              <button type="submit" id="submit-action-btn" class="primary-btn">Submit simulated action</button>
+            </form>
+            <p id="action-status-msg" class="action-status-msg" role="status" hidden></p>
+          </section>
+</section>
+<section class="celestial-page" data-page="badges" hidden aria-labelledby="badges-heading"><div class="page-heading"><p class="eyebrow">Small steps, clearer decisions</p><h1 id="badges-heading">Your <em>constellation</em></h1><p>Reading milestones for this page session. These describe your review activity, never a security score.</p></div><div class="constellation"><svg viewBox="0 0 900 220" role="img" aria-label="Review milestones: open activity, inspect evidence, visit requests, try the simulator"><path d="M100 150 320 60 550 150 790 70" stroke="currentColor" stroke-opacity=".2" fill="none" stroke-dasharray="4 7"/><g class="milestone" data-milestone="activity" transform="translate(100 150)"><path d="M0 -10C1 -2 2 -1 10 0C2 1 1 2 0 10C-1 2 -2 1 -10 0C-2 -1 -1 -2 0 -10Z" fill="currentColor"/><text y="40" text-anchor="middle">First look</text></g><g class="milestone" data-milestone="evidence" transform="translate(320 60)"><path d="M0 -10C1 -2 2 -1 10 0C2 1 1 2 0 10C-1 2 -2 1 -10 0C-2 -1 -1 -2 0 -10Z" fill="currentColor"/><text y="40" text-anchor="middle">Eagle eye</text></g><g class="milestone" data-milestone="requests" transform="translate(550 150)"><path d="M0 -10C1 -2 2 -1 10 0C2 1 1 2 0 10C-1 2 -2 1 -10 0C-2 -1 -1 -2 0 -10Z" fill="currentColor"/><text y="40" text-anchor="middle">Review desk</text></g><g class="milestone" data-milestone="test" transform="translate(790 70)"><path d="M0 -10C1 -2 2 -1 10 0C2 1 1 2 0 10C-1 2 -2 1 -10 0C-2 -1 -1 -2 0 -10Z" fill="currentColor"/><text y="40" text-anchor="middle">Explorer</text></g></svg></div>          <section class="scope-card" aria-labelledby="scope-heading">
+            <h3 id="scope-heading">Task scope</h3>
+            <p id="run-task"></p>
+            <ul id="run-scope" class="scope-list"></ul>
+          </section>
+
+</section>
+</main>
+<footer class="app-footer"><p id="mediation-boundary">All tool actions go through the gateway API; actions that bypass the API are not observed, blocked, or recorded.</p><details class="boundary-details"><summary>About this demo &amp; mediation boundary</summary><p id="synthetic-banner"><strong>Synthetic demo gateway.</strong> Only submitted actions are mediated in a bounded synthetic workspace. <span id="synthetic-banner-mode">Connecting to the local gateway.</span></p><p>Reasoning is evidence, not proof of intent. Provider traces, agent summaries, and unavailable reasoning remain separately labelled.</p></details><p>Scopewatch shows what it saw and what the rules said. You decide what comes next.</p></footer></div>
+<script type="module" src="./scripts/celestial.js"></script><script type="module" src="./scripts/app.js"></script>
+</body></html>

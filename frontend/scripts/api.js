@@ -454,3 +454,8 @@ export function connectLiveEvents(runId, { onEvent, onStatusChange, initialSeque
     },
   };
 }
+
+/** Fetch the exact stored action before presenting it for human review. */
+export async function getAction(runId, actionId) {
+  return fetchJson(`/api/v1/runs/${encodeURIComponent(runId)}/actions/${encodeURIComponent(actionId)}`);
+}

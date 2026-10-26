@@ -256,6 +256,7 @@ test("hosted demo: mutations need a reviewer token, reads never carry one", { ti
     });
 
     await page.goto(`http://127.0.0.1:${port}/?live=1`);
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
     await page.waitForFunction(
       () => (document.getElementById("gateway-status")?.textContent || "").includes("Live gateway connected"),
       { timeout: 15000 },
@@ -276,7 +277,8 @@ test("hosted demo: mutations need a reviewer token, reads never carry one", { ti
     }
 
     // A mutation without a token is refused, and the error names the panel.
-    await page.locator('#run-buttons button:has-text("Live")').first().click();
+    await page.locator("#run-buttons button").first().click();
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "safe_read");
     await page.click("#submit-action-btn");
     await page.waitForFunction(
@@ -364,6 +366,7 @@ test("a gateway without demo mode never asks for a token (#115)", { timeout: 600
     browser = await chromium.launch();
     const page = await browser.newPage();
     await page.goto(`http://127.0.0.1:${port}/?live=1`);
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
     await page.waitForFunction(
       () => (document.getElementById("gateway-status")?.textContent || "").includes("Live gateway connected"),
       { timeout: 15000 },
@@ -372,7 +375,8 @@ test("a gateway without demo mode never asks for a token (#115)", { timeout: 600
     assert.equal(await page.locator("#reviewer-access-panel").isVisible(), false);
 
     // And a mutation still works, because no token is required here.
-    await page.locator('#run-buttons button:has-text("Live")').first().click();
+    await page.locator("#run-buttons button").first().click();
+    await page.locator('.rail-nav [data-view-target="test"]').click();
     await page.selectOption("#action-preset", "safe_read");
     await page.click("#submit-action-btn");
     await page.waitForFunction(
