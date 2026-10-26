@@ -8,11 +8,11 @@ sends private data anywhere.
 
 - **URL:** `<HOSTED_URL>` (HTTPS; to be provisioned on a Nebius AI Cloud VM
   and kept up through 2026-12-15 with a billing alert and named owner).
-- **What to click:** open the URL → pick run `scenario-06-invoice-injection` →
+- **What to click:** open the URL → pick run `Reasoning-Injection Escalation` →
   confirm the policy row reads `ALLOW`, the audit card reads
   `HOLD (reasoning concern)` with a highlighted verbatim excerpt → press
   **Deny** on the approval card → confirm the denial is recorded with the
-  excerpt kept as evidence. Then open `scenario-02-blocked-private` and confirm
+  excerpt kept as evidence. Then open `Blocked Confidential Directory Access` and confirm
   `DENY` (`BLOCKED_PATH`) with no execution receipt after the decision event.
 - **Status:** not yet deployed. Use Option B until this URL exists.
 
