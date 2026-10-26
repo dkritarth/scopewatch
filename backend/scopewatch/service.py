@@ -900,9 +900,18 @@ capture_token: Optional[str] = None,
                 os.environ.get("SCOPEWATCH_REASONING_AUDIT")
             )
 
-            trace_text = (action.exposed_reasoning_trace or "").strip() or (
-                action.reasoning_summary or ""
-            ).strip()
+            trace_text = (action.exposed_reasoning_trace or "").strip()
+            summary_text = (action.reasoning_summary or "").strip()
+            if trace_text and summary_text and trace_text != summary_text:
+                # Two independent evidence channels must both reach the audit.
+                # Headers are descriptive data inside the untrusted boundary;
+                # the summary is never represented as a provider-exposed trace.
+                trace_text = (
+                    f"TRACE EVIDENCE ({action.reasoning_provenance.value}):\n{trace_text}\n\n"
+                    f"INDEPENDENT SUMMARY EVIDENCE (agent/caller text, not a provider trace):\n{summary_text}"
+                )
+            else:
+                trace_text = trace_text or summary_text
 
             decision, reasoning_requirement = required_reasoning_decision(
                 action, run, decision, reasoning_audit_enabled,

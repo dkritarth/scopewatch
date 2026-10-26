@@ -207,3 +207,22 @@ assertions, summaries and synthetic fixtures retain their labels. An attempted
 provider audit that fails still holds with `REASONING_AUDIT_FAILED`; there is no
 fallback from a required failed review to execution. Reads and operations omitted
 from this option keep the baseline semantics.
+
+### Complete reasoning evidence and context limits
+
+Operational reasoning audits reject evidence longer than the auditor's configured
+`max_trace_chars` (default 16,000 characters), including expansion needed to
+neutralize forged boundary tags. The result is `FAILED / INPUT_TOO_LARGE` with
+zero tokens used and no provider request; an otherwise allowed action becomes
+`HOLD / REASONING_AUDIT_FAILED`. The public prompt builder also refuses oversized
+reasoning. The standalone truncation helper is only a display/compatibility
+utility; its prefix must never be treated as a complete classified trace.
+
+If an action supplies both a trace and a different summary, both are included in
+the untrusted evidence block, with the summary explicitly labelled as agent/caller
+text rather than a provider trace. Their combined text is bounded as one audit
+input and included in the cache identity. A benign trace cannot hide a malicious
+summary, or vice versa. Existing tag escaping, grounded excerpts, separate stored
+source fields and provenance remain in force. Oversize holds are a conservative
+availability tradeoff, not a claim of detecting the hidden intent. Historic pinned
+benchmark results remain unchanged and do not measure this revised behavior.
