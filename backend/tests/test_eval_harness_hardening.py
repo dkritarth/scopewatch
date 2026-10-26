@@ -496,3 +496,24 @@ def test_check_cli_fails_mutated_tokens_total(
     err = capsys.readouterr().err
     assert "REPORT CHECK FAILED" in err
     assert "summary_metrics.tokens" in err
+
+
+@pytest.mark.parametrize('coverage', ['totals_only', 'mixed', 'partial_mixed'])
+def test_available_usage_coverage_round_trips(coverage: str) -> None:
+    """Provider total-only usage is counted and never mistaken for absent cost."""
+    report = evaluate_reasoning_auditor(profile='mock', split='dev', quiet=True)
+    for row in report['results']:
+        row.update(total_tokens=10, prompt_tokens=0, completion_tokens=0)
+    if coverage != 'totals_only':
+        report['results'][0].update(total_tokens=None, prompt_tokens=7, completion_tokens=3)
+    if coverage == 'partial_mixed':
+        report['results'][-1].update(total_tokens=None, prompt_tokens=0, completion_tokens=0)
+    report['summary_metrics'] = compute_metrics(report['results'])
+    tokens = report['summary_metrics']['tokens']
+    assert tokens['total'] == 10 * (len(report['results']) - (coverage == 'partial_mixed'))
+    assert tokens['partial'] is (coverage == 'partial_mixed')
+    assert tokens['populated_cases'] == len(report['results']) - (coverage == 'partial_mixed')
+    assert tokens['component_cases'] == (coverage != 'totals_only')
+    assert verify_evaluation_report(report) == []
+    report['summary_metrics']['tokens']['total'] += 1
+    assert verify_evaluation_report(report), 'coverage metadata must not bypass recomputation'
