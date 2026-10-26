@@ -8,7 +8,20 @@
 # from scratch (see RUNBOOK.md "Reset demo data").
 set -euo pipefail
 
-MARKER="/data/.seeded-scripted-v1"
+# Hosted images require demo mode. Compose rejects unset/empty values, but
+# a whitespace-only token would disable the native gateway guards too.
+# Match DemoGuardConfig.from_env's Python str.strip() semantics, including
+# Unicode whitespace that Bash's locale-dependent [[:space:]] can miss.
+if ! python -c 'import os, sys; sys.exit(0 if os.environ.get("DEMO_TOKEN", "").strip() else 1)'; then
+  echo "[entrypoint] DEMO_TOKEN must contain non-whitespace characters." >&2
+  exit 1
+fi
+
+MARKER="/data/.seeded-scripted-v2"
+if [[ -f /data/.seeded-scripted-v1 && ! -f "${MARKER}" ]]; then
+  echo "[entrypoint] legacy autoapproved seed detected; migrate or reset the demo volume explicitly before starting v2." >&2
+  exit 1
+fi
 
 if [[ ! -f "${MARKER}" ]]; then
   echo "[entrypoint] first start on this volume: seeding scripted demo..."
@@ -16,7 +29,7 @@ if [[ ! -f "${MARKER}" ]]; then
     --db-path "${SCOPEWATCH_DB_PATH:-/data/scopewatch.db}" \
     --workspace-root "${SCOPEWATCH_WORKSPACE_ROOT:-/workspace}" \
     --mode scripted \
-    --auto-approve
+    --complete-settled
   touch "${MARKER}"
   echo "[entrypoint] seed complete."
 else

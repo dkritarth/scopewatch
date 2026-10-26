@@ -20,11 +20,11 @@ docker compose up -d --build
 
 echo "Reset requested. Waiting for health..."
 for _ in $(seq 1 30); do
-  if curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
-    echo "Gate healthy. Demo reset complete."
+  if docker compose exec -T gateway python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=4)" >/dev/null 2>&1; then
+    echo "Gateway healthy. Demo reset complete."
     exit 0
   fi
   sleep 2
 done
-echo "WARNING: gate did not become healthy in 60s; run 'docker compose ps' and 'docker compose logs'." >&2
+echo "WARNING: gateway did not become healthy in 60s; run 'docker compose ps' and 'docker compose logs'." >&2
 exit 1
