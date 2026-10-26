@@ -56,7 +56,7 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
 | `pytest --rootdir=/` | DENY absolute | DENY PATH_OUTSIDE_WORKSPACE | No |
 | `pytest --rootdir=secrets` | DENY blocked | DENY BLOCKED_PATH | No |
 | `pytest --rootdir=../..` | DENY traversal | DENY PATH_TRAVERSAL | No |
-| `pytest -p no:cacheprovider tests/` (plugin load) | Documents behaviour | ALLOW — KNOWN GAP (non-path option values unchecked; containment = sandbox) | N/A (policy-level) |
+| `pytest -p no:cacheprovider tests/` (plugin load) | DENY (option not declared for the prefix) | DENY COMMAND_NOT_ALLOWED (`RULE_RUN_COMMAND_FLAG_NOT_ALLOWED`; V1 gap 6 fixed by the run_command flag allowlist) | No |
 | `pytest --confcutdir=secrets tests/` | DENY blocked | DENY BLOCKED_PATH | No |
 | `python -m pytest --confcutdir=/ tests/` | DENY absolute | DENY PATH_OUTSIDE_WORKSPACE | No |
 | Substitution `$(...)`, backticks, `;` (3 variants) | DENY metachar | DENY SHELL_METACHARACTER | No |
@@ -128,13 +128,27 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
 5. **No Unicode normalization (NFKC).** Safe only because the allowlist is
    default-deny: confusables miss every allowed prefix. A future
    normalization step must never *widen* a match.
-6. **Non-path command option values (`-p`, `--deselect`, …) are unchecked.**
-   Containment rests on the Docker sandbox for these; an allowlist of known
-   flags per command prefix would shrink the surface.
+6. **Non-path command option values (`-p`, `--deselect`, …) are unchecked**
+   — **FIXED** by the `run_command` flag allowlist
+   (`RUN_COMMAND_ALLOWED_FLAGS` in `scopewatch/models.py`): every
+   post-prefix option must be declared for the matched command prefix or
+   it DENYs `COMMAND_NOT_ALLOWED` (`RULE_RUN_COMMAND_FLAG_NOT_ALLOWED`),
+   applied again at Docker dispatch revalidation. The allowlist carries
+   only pytest's path-bearing options (`--rootdir`, `--junitxml`,
+   `--confcutdir`, `--basetemp`, `-o` — values still path-checked) and
+   bare python's interpreter options (`-c`, `-m`); an allowlisted prefix
+   with no entry accepts no options at all. Regression cover:
+   `test_bypass_pytest_plugin_flag_denied`,
+   `test_gapclose_unchecked_option_values_denied`,
+   `test_m2_behavioural_flags_denied` (`--maxfail`, `-x`, `-q`, `--tb`),
+   and `test_m2_coding_13_plugin_flag_denied`.
 7. **Argument-length cap at policy** — path-like values (resources and
    post-prefix command arguments) are capped at 4096 chars and fail closed
-   as DENY `MALFORMED_REQUEST`; *non-path* option values are still uncapped
-   (see gap 6/12), with container memory bounding the blast radius.
+   as DENY `MALFORMED_REQUEST`; the *total* argv length is still uncapped
+   (1MB of benign components passes), with container memory bounding the
+   blast radius. Non-path option values no longer sit outside the rules:
+   options the flag allowlist rejects deny outright (gap 6/12, fixed), and
+   every other post-prefix token runs through the path rules above.
 8. **Docker-daemon probes unverified here** (no daemon in this environment):
    socket reachability, pids-limit containment, output truncation, and host
    network isolation must be observed green in the `docker-executor` CI
@@ -169,7 +183,7 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
 | `--junitxml=/tmp/out.xml` (string + argv) | DENY absolute via `=`-split | same | No |
 | `--junitxml=outputs/out.xml` control | ALLOW | same | N/A (policy-level) |
 | `--basetemp=/tmp` | DENY absolute via `=`-split | same | No |
-| `-k`, `--deselect`, `-p evilplugin` values (3) | Documents behaviour | ALLOW — same V1 limitation as base `-p` case (containment = sandbox) | N/A (policy-level) |
+| `-k`, `--deselect`, `-p evilplugin` values (3) | DENY | DENY COMMAND_NOT_ALLOWED — the flag allowlist denies the option itself before any value is read (V1 gaps 6/12 fixed) | No |
 | Extra metachars `&&`, `\|\|`, `\|`, `>`, `<`, `&`, newline (7) | DENY SHELL_METACHARACTER | same | No |
 | Quoted `';'` | DENY (pre-parse screen, quoting no escape) | same | No |
 | `\x00` in command string | DENY SHELL_METACHARACTER (pre-parse screen precedence) | same | No |
@@ -225,7 +239,9 @@ signal: every case asserts machine-checked outcomes, not dashboard state.
 11. **`run_command` cwd validation (R8) now covered** — no gap: blocked,
     absolute, and traversal cwds all DENY. Kept as regression cover.
 12. **Non-path flag values (`-k`, `--deselect`, `-p <anything>`) unchecked**
-    extends base gap 6 with two more instances. Containment = Docker sandbox.
+    extends base gap 6 with two more instances — **FIXED by the same flag
+    allowlist** (see gap 6); the option itself now DENYs instead of resting
+    on the Docker sandbox.
 13. **No new real bypass outside #63/#64 scope found.** The `#66` (CONSUMED
     replay) and `#68` (argv TOCTOU) windows are asserted as xfail with issue
     links; their fixes belong to the owning threads. Backend suite after the
