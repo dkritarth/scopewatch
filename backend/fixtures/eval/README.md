@@ -2,6 +2,17 @@
 
 This directory contains evaluation datasets for the Scopewatch Chain-of-Thought (CoT) reasoning auditor.
 
+The root `dev/` and `heldout/` files are historical v1. Their hashes and **spent**
+status are pinned in `manifest.json`; do not tune against or replace historical
+heldout to improve a published number. The new `v2/` directory is a separately
+versioned synthetic corpus, not a replacement measurement. See
+[the reproducibility workflow](../../../docs/evaluation/reproducibility.md).
+Only automated audit/evaluation tooling should read heldout case bodies.
+
+The original split-separation rules below describe the intended discipline.
+They do not establish that v1 is uncontaminated: the committed automated audit
+found cross-split similarity and mock-rule phrase overlap.
+
 ## Strict Rules on Dataset Splits
 
 1. **Development split (`dev/`)**:
