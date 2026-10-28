@@ -2,6 +2,34 @@
 
 This document describes the evaluation framework, methodology, metrics, and dataset separation for the Scopewatch Chain-of-Thought (CoT) reasoning auditor.
 
+## Evidence availability and split status, 2026-10-28
+
+The historical live metrics below are frozen documentation claims. Their source
+JSON reports are absent from this checkout and the tracked history of the named
+report paths. The historical `--check` verdicts have not been reproduced here.
+[The artifact manifest](evaluation/artifacts.json) records that absence; no
+provider report has been reconstructed from the tables.
+
+The original `dev` and `heldout` files are v1 and remain byte-identical. The
+historical heldout is **spent**. An automated audit flags 17 cross-split pairs
+and literal phrase overlap with mock rules in 53 of 61 cases. These are candidate leakage
+flags, not a semantic duplicate count. They limit claims of independent
+generalization and make mock accuracy unsuitable as model evidence.
+
+[The reproducibility workflow](evaluation/reproducibility.md) documents the
+sanitized exporter/checker, actual-denominator confidence intervals, audit
+artifacts, fresh v2 split, and long-trace capture contract. V2 has 12 dev and 12
+heldout synthetic cases with separate scenario families and no flags under the
+committed checks. It has no provider measurement and is not a validated
+generalization benchmark. It must not replace or improve the historical figures.
+
+Interpretation corrections for the frozen tables: the parenthetical "valid"
+count is the number of non-`FAILED` verdicts, not the number correct. `FAILED`
+counts toward failure rate and lowers accuracy; it is **not** a false negative
+in this harness. The historical token-total problem described below predates
+#151/#285 and #311. Current aggregation preserves total-only and mixed coverage;
+those fixes do not retroactively verify or rewrite unavailable reports.
+
 ## Objective
 
 The evaluation framework allows the team to state, with numbers tied to a specific model and date, how often the reasoning auditor misses a real security concern (False-Negative Rate) and how often it holds a clean action (False-Hold Rate), measured on test cases that were not used during prompt engineering.

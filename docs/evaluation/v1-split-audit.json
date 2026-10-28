@@ -1,0 +1,422 @@
+{
+  "schema_version": 1,
+  "method": "normalized_sequence_and_word_shingles",
+  "threshold": 0.65,
+  "phrase_words": 6,
+  "counts": {
+    "dev": 13,
+    "heldout": 48
+  },
+  "duplicate_case_ids": [],
+  "cross_split_pairs": [
+    {
+      "dev_case_id": "dev-clean-01",
+      "heldout_case_id": "heldout-clean-01",
+      "normalized_exact": false,
+      "similarity": 0.415954,
+      "shared_phrase_count": 4,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-clean-02",
+      "heldout_case_id": "heldout-clean-06",
+      "normalized_exact": false,
+      "similarity": 0.655844,
+      "shared_phrase_count": 10,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-clean-02",
+      "heldout_case_id": "heldout-ambiguous-01",
+      "normalized_exact": false,
+      "similarity": 0.618474,
+      "shared_phrase_count": 6,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-drift-01",
+      "heldout_case_id": "heldout-drift-01",
+      "normalized_exact": false,
+      "similarity": 0.687023,
+      "shared_phrase_count": 7,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-drift-01",
+      "heldout_case_id": "heldout-ambiguous-05",
+      "normalized_exact": false,
+      "similarity": 0.593607,
+      "shared_phrase_count": 1,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-drift-02",
+      "heldout_case_id": "heldout-drift-03",
+      "normalized_exact": false,
+      "similarity": 0.540925,
+      "shared_phrase_count": 6,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-injection-01",
+      "heldout_case_id": "heldout-injection-01",
+      "normalized_exact": false,
+      "similarity": 0.705394,
+      "shared_phrase_count": 4,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-injection-02",
+      "heldout_case_id": "heldout-injection-03",
+      "normalized_exact": false,
+      "similarity": 0.730337,
+      "shared_phrase_count": 0,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-exfil-01",
+      "heldout_case_id": "heldout-exfil-01",
+      "normalized_exact": false,
+      "similarity": 0.626506,
+      "shared_phrase_count": 3,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-exfil-02",
+      "heldout_case_id": "heldout-exfil-02",
+      "normalized_exact": false,
+      "similarity": 0.788991,
+      "shared_phrase_count": 12,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-evasion-01",
+      "heldout_case_id": "heldout-evasion-01",
+      "normalized_exact": false,
+      "similarity": 0.903226,
+      "shared_phrase_count": 5,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-evasion-02",
+      "heldout_case_id": "heldout-evasion-02",
+      "normalized_exact": false,
+      "similarity": 0.695279,
+      "shared_phrase_count": 5,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-ambiguous-01",
+      "heldout_case_id": "heldout-clean-06",
+      "normalized_exact": false,
+      "similarity": 0.496403,
+      "shared_phrase_count": 6,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-ambiguous-01",
+      "heldout_case_id": "heldout-ambiguous-01",
+      "normalized_exact": false,
+      "similarity": 0.90411,
+      "shared_phrase_count": 12,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-ambiguous-02",
+      "heldout_case_id": "heldout-drift-01",
+      "normalized_exact": false,
+      "similarity": 0.449153,
+      "shared_phrase_count": 1,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-ambiguous-02",
+      "heldout_case_id": "heldout-drift-02",
+      "normalized_exact": false,
+      "similarity": 0.382812,
+      "shared_phrase_count": 1,
+      "same_family": false
+    },
+    {
+      "dev_case_id": "dev-ambiguous-02",
+      "heldout_case_id": "heldout-ambiguous-05",
+      "normalized_exact": false,
+      "similarity": 0.704663,
+      "shared_phrase_count": 7,
+      "same_family": false
+    }
+  ],
+  "mock_rule_overlaps": [
+    {
+      "split": "dev",
+      "case_id": "dev-clean-02",
+      "matched_rule_count": 5
+    },
+    {
+      "split": "dev",
+      "case_id": "dev-drift-01",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "dev",
+      "case_id": "dev-drift-02",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "dev",
+      "case_id": "dev-injection-01",
+      "matched_rule_count": 4
+    },
+    {
+      "split": "dev",
+      "case_id": "dev-injection-02",
+      "matched_rule_count": 4
+    },
+    {
+      "split": "dev",
+      "case_id": "dev-exfil-01",
+      "matched_rule_count": 5
+    },
+    {
+      "split": "dev",
+      "case_id": "dev-exfil-02",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "dev",
+      "case_id": "dev-evasion-01",
+      "matched_rule_count": 1
+    },
+    {
+      "split": "dev",
+      "case_id": "dev-evasion-02",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "dev",
+      "case_id": "dev-ambiguous-01",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "dev",
+      "case_id": "dev-ambiguous-02",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-clean-06",
+      "matched_rule_count": 5
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-clean-07",
+      "matched_rule_count": 6
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-clean-08",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-drift-01",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-drift-02",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-drift-03",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-drift-04",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-drift-05",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-drift-06",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-drift-07",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-drift-08",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-injection-01",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-injection-02",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-injection-03",
+      "matched_rule_count": 5
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-injection-04",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-injection-05",
+      "matched_rule_count": 1
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-injection-06",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-injection-07",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-injection-08",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-exfil-01",
+      "matched_rule_count": 5
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-exfil-02",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-exfil-03",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-exfil-04",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-exfil-05",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-exfil-06",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-exfil-07",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-exfil-08",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-evasion-01",
+      "matched_rule_count": 1
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-evasion-02",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-evasion-03",
+      "matched_rule_count": 1
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-evasion-04",
+      "matched_rule_count": 1
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-evasion-05",
+      "matched_rule_count": 1
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-evasion-06",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-evasion-07",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-evasion-08",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-ambiguous-01",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-ambiguous-02",
+      "matched_rule_count": 2
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-ambiguous-03",
+      "matched_rule_count": 4
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-ambiguous-05",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-ambiguous-06",
+      "matched_rule_count": 1
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-ambiguous-07",
+      "matched_rule_count": 3
+    },
+    {
+      "split": "heldout",
+      "case_id": "heldout-ambiguous-08",
+      "matched_rule_count": 2
+    }
+  ],
+  "mock_source_sha256": "3f116fa159d1f694ae3c730a7c69d0bdb90853dd24c8679051bf53a51da1b846",
+  "clean_under_checks": false,
+  "dataset_hashes": {
+    "dev": "8008e3b2edce9cfd279a303451f23b4eafa655c64caa14f46cc605f4f8d9eeb0",
+    "heldout": "aa28df583d15520c2d835a135d3b47faf437401b69ffa706528e217e743ff55f"
+  }
+}
