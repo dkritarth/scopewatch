@@ -243,8 +243,8 @@ class ScopewatchRepository:
             INSERT INTO reasoning_audits (
                 id, run_id, turn_id, trace_hash, verdict, concern_type,
                 flagged_excerpts_json, explanation, model, profile,
-                latency_ms, error_code, audited_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                latency_ms, error_code, audited_at, tier_evidence_json, total_tokens
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 audit.id,
@@ -260,6 +260,8 @@ class ScopewatchRepository:
                 audit.latency_ms,
                 audit.error_code,
                 audit.audited_at,
+                json.dumps([tier.model_dump(mode="json") for tier in audit.tiers]),
+                audit.total_tokens,
             ),
         )
         return audit
@@ -286,6 +288,8 @@ class ScopewatchRepository:
             latency_ms=row["latency_ms"],
             error_code=row["error_code"],
             audited_at=row["audited_at"],
+            tiers=json.loads(row["tier_evidence_json"]),
+            total_tokens=row["total_tokens"],
         )
 
     @staticmethod
@@ -358,6 +362,8 @@ class ScopewatchRepository:
             latency_ms=row["latency_ms"],
             error_code=row["error_code"],
             audited_at=row["audited_at"],
+            tiers=json.loads(row["tier_evidence_json"]),
+            total_tokens=row["total_tokens"],
         )
 
     # ---------------- Decisions ----------------

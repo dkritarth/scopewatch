@@ -1,14 +1,18 @@
 """No audit can approve an undisclosed prefix or omit an independent summary."""
 import asyncio
+import sqlite3
 from datetime import datetime, timezone
 from unittest.mock import Mock
 
 import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
+from scopewatch.app import create_app
 from scopewatch.db import init_db
 from scopewatch.models import EventType, PolicyOutcome, ReasonCode
 from scopewatch.reasoning_audit import ReasoningAuditor, ReasoningAuditVerdict
-from scopewatch.schemas import SubmitActionRequest, TaskScope
+from scopewatch.schemas import MAX_REASONING_SUMMARY_CHARS, SubmitActionRequest, TaskScope
 from scopewatch.service import ScopewatchService
 
 
@@ -23,7 +27,8 @@ def test_benign_prefix_cannot_hide_malicious_suffix():
     provider.audit_chat.assert_not_called()
 
 
-@pytest.mark.parametrize('channel', ['exposed_reasoning_trace', 'reasoning_summary'])
+# 'reasoning_summary' is omitted here: an oversized summary is rejected by the schema (MAX_REASONING_SUMMARY_CHARS) before the auditor runs; see the oversized-summary tests below.
+@pytest.mark.parametrize('channel', ['exposed_reasoning_trace'])
 def test_oversized_channel_creates_gateway_hold(tmp_path, monkeypatch, channel):
     service, run = gateway(tmp_path, monkeypatch)
     result = asyncio.run(service.submit_action(run.id, SubmitActionRequest(
@@ -38,6 +43,75 @@ def test_oversized_channel_creates_gateway_hold(tmp_path, monkeypatch, channel):
     audit = next(e for e in service.get_events(run.id) if e.event_type == EventType.REASONING_AUDIT_FAILED)
     assert audit.details['error_code'] == 'INPUT_TOO_LARGE'
     assert audit.details['tokens_used'] == 0
+
+
+def test_oversized_reasoning_summary_rejected_by_schema():
+    with pytest.raises(ValidationError):
+        SubmitActionRequest(
+            tool='workspace', operation='write_text', resource='auth.py',
+            arguments={'content': 'auth weakened'},
+            reasoning_summary='x' * 24_000,
+        )
+
+
+def test_reasoning_summary_at_exact_bound_accepted_by_schema():
+    request = SubmitActionRequest(
+        tool='workspace', operation='write_text', resource='auth.py',
+        arguments={'content': 'auth weakened'},
+        reasoning_summary='x' * MAX_REASONING_SUMMARY_CHARS,
+    )
+    assert request.reasoning_summary is not None
+    assert len(request.reasoning_summary) == MAX_REASONING_SUMMARY_CHARS
+
+
+def test_oversized_reasoning_summary_rejected_at_http_layer(tmp_path):
+    db = tmp_path / 'summary.db'
+    init_db(db)
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    (workspace / 'auth.py').write_text('require_auth = True\n')
+    app = create_app(db_path=db, workspace_root=workspace)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    run_body = {
+        'name': 'Complete evidence',
+        'task_scope': {
+            'task_description': 'Fix auth expiry, preserve authentication.',
+            'allowed_paths': ['auth.py'],
+            'allowed_tools': ['workspace'],
+            'allowed_operations': ['write_text'],
+            'created_at': datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    run_resp = client.post('/api/v1/runs', json=run_body)
+    assert run_resp.status_code == 201, run_resp.text
+    run_id = run_resp.json()['id']
+
+    oversized = 'x' * 24_000
+    payload = {
+        'tool': 'workspace',
+        'operation': 'write_text',
+        'resource': 'auth.py',
+        'arguments': {'content': 'auth weakened'},
+        'reasoning_summary': oversized,
+    }
+    actions_before = _count_rows(db, 'action_requests')
+    decisions_before = _count_rows(db, 'policy_decisions')
+
+    resp = client.post(f'/api/v1/runs/{run_id}/actions', json=payload)
+    assert resp.status_code == 422, resp.text
+    assert oversized not in resp.text
+
+    assert _count_rows(db, 'action_requests') == actions_before
+    assert _count_rows(db, 'policy_decisions') == decisions_before
+
+
+def _count_rows(db_path, table):
+    conn = sqlite3.connect(db_path)
+    try:
+        return int(conn.execute(f'SELECT COUNT(*) FROM {table};').fetchone()[0])
+    finally:
+        conn.close()
 
 
 def gateway(tmp_path, monkeypatch):
