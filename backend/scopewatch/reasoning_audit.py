@@ -20,7 +20,7 @@ from typing import Any, Optional, Protocol, Union, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field
 
 from scopewatch.models import ReasoningProvenance
-from scopewatch.schemas import TaskScope
+from scopewatch.schemas import AuditTierEvidence, TaskScope
 
 logger = logging.getLogger("scopewatch.reasoning_audit")
 
@@ -119,6 +119,7 @@ class ReasoningAuditResult(BaseModel):
     latency_ms: float = 0.0
     total_tokens: Optional[int] = None
     error_code: Optional[str] = None
+    tiers: list[AuditTierEvidence] = Field(default_factory=list)
 
 
 class AuditorChatResponse(BaseModel):
