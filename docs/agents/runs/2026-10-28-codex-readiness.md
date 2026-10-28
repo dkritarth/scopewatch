@@ -4,7 +4,7 @@ Codex / GPT-6.1-sol, implementation sub-agent. Refs [#287](https://github.com/dk
 
 Snapshot collected **2026-10-28 03:32–03:37 UTC**. Current fetched `origin/main` is `2bceb3e033c80892778557f0b798a250efcd9c88`. GitHub reviews, heads, checks and recovery work are moving. **This needs a final handoff update**, including exact heads, outstanding findings, CI and recovery PRs. This report is not a launch approval or a substitute for reviewing combined changes.
 
-The October 25 tracker is a historical snapshot. Its implementation-stop instruction and merge workflow are superseded by the current user's documentation-only assignment: claim #287, publish this log and a draft PR, never merge or close issues. Historical tracker text and evaluation records remain intact. No additional issue was claimed or created, no feature was implemented, and no provider was called.
+The October 25 tracker is a historical snapshot. Its implementation-stop instruction and merge workflow are superseded by the current orchestration run, which includes implementation and review. This audit child had a documentation-only assignment: claim #287, publish this log and a draft PR, never merge or close issues. Historical tracker text and evaluation records remain intact. No additional issue was claimed or created, no feature was implemented, and no provider was called.
 
 ## Historical PR index reconciled
 
