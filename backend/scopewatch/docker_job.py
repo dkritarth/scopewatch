@@ -62,7 +62,11 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
+
+# The policy layer supplies filesystem semantics without making this job
+# module import gateway modules. Both gateway and runner bind the same matcher.
+BlockedPathMatcher = Callable[[tuple[str, ...], tuple[str, ...]], bool]
 
 # Pinned base image digest (Debian bookworm slim Python). Single pin for both
 # sides; the gateway and the runner previously repeated this string verbatim,
@@ -514,6 +518,7 @@ def sync_copy_back(
     max_bytes: int = MAX_COPY_BACK_BYTES,
     max_files: int = MAX_COPY_BACK_FILES,
     case_insensitive: Optional[bool] = None,
+    path_matcher: Optional[BlockedPathMatcher] = None,
 ) -> list[str]:
     """Copy container-modified files back to the host workspace.
 
@@ -554,13 +559,13 @@ def sync_copy_back(
         # Resolved-destination check: a directory on the host may be a link
         # the staged copy never had (it was excluded at staging, or created
         # since). Writing below it would follow the link onto its target.
-        if rel_parts and not _dest_dir_allowed(dest_dir, resolved_root, blocked, case_insensitive):
+        if rel_parts and not _dest_dir_allowed(dest_dir, resolved_root, blocked, case_insensitive, path_matcher):
             refused.add("/".join(rel_parts))
             dirnames[:] = []
             continue
         dest_dir.mkdir(parents=True, exist_ok=True)
         for name in list(dirnames):
-            if _is_blocked((*rel_parts, name), blocked, case_insensitive):
+            if _is_blocked((*rel_parts, name), blocked, case_insensitive, path_matcher):
                 refused.add("/".join((*rel_parts, name)))
                 dirnames.remove(name)
                 continue
@@ -569,7 +574,7 @@ def sync_copy_back(
             # replicate the link itself and never descend into it (the walk
             # already refuses to follow, so no pruning is needed).
             if src_entry.is_symlink():
-                if _contains_blocked((*rel_parts, name), blocked, case_insensitive):
+                if _contains_blocked((*rel_parts, name), blocked, case_insensitive, path_matcher):
                     # Replacing this host directory with a link would rmtree
                     # the blocked paths below it (#183 review).
                     refused.add("/".join((*rel_parts, name)))
@@ -578,8 +583,8 @@ def sync_copy_back(
             else:
                 (dest_dir / name).mkdir(parents=True, exist_ok=True)
         for name in filenames:
-            if _is_blocked((*rel_parts, name), blocked, case_insensitive) or _contains_blocked(
-                (*rel_parts, name), blocked, case_insensitive
+            if _is_blocked((*rel_parts, name), blocked, case_insensitive, path_matcher) or _contains_blocked(
+                (*rel_parts, name), blocked, case_insensitive, path_matcher
             ):
                 # A file or link where the host has an ancestor of a blocked
                 # path would replace (rmtree) that directory: refuse it.
@@ -633,6 +638,7 @@ def stage_workspace_copy(
     workspace_root: Path,
     blocked_paths: Iterable[str] = (),
     case_insensitive: Optional[bool] = None,
+    path_matcher: Optional[BlockedPathMatcher] = None,
 ) -> tuple[Path, Path]:
     """Copy the workspace to a temp staging dir and open it to the container.
 
@@ -662,7 +668,7 @@ def stage_workspace_copy(
     try:
         workspace_copy = staging_root / "workspace"
         ignore = (
-            _blocked_ignore(source, resolved_source, blocked, case_insensitive)
+            _blocked_ignore(source, resolved_source, blocked, case_insensitive, path_matcher)
             if blocked
             else None
         )
@@ -712,6 +718,7 @@ def _is_blocked(
     parts: tuple[str, ...],
     blocked: tuple[tuple[str, ...], ...],
     case_insensitive: Optional[bool] = None,
+    path_matcher: Optional[BlockedPathMatcher] = None,
 ) -> bool:
     """True when ``parts`` is a blocked prefix or below one.
 
@@ -719,6 +726,8 @@ def _is_blocked(
     blocked comparison folds case (and NFC) when it is ``True`` or unknown
     (``None``), so an upper-case alias of a blocked directory still matches.
     """
+    if path_matcher is not None:
+        return any(path_matcher(parts, prefix) for prefix in blocked)
     fold = case_insensitive is None or case_insensitive is True
     return any(
         len(parts) >= len(prefix) and _fold(parts[: len(prefix)], fold) == _fold(prefix, fold)
@@ -730,6 +739,7 @@ def _contains_blocked(
     parts: tuple[str, ...],
     blocked: tuple[tuple[str, ...], ...],
     case_insensitive: Optional[bool] = None,
+    path_matcher: Optional[BlockedPathMatcher] = None,
 ) -> bool:
     """True when ``parts`` is a strict ancestor of some blocked prefix.
 
@@ -737,6 +747,11 @@ def _contains_blocked(
     removing it would delete the blocked paths below it on the host.
     ``case_insensitive`` follows the blocked side of the volume verdict (#305).
     """
+    if path_matcher is not None:
+        return any(
+            len(prefix) > len(parts) and path_matcher(prefix, parts)
+            for prefix in blocked
+        )
     fold = case_insensitive is None or case_insensitive is True
     return any(
         len(prefix) > len(parts) and _fold(prefix[: len(parts)], fold) == _fold(parts, fold)
@@ -756,6 +771,7 @@ def _blocked_ignore(
     resolved_source: Path,
     blocked: tuple[tuple[str, ...], ...],
     case_insensitive: Optional[bool] = None,
+    path_matcher: Optional[BlockedPathMatcher] = None,
 ):
     """``copytree`` ignore callback that drops blocked entries.
 
@@ -778,7 +794,7 @@ def _blocked_ignore(
         dropped = set()
         for name in names:
             parts = (*rel, name)
-            if _is_blocked(parts, blocked, case_insensitive):
+            if _is_blocked(parts, blocked, case_insensitive, path_matcher):
                 dropped.add(name)
                 continue
             entry = Path(dirpath) / name
@@ -789,7 +805,7 @@ def _blocked_ignore(
                     dropped.add(name)
                     continue
                 target_rel = _relative_parts(target, resolved_source)
-                if target_rel is not None and _is_blocked(target_rel, blocked, case_insensitive):
+                if target_rel is not None and _is_blocked(target_rel, blocked, case_insensitive, path_matcher):
                     dropped.add(name)
         return dropped
 
@@ -801,6 +817,7 @@ def _dest_dir_allowed(
     resolved_root: Path,
     blocked: tuple[tuple[str, ...], ...],
     case_insensitive: Optional[bool] = None,
+    path_matcher: Optional[BlockedPathMatcher] = None,
 ) -> bool:
     """Copy-back may write into ``dest_dir`` only if it resolves in scope."""
     try:
@@ -810,7 +827,7 @@ def _dest_dir_allowed(
     rel = _relative_parts(resolved, resolved_root)
     if rel is None:
         return False
-    return not _is_blocked(rel, blocked, case_insensitive)
+    return not _is_blocked(rel, blocked, case_insensitive, path_matcher)
 
 
 def best_effort_remove(container_name: str) -> None:

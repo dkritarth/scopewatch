@@ -134,7 +134,8 @@ from scopewatch import dispatch_gate  # noqa: E402
 from scopewatch.scope_paths import (  # noqa: E402
     normalize_relative_segments,
     scoped_path_denial,
-    segments_within,
+    filesystem_path_within,
+    blocked_path_matcher,
     volume_is_case_insensitive,
 )  # noqa: E402
 
@@ -441,10 +442,9 @@ def _argv_scope_denial(
     every blocked prefix, mirroring the gateway's
     ``revalidate_run_command_in_workspace``. Escapes fail closed.
 
-    ``case_insensitive`` is the volume's three-state verdict (#305); the
-    blocked comparison folds when it is ``True`` or unknown (``None``).
+    Per-directory probes take precedence over the legacy root-wide
+    ``case_insensitive`` hint (#319). Unknown folds blocked paths only.
     """
-    blocked_folds = case_insensitive is None or case_insensitive is True
     blocked = task_scope.get("blocked_paths") or []
     prefix_len = max(
         (
@@ -473,7 +473,7 @@ def _argv_scope_denial(
                     return "command argument escapes the workspace boundary"
                 continue
             for prefix in blocked:
-                if segments_within(canonical, prefix, case_insensitive=blocked_folds):
+                if filesystem_path_within(canonical, prefix, str(resolved_root), case_probe=volume_is_case_insensitive):
                     return f"command argument resolves into blocked path '{prefix}'"
     return None
 
@@ -599,6 +599,7 @@ def handle_execute(
             denial = scoped_path_denial(
                 req_segments, res_segments, eff_allowed, blocked,
                 case_insensitive=case_insensitive,
+                workspace_root=str(workspace), case_probe=volume_is_case_insensitive,
             )
             if denial is not None:
                 return 403, {"error": "resource violates task scope"}
@@ -609,9 +610,8 @@ def handle_execute(
     if not isinstance(arguments, dict):
         return 400, {"error": "malformed arguments"}
     run_timeout_s: Optional[float] = None
-    # One volume verdict per job (#305): the blocked argv revalidation,
-    # staging's exclusion, and copy-back's destination checks all fold case
-    # from this single answer for the run's workspace.
+    # Preserve the legacy fallback verdict; filesystem-aware checks probe
+    # the actual parent directories and compare existing identity (#319).
     case_insensitive = volume_is_case_insensitive(str(workspace))
     if operation == "run_command":
         argv, timeout, error = normalize_run_command(arguments)
@@ -623,7 +623,6 @@ def handle_execute(
                 if not any(argv[: len(cmd)] == cmd for cmd in allowed_cmds):
                     return 403, {"error": "command not allowed by task scope"}
             blocked = task_scope.get("blocked_paths") or []
-            blocked_folds = case_insensitive is None or case_insensitive is True
             for item in argv:
                 candidates = [item]
                 if "=" in item:
@@ -631,7 +630,7 @@ def handle_execute(
                 for candidate in candidates:
                     cand_segments = normalize_relative_segments(candidate)
                     for b in blocked:
-                        if segments_within(cand_segments, b, case_insensitive=blocked_folds):
+                        if filesystem_path_within(cand_segments, b, str(workspace), case_probe=volume_is_case_insensitive):
                             return 403, {"error": f"command argument violates blocked path '{b}'"}
         arguments = {"argv": argv, "timeout_s": timeout}
         run_timeout_s = timeout
@@ -660,7 +659,8 @@ def handle_execute(
     try:
         try:
             staging_root, workspace_copy = stage_workspace_copy(
-                workspace, blocked_paths, case_insensitive=case_insensitive
+                workspace, blocked_paths, case_insensitive=case_insensitive,
+                path_matcher=blocked_path_matcher(str(workspace), volume_is_case_insensitive),
             )
         except OSError:
             return 500, {"error": "workspace staging failed"}
@@ -684,6 +684,7 @@ def handle_execute(
                 denial = scoped_path_denial(
                     req_segments, res_copy_segments, eff_allowed, blocked,
                     case_insensitive=staged_case_insensitive,
+                    workspace_root=str(workspace_copy), case_probe=volume_is_case_insensitive,
                 )
                 if denial is not None:
                     return 403, {"error": "resource violates task scope"}
@@ -751,6 +752,7 @@ def handle_execute(
                     max_bytes=MAX_COPY_BACK_BYTES,
                     max_files=MAX_COPY_BACK_FILES,
                     case_insensitive=case_insensitive,
+                    path_matcher=blocked_path_matcher(str(workspace), volume_is_case_insensitive),
                 )
             except OversizedCopyBackError as err:
                 return 200, {
