@@ -371,3 +371,5 @@ class HealthResponse(BaseModel):
     # token is actually required (#115). Never carries the token itself.
     demo_mode: bool = False
     reviewer_auth: bool = False
+    demo_reset_enabled: bool = False
+    approval_ttl_seconds: int = 300

@@ -83,14 +83,11 @@ This runs the Scopewatch agent loop against the `nebius-demo` profile (`nvidia/N
 
 ### 2b. Live gateway mode (`?live=1` / `?live=0`)
 
-The reviewer UI at `http://127.0.0.1:8000/` accepts two query-string flags on the **backend port** (default 8000):
+The gateway serves its dashboard in live gateway mode by default at any port, including HTTPS behind a proxy. The server marks its own HTML; static hosting remains replay. `?live=1` explicitly requests the gateway and `?live=0` forces static replay even on the gateway. Connection or data failures never substitute fixtures. A gateway connection alone does not imply live model inference.
 
-- `?live=1` — Enables live mode: the page connects to the gateway's live run stream and shows active runs. With no `?live` parameter, the default gateway port (`8000`) or the `__SCOPEWATCH_LIVE__` flag enables live mode.
-- `?live=0` — Disables live mode: the page shows fixture/simulated runs even when a live gateway is running. This takes precedence over the port default; i.e. `?live=0` on port 8000 still shows static fixtures.
+Demo recovery controls show whether the operator enabled `SCOPEWATCH_ALLOW_RESET=true`. Authenticated deployments require a distinct reviewer token, held only in page memory. Resolve all pending approvals before resetting evidence, then choose **Reseed scenario 06** for a fresh synthetic HOLD. Reseed requires an empty gateway, uses a mock auditor, retains normal budgets, and never autoapproves. It submits only scenario 06's final proposed write; this is not a full agent run. Reset retains workspace files and runtime budgets.
 
-On any other port, `?live=1` is also accepted and enables live mode against that port. Without `?live`, the page defaults to fixture mode on non-8000 ports.
-
-See `frontend/scripts/app.js` for the full derivation logic.
+Approval cards show their UTC expiry and remaining seconds. Expiry never approves or executes an action. The hosted compose default is one hour, overridable with `SCOPEWATCH_APPROVAL_TTL`; the standalone gateway default remains 300 seconds. For an expired demo, reset and reseed to obtain a fresh review request.
 
 ### 3. Run the Scopewatch agent loop CLI
 
@@ -156,7 +153,7 @@ Both live profiles missed the <5% false-negative target. Their false negatives w
    A minimal, isolated agent loop (`backend/scopewatch/agent/`) that interacts with the environment exclusively via gateway-mediated tools (`list_directory`, `read_text`, `write_text`, `delete_path`). Has zero import path to the executor.
 
 5. **Approval workflows** (`backend/scopewatch/app.py:191,205`; `backend/scopewatch/service.py:831-900`; `backend/tests/test_agent_end_to_end.py::test_invariant_2_*,test_invariant_3_*`)
-   Generates single-use approval requests for sensitive operations. Human reviewers approve or deny actions directly in the UI or via REST API. Approvals cannot authorize an action with a deterministic `DENY`. Approval requests expire after `SCOPEWATCH_APPROVAL_TTL` seconds (default `300`, from `DEFAULT_EXPIRY_SECONDS` in `backend/scopewatch/config.py`). Reviewer access for approving or denying approvals arrives with #258.
+   Generates single-use approval requests for sensitive operations. Human reviewers approve or deny actions directly in the UI or via REST API. Approvals cannot authorize an action with a deterministic `DENY`. Approval requests expire after `SCOPEWATCH_APPROVAL_TTL` seconds (default `300`, from `DEFAULT_EXPIRY_SECONDS` in `backend/scopewatch/config.py`). Reviewer access uses a separate credential; agent credentials cannot resolve approvals.
 
 6. **Structured five-part evidence panel** (`frontend/scripts/app.js`; `frontend/index.html:149-160`)
    Every action audit displays:

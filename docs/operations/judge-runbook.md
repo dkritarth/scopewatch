@@ -72,3 +72,26 @@ Two caveats before reading a live run as a result. Live models are non-determini
 ## Scope honesty (read before judging)
 
 Mediates only actions routed through its gateway API — bypassing the API is unobserved (dashboard states this). Reasoning traces are evidence, not proof of intent. Approvals are single-use and cannot override a policy `DENY`. Hosted demo (`<HOSTED_URL>`, issue #43) and video (`<YOUTUBE_URL>`, issue #45) are PENDING-HUMAN; this local run is the complete verifiable baseline.
+
+## Hosted cold-start review and recovery (#290)
+
+Open the bare gateway URL at its actual port. Gateway-served HTML selects stored
+gateway evidence by default, including under HTTPS. `?live=0` explicitly selects
+static replay; failures never substitute replay fixtures.
+
+1. Inspect scenario 06's HOLD in Activity. Its synthetic fixture provenance is visible.
+2. Open Requests, read the full proposed write and UTC expiry, then enter the separate
+   reviewer token in Reviewer access. The token stays only in page memory.
+3. Click Deny twice. The review receipt says DENIED and no execution occurred.
+4. To repeat, resolve every pending approval, then use Reset demo evidence and
+   Reseed scenario 06. The operator must enable `SCOPEWATCH_ALLOW_RESET=true`.
+
+Reset refuses pending approvals and active execution. It retains workspace files
+and runtime budgets. Reseed requires an empty gateway and submits only scenario 06's
+final proposed write using a mock auditor. It creates a fresh synthetic HOLD without
+external inference or autoapproval. Hosted compose gives approvals one hour by default;
+standalone gives 300 seconds. Override with `SCOPEWATCH_APPROVAL_TTL`. Expiry never
+approves an action; reset/reseed provides a new request after an old one expires.
+
+This path verifies local gateway review behavior. Live sponsor launch still needs
+#214's provider evidence and the deployment's authentication/budget controls.

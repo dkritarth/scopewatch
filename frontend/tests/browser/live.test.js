@@ -1,3 +1,4 @@
+import { seedSimulatorRun } from "./gateway-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -84,6 +85,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     await new Promise((r) => setTimeout(r, 200));
   }
   assert.equal(healthy, true, "Backend failed to become healthy");
+  await seedSimulatorRun(port);
 
   let browser;
   try {
@@ -243,6 +245,7 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     await new Promise((r) => setTimeout(r, 200));
   }
   assert.equal(healthy, true, "Backend failed to become healthy");
+  await seedSimulatorRun(port);
 
   let browser;
   try {
