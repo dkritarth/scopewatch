@@ -19,10 +19,9 @@ from urllib.parse import urlsplit
 # Allow direct execution from any directory without installing Scopewatch.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 
-import httpx
 
 from scopewatch.acp_adapter import AcpClientAdapter, HoldConfig
-from scopewatch.acp_client import AcpClientError, AcpSession, COVERAGE_STATEMENT, WorkspaceMapping, _BoundedGateway
+from scopewatch.acp_client import AcpClientError, AcpSession, COVERAGE_STATEMENT, WorkspaceMapping, _BoundedGateway, GatewayClient
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -59,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
             headers['X-API-Key'] = os.environ['SCOPEWATCH_API_KEY']
         if os.environ.get('DEMO_TOKEN'):
             headers['X-Demo-Token'] = os.environ['DEMO_TOKEN']
-        with httpx.Client(base_url=args.gateway_url, headers=headers, timeout=5, trust_env=False,
+        with GatewayClient(base_url=args.gateway_url, headers=headers, timeout=5, trust_env=False,
                           follow_redirects=False) as http:
             adapter = AcpClientAdapter(http, args.run_id, hold=HoldConfig(timeout_s=args.hold_timeout))
             workspace = WorkspaceMapping(args.workspace)

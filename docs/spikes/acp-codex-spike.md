@@ -72,13 +72,18 @@ is not a supported remote mapping. The gateway independently owns confinement,
 policy, auditing, exact approval, and execution.
 
 Receipt/HOLD handling reuses the reviewed legacy adapter through a bounded HTTP
-wrapper. Only `EXECUTED` earns success. Missing, failed, or not-executed receipts
-are tool errors. Error responses expose stable local messages and bounded join
+wrapper. `GatewayClient` provides the synchronous facade over cancellable async
+HTTP. It applies the absolute remaining deadline across connection, headers and
+body reads, then closes the request client before returning. Custom transports
+and hooks are trusted application/test code, not peer-controlled callbacks.
+Only `EXECUTED` earns success. Missing, failed, or not-executed receipts
+are tool errors. Held responses must retain the original action ID and exact
+submitted arguments. Error responses expose stable local messages and bounded join
 identifiers/status codes, withholding receipt details and upstream bodies.
 
 Limits per session: 256 KiB per stdio frame, 2 MiB combined incoming/outgoing
 stdio bytes, 512 frames, 512 KiB per gateway response, 4,000 summary characters,
-16,000 task characters, and the existing 65,536-character file relay/write bound.
+16,000 task characters, 4,096 characters per opaque ACP session ID, and the existing 65,536-character file relay/write bound.
 The session deadline is configurable up to 300 seconds. HTTP calls and HOLD
 polling are bounded by the remaining session time. Callbacks are processed
 serially; a HOLD delays later callbacks and EOF detection until that bounded

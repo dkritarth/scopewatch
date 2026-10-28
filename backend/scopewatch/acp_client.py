@@ -8,6 +8,7 @@ This launches a process; it does not sandbox that process or intercept native I/
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
@@ -205,31 +206,85 @@ def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-class _BoundedGateway:
-    """Bound HTTP bytes and each call by the session deadline before legacy relay."""
+class GatewayClient:
+    """Synchronous facade over cancellable HTTP, with an absolute I/O deadline.
 
-    def __init__(self, http: httpx.Client, deadline: float) -> None:
-        self.http = http
-        self.deadline = deadline
+    Each request owns its async client and closes it before returning. There are
+    no abandoned request threads. Hooks and injected transports are trusted
+    application/test code; remote HTTP I/O runs inside asyncio's deadline.
+    """
 
-    def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+    def __init__(self, base_url: str, *, headers: dict[str, str] | None = None,
+                 transport: httpx.AsyncBaseTransport | None = None,
+                 timeout: float = 5, trust_env: bool = False,
+                 follow_redirects: bool = False) -> None:
+        self.base_url = httpx.URL(base_url)
+        self.headers = headers or {}
+        self.transport = transport
+        self.timeout = timeout
+        self.event_hooks: dict[str, list[Any]] = {'request': [], 'response': []}
+        if trust_env or follow_redirects:
+            raise AcpClientError('ACP_INVALID_HTTP_CONFIGURATION')
+
+    def __enter__(self) -> GatewayClient:
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        pass
+
+    def request(self, method: str, url: str, *, deadline: float | None = None,
+                **kwargs: Any) -> httpx.Response:
+        deadline = deadline if deadline is not None else time.monotonic() + self.timeout
+        _remaining(deadline)
+        response = asyncio.run(self._request(method, url, deadline, kwargs))
+        for hook in self.event_hooks['response']:
+            hook(response)
+        _remaining(deadline)
+        return response
+
+    async def _request(self, method: str, url: str, deadline: float,
+                       kwargs: dict[str, Any]) -> httpx.Response:
         try:
-            with self.http.stream(method, url, timeout=min(5.0, _remaining(self.deadline)), **kwargs) as response:
-                body = bytearray()
-                for chunk in response.iter_bytes(chunk_size=8192):
-                    _remaining(self.deadline)
-                    body.extend(chunk)
-                    if len(body) > MAX_HTTP_BYTES:
-                        raise AcpClientError('ACP_GATEWAY_OUTPUT_LIMIT')
-                return httpx.Response(response.status_code, content=bytes(body), request=response.request)
+            async with asyncio.timeout(_remaining(deadline)):
+                async with httpx.AsyncClient(base_url=self.base_url, headers=self.headers,
+                        transport=self.transport, trust_env=False, follow_redirects=False,
+                        timeout=min(self.timeout, _remaining(deadline))) as client:
+                    request = client.build_request(method, url, **kwargs)
+                    for hook in self.event_hooks['request']:
+                        hook(request)
+                    async with client.stream(method, str(request.url),
+                            headers=request.headers, content=request.content) as response:
+                        body = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            body.extend(chunk)
+                            if len(body) > MAX_HTTP_BYTES:
+                                raise AcpClientError('ACP_GATEWAY_OUTPUT_LIMIT')
+                        return httpx.Response(response.status_code, content=bytes(body), request=request)
+        except TimeoutError:
+            raise AcpClientError('ACP_TIMEOUT') from None
         except httpx.HTTPError:
             raise AcpClientError('ACP_GATEWAY_UNAVAILABLE') from None
 
     def post(self, url: str, **kwargs: Any) -> httpx.Response:
-        return self._request('POST', url, **kwargs)
+        return self.request('POST', url, **kwargs)
+
+    def get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self.request('GET', url, **kwargs)
+
+
+class _BoundedGateway:
+    """Apply one session deadline to every mediated gateway HTTP operation."""
+
+    def __init__(self, http: GatewayClient, deadline: float) -> None:
+        if not isinstance(http, GatewayClient):
+            raise AcpClientError('ACP_DEADLINE_GATEWAY_REQUIRED')
+        self.http, self.deadline = http, deadline
+
+    def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self.http.request('POST', url, deadline=self.deadline, **kwargs)
 
     def get(self, url: str) -> httpx.Response:
-        return self._request('GET', url)
+        return self.http.request('GET', url, deadline=self.deadline)
 
 
 class _V1Mediator(AcpClientAdapter):
@@ -247,6 +302,7 @@ class _V1Mediator(AcpClientAdapter):
                 or not _SAFE_ID.fullmatch(action['id'])
                 or action.get('run_id') != self.run_id
                 or action.get('operation') != operation or action.get('resource') != resource
+                or action.get('arguments') != arguments
                 or receipt.get('action_request_id') != action['id']
                 or decision.get('action_request_id') != action['id']
                 or receipt.get('operation') != operation or receipt.get('resource') != resource):
@@ -256,6 +312,15 @@ class _V1Mediator(AcpClientAdapter):
             if (not isinstance(sanitized, dict) or not isinstance(sanitized.get('content'), str)
                     or sanitized.get('truncated', False) is not False):
                 raise AcpClientError('ACP_INCOMPLETE_READ_RECEIPT')
+        return data
+
+    def _poll_hold(self, action_id: str, initial_response: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(action_id, str) or not _SAFE_ID.fullmatch(action_id):
+            raise AcpClientError('ACP_MISMATCHED_RECEIPT')
+        data = super()._poll_hold(action_id, initial_response)
+        if (not isinstance(data.get('action_request'), dict)
+                or data['action_request'].get('id') != action_id):
+            raise AcpClientError('ACP_MISMATCHED_RECEIPT')
         return data
 
 
@@ -349,7 +414,7 @@ class AcpSession:
             self.state = 'creating'
             result = self._request('session/new', {'cwd': str(self.workspace.root), 'mcpServers': []})
             sid = result.get('sessionId')
-            if not isinstance(sid, str) or not _SAFE_ID.fullmatch(sid):
+            if not isinstance(sid, str) or len(sid) > 4096:
                 raise AcpClientError('ACP_INVALID_SESSION')
             self.session_id, self.state = sid, 'prompting'
             result = self._request('session/prompt', {'sessionId': sid, 'prompt': [{'type': 'text', 'text': task}]})
@@ -383,6 +448,9 @@ class AcpSession:
 
     def _incoming(self, message: dict[str, Any]) -> None:
         method, params = message.get('method'), message.get('params')
+        if (isinstance(method, str) and method.startswith('_')
+                and 'id' not in message and 'result' not in message and 'error' not in message):
+            return  # Unknown extension notifications have no effect channel.
         if (not isinstance(method, str) or not isinstance(params, dict)
                 or 'result' in message or 'error' in message):
             raise AcpClientError('ACP_INVALID_REQUEST')
