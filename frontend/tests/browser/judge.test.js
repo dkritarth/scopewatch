@@ -12,7 +12,7 @@ import { chromium } from 'playwright';
 const reviewer = 'synthetic-judge-reviewer';
 const agent = 'synthetic-judge-agent';
 
-async function gateway(t, ttl = 300) {
+async function gateway(t, ttl = 300, auth = true) {
   const root = join(import.meta.dirname, '../../..');
   const dir = mkdtempSync(join(tmpdir(), 'scopewatch-judge-'));
   mkdirSync(join(dir, 'workspace'));
@@ -31,8 +31,8 @@ init_db(p / 'test.db')
 uvicorn.run(create_app(db_path=p / 'test.db', workspace_root=p / 'workspace'), host='127.0.0.1', port=${port}, log_level='warning')
 `;
   const proc = spawn('python3', ['-c', script], { stdio: ['ignore', 'pipe', 'pipe'], env: {
-    ...process.env, PYTHONPATH: join(root, 'backend'), DEMO_TOKEN: agent,
-    SCOPEWATCH_API_KEY: '', SCOPEWATCH_REVIEWER_TOKEN: reviewer,
+    ...process.env, PYTHONPATH: join(root, 'backend'), DEMO_TOKEN: auth ? agent : '',
+    SCOPEWATCH_API_KEY: '', SCOPEWATCH_REVIEWER_TOKEN: auth ? reviewer : '',
     SCOPEWATCH_ALLOW_RESET: 'true', SCOPEWATCH_AUDITOR_PROFILE: 'mock',
     SCOPEWATCH_REASONING_AUDIT: 'true', SCOPEWATCH_APPROVAL_TTL: String(ttl),
     SCOPEWATCH_RUN_WORKSPACES_DIR: join(dir, 'runs'),
@@ -291,5 +291,32 @@ for (const reply of ['denial', 'error']) {
     });
     assert.ok(keys.every(key => !key.includes(oldApproval.run_id)), 'deleted run evidence must stay absent');
     assert.equal(await page.locator('#submit-action-btn').isDisabled(), false);
+  });
+}
+
+
+for (const auth of [false, true]) {
+  test(`recovery and credential panels preserve the header layout (auth=${auth})`, { timeout: 30000 }, async t => {
+    const { page } = await gateway(t, 300, auth);
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      for (const theme of ['sunbeam', 'moonlit']) {
+        await page.locator(`[data-theme-target="${theme}"]`).click();
+        if (width === 1440 && theme === 'sunbeam') {
+          await page.screenshot({ path: `/tmp/scopewatch-328-header-${auth}.png`, fullPage: false });
+        }
+        const main = await page.locator('.header-main').boundingBox();
+        assert.ok(main.width >= 280, `header must retain usable width at ${width}px in ${theme}`);
+        const badge = await page.locator('#gateway-status').boundingBox();
+        for (const id of ['demo-controls', 'reviewer-access-panel']) {
+          const panel = page.locator(`#${id}`);
+          if (await panel.isHidden()) continue;
+          const box = await panel.boundingBox();
+          assert.ok(badge.y + badge.height <= box.y, `gateway status must precede ${id} without overlap`);
+          assert.ok(box.x >= 0 && box.x + box.width <= width + 1, `${id} stays inside the viewport`);
+        }
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+      }
+    }
   });
 }
