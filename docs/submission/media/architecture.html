@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scopewatch gateway architecture</title>
+<style>
+:root { color-scheme: light; font-family: system-ui, sans-serif; color: var(--foreground, #16293d); }
+body { margin: 0; }
+figure { margin: 24px auto; max-width: 1080px; padding: 0; }
+h1 { font-size: 32px; margin: 0 0 12px; }
+p, li { font-size: 18px; line-height: 1.5; }
+.flow { display: grid; gap: 10px; }
+.step { border: 2px solid var(--border, #49677d); border-radius: 12px; padding: 12px 18px; background: var(--card, #f3f7fb); }
+.step strong { font-size: 21px; }
+.step p { margin: 4px 0; }
+.arrow { text-align: center; font-size: 22px; }
+.branches { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.stop { border-color: var(--destructive, #903828); background: var(--destructive-surface, #fff3ee); }
+.hold { border-color: var(--warning, #796016); background: var(--warning-surface, #fff9e6); }
+.note { border-left: 4px solid var(--border, #49677d); padding-left: 14px; }
+figcaption { font-size: 16px; line-height: 1.5; margin-top: 18px; }
+</style>
+<figure aria-labelledby="title" aria-describedby="caption">
+<h1 id="title">Scopewatch: decision before execution</h1>
+<p>Authored architecture illustration. Applies only to actions routed through the gateway API.</p>
+<div class="flow">
+<div class="step"><strong>1. Agent submits a tool action to the gateway</strong><p>Declared task scope, action arguments, and separately labelled reasoning evidence.</p></div>
+<div class="arrow" aria-hidden="true">↓</div>
+<div class="step"><strong>2. Deterministic policy runs first</strong><p>Checks tools, operations, paths, commands, and network scope before audit or execution.</p></div>
+<div class="branches">
+<div class="step stop"><strong>DENY → stop</strong><p>Final. No audit or execution. Human approval cannot override a policy denial.</p></div>
+<div class="step hold"><strong>Policy HOLD → human review</strong><p>Requires approval bound to this exact action. Denied or expired requests do not execute.</p></div>
+</div>
+<div class="step"><strong>3. Policy ALLOW → optional reasoning audit</strong><p>Concern or attempted audit failure escalates to HOLD. The model cannot grant access or deny an action. Missing reasoning stays labelled unavailable.</p></div>
+<div class="arrow" aria-hidden="true">↓ ALLOW, or exact single-use approval for HOLD</div>
+<div class="step"><strong>4. Store the decision, then authorize dispatch</strong><p>No stored decision, no execution. Check approval binding and run lifecycle; consume approval once.</p></div>
+<div class="arrow" aria-hidden="true">↓</div>
+<div class="step"><strong>5. Controlled executor → execution receipt</strong><p>Bounded per-run workspace. Local, Docker, or remote executor according to configuration.</p></div>
+<div class="step"><strong>Evidence store → reviewer dashboard</strong><p>SQLite records decisions before effects and distinguishes attempted, allowed, held, denied, approved, executed, and failed. SSE streams recorded events to reviewers.</p></div>
+</div>
+<p class="note">Agent and auditor models come from provider profiles. Reasoning is evidence, not proof of intent. Calls that bypass the gateway are not observed, blocked, or recorded.</p>
+<figcaption id="caption">Reading order follows the numbered steps. DENY ends the action. Policy HOLD and audit escalation require exact human approval before the dispatch gate permits execution. This illustration makes no claim about live provider or sponsor usage. Implementation reference: backend/scopewatch/service.py and dispatch_gate.py.</figcaption>
+</figure>
+</html>

@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "captured_at_utc": "2026-10-28T03:18:10.985Z",
+  "captured_commit": "2bceb3e033c80892778557f0b798a250efcd9c88",
+  "frontend_tree": "2604b667679a2e276681f5b738e077eb5ebf1cbc",
+  "capture_script_sha256": "c479e09f56c5a690b426e26430a5e567d71a67ae8a7792d02ce4cc10576d4af9",
+  "architecture_source_sha256": "123a301730fe7c5aa5ce60c1b94bf50a687f4033b572ccd471b1ac8e41c042bb",
+  "mode": "scripted",
+  "agent_profile": "mock",
+  "auditor_profile": "mock",
+  "executor": "local",
+  "provider_calls": 0,
+  "reasoning_provenance": "SYNTHETIC_FIXTURE",
+  "warnings": [
+    "404 /fonts/dm-sans.woff2; gateway used fallback fonts",
+    "404 /fonts/instrument-serif.woff2; gateway used fallback fonts",
+    "404 /fonts/instrument-serif-italic.woff2; gateway used fallback fonts"
+  ],
+  "browser": "Chromium 153.0.8010.12",
+  "playwright": "1.63.0",
+  "viewport": {
+    "width": 1440,
+    "height": 1080
+  },
+  "device_scale_factor": 1,
+  "locale": "en-US",
+  "timezone": "UTC",
+  "checks": [
+    "six seeded runs",
+    "reasoning hold present",
+    "synthetic trace provenance",
+    "held action has no successful execution",
+    "request content matches stored arguments exactly",
+    "no JavaScript page errors",
+    "only disclosed font HTTP failures",
+    "no external browser requests",
+    "PNG signatures and dimensions"
+  ],
+  "assets": [
+    {
+      "file": "scripted-home-moonlit.png",
+      "caption": "SCRIPTED MOCK: celestial dashboard home for the seeded invoice-injection run. Local gateway data, no live model inference.",
+      "alt": "Moonlit dashboard home with executed and denied counts and a pending review request.",
+      "width": 1440,
+      "height": 1168,
+      "sha256": "6877fa7f3a7767eaa13f0ff9febf04ea46b11edac0ebe10fc3a9fdcd4a26b838"
+    },
+    {
+      "file": "scripted-hold-sunbeam.png",
+      "caption": "SCRIPTED MOCK: the seeded action is held for a reasoning concern. The trace is a synthetic fixture, not provider-exposed reasoning. No execution receipt exists for this held action.",
+      "alt": "Sunbeam activity timeline with the selected reasoning hold and synthetic fixture evidence.",
+      "width": 1440,
+      "height": 2695,
+      "sha256": "6b804f4f7682993e3a6a4f8e7817b4f2865262b99359d46af8f50ee4dc59bda7"
+    },
+    {
+      "file": "scripted-request-moonlit.png",
+      "caption": "SCRIPTED MOCK: pending review shows the exact proposed synthetic write and approval controls. This capture does not approve or execute the action.",
+      "alt": "Moonlit request page with proposed write content and approve and deny controls.",
+      "width": 1440,
+      "height": 1260,
+      "sha256": "0e99d31e78431b3605367392fc8b856fcbdfec19268b8cf5bb4f079a85084e3b"
+    },
+    {
+      "file": "architecture.png",
+      "caption": "ARCHITECTURE: authored diagram of gateway-mediated execution. This is a design illustration, not a runtime or sponsor-use capture.",
+      "alt": "Policy runs first; final deny stops; allowed actions may be held by audit; approved holds pass an exact single-use gate before execution. Decisions are stored before effects.",
+      "width": 1440,
+      "height": 1168,
+      "sha256": "3a8a3ffb85bfae9b200dd70725f2181bb4e7e7704e2701512f343fbe4efe7844"
+    }
+  ]
+}
