@@ -167,6 +167,11 @@ def init_db(db_path: Path | str) -> None:
     conn = get_connection(path)
     try:
         conn.executescript(SCHEMA_SQL)
+        audit_cols = {row["name"] for row in conn.execute("PRAGMA table_info(reasoning_audits)")}
+        if "tier_evidence_json" not in audit_cols:
+            conn.execute("ALTER TABLE reasoning_audits ADD COLUMN tier_evidence_json TEXT NOT NULL DEFAULT '[]'")
+        if "total_tokens" not in audit_cols:
+            conn.execute("ALTER TABLE reasoning_audits ADD COLUMN total_tokens INTEGER")
         # Handle migration for existing action_requests table without turn_id/reasoning_audit_id
         cur = conn.execute("PRAGMA table_info(action_requests)")
         cols = {row["name"] for row in cur.fetchall()}

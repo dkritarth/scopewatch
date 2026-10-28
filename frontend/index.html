@@ -16,7 +16,7 @@
               action, resolving an approval). Reading runs, events, and evidence needs no token. Paste the
               token from the submission's testing instructions. It is held in memory for this page only,
               never written to storage, never shown again, and sent only as the
-              <code>X-Demo-Token</code> header on mutating requests.
+              <code>X-Reviewer-Token</code> header and the demo compatibility header on mutating requests. Agent credentials cannot resolve approvals or reset the demo.
             </p>
             <div class="form-row">
               <label for="reviewer-token-input">Reviewer token</label>
@@ -37,6 +37,15 @@
               <span class="reviewer-access-state" id="reviewer-access-state" role="status">No token set: mutating actions are refused by the demo gate. Reading runs, events, and evidence still works.</span>
             </div>
           </form>
+<section id="demo-controls" class="reviewer-access" aria-labelledby="demo-controls-heading" hidden>
+<h2 id="demo-controls-heading" class="reviewer-access-heading">Demo recovery</h2>
+<p id="demo-controls-note"></p>
+<div class="reviewer-access-actions">
+<button type="button" id="demo-reset">Reset demo evidence</button>
+<button type="button" id="demo-reseed">Reseed scenario 06</button>
+</div>
+<p id="demo-controls-status" role="status"></p>
+</section>
 </header>
 <noscript>This dashboard needs JavaScript to load runs and review actions.</noscript>
 <main id="main" class="dashboard-grid" tabindex="-1">
@@ -102,6 +111,7 @@
               <h3 id="approvals-heading">Pending human approvals</h3>
               <span id="pending-approvals-count" class="badge-pending">0</span>
             </div>
+            <p id="review-receipt" role="status" hidden></p>
             <div id="approvals-list" class="approvals-list">
               <p id="no-approvals-msg" class="no-approvals-msg">No pending approvals.</p>
             </div>
