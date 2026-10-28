@@ -74,7 +74,10 @@ policy, auditing, exact approval, and execution.
 Receipt/HOLD handling reuses the reviewed legacy adapter through a bounded HTTP
 wrapper. `GatewayClient` provides the synchronous facade over cancellable async
 HTTP. It applies the absolute remaining deadline across connection, headers and
-body reads, then closes the request client before returning. Custom transports
+body reads, then closes the request client before returning. Numeric HTTP
+loopback destinations avoid resolver threads; literal `localhost` maps directly
+to `127.0.0.1`. Use explicit `[::1]` for an IPv6-only gateway. Other hostnames
+and cross-origin request targets are refused before network I/O. Custom transports
 and hooks are trusted application/test code, not peer-controlled callbacks.
 Only `EXECUTED` earns success. Missing, failed, or not-executed receipts
 are tool errors. Held responses must retain the original action ID and exact

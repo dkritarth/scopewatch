@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ipaddress
 import math
 import os
 from pathlib import Path
@@ -209,7 +210,8 @@ def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 class GatewayClient:
     """Synchronous facade over cancellable HTTP, with an absolute I/O deadline.
 
-    Each request owns its async client and closes it before returning. There are
+    Only numeric HTTP loopback endpoints are used; localhost maps to 127.0.0.1
+    without resolver work. Each request owns and closes its async client. There are
     no abandoned request threads. Hooks and injected transports are trusted
     application/test code; remote HTTP I/O runs inside asyncio's deadline.
     """
@@ -218,7 +220,20 @@ class GatewayClient:
                  transport: httpx.AsyncBaseTransport | None = None,
                  timeout: float = 5, trust_env: bool = False,
                  follow_redirects: bool = False) -> None:
-        self.base_url = httpx.URL(base_url)
+        endpoint = httpx.URL(base_url)
+        if endpoint.host == 'localhost':
+            endpoint = endpoint.copy_with(host='127.0.0.1')
+        try:
+            address = ipaddress.ip_address(endpoint.host)
+        except ValueError:
+            raise AcpClientError('ACP_NUMERIC_LOOPBACK_REQUIRED') from None
+        if (not address.is_loopback or '%' in endpoint.host or endpoint.scheme != 'http'
+                or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment
+                or endpoint.path not in ('', '/')):
+            raise AcpClientError('ACP_NUMERIC_LOOPBACK_REQUIRED')
+        # Numeric addresses avoid resolver executor workers during async cleanup.
+        # Literal localhost is the sole supported alias, mapped without DNS.
+        self.base_url = endpoint
         self.headers = headers or {}
         self.transport = transport
         self.timeout = timeout
@@ -252,6 +267,10 @@ class GatewayClient:
                     request = client.build_request(method, url, **kwargs)
                     for hook in self.event_hooks['request']:
                         hook(request)
+                    if ((request.url.scheme, request.url.host, request.url.port)
+                            != (self.base_url.scheme, self.base_url.host, self.base_url.port)
+                            or request.url.username or request.url.password or request.url.fragment):
+                        raise AcpClientError('ACP_GATEWAY_DESTINATION_MISMATCH')
                     async with client.stream(method, str(request.url),
                             headers=request.headers, content=request.content) as response:
                         body = bytearray()

@@ -80,7 +80,7 @@ for i,method in enumerate(['terminal/create','terminal/output','terminal/wait_fo
 reply(prompt, {'stopReason':'end_turn'})
 time.sleep(10)
 '''
-    with GatewayClient(transport=httpx.MockTransport(gateway), base_url='http://gateway.invalid') as http:
+    with GatewayClient(transport=httpx.MockTransport(gateway), base_url='http://127.0.0.1:1') as http:
         with AcpSession(peer(tmp_path, script), AcpClientAdapter(http, 'run-1'), WorkspaceMapping(tmp_path), timeout_s=3) as session:
             assert session.run('synthetic task')['stopReason'] == 'end_turn'
             process = session.transport.process
@@ -98,7 +98,7 @@ time.sleep(10)
 ])
 def test_rejects_invalid_initialize_and_reaps_peer(tmp_path: Path, reply: dict) -> None:
     script = 'q=recv()\nreply(q, ' + repr(reply) + ')\ntime.sleep(10)\n'
-    with GatewayClient(base_url='http://gateway.invalid') as http:
+    with GatewayClient(base_url='http://127.0.0.1:1') as http:
         session = AcpSession(peer(tmp_path, script), AcpClientAdapter(http, 'run-1'), WorkspaceMapping(tmp_path), timeout_s=2)
         with pytest.raises(AcpClientError):
             session.run('synthetic task')
@@ -118,7 +118,7 @@ def test_rejects_invalid_initialize_and_reaps_peer(tmp_path: Path, reply: dict) 
     ("send({'jsonrpc':'2.0','id':1,'error':{'code':-1,'message':'PRIVATE synthetic provider body'}});time.sleep(10)", 'ACP_PEER_ERROR'),
 ])
 def test_bad_peer_frames_are_bounded_and_sanitized(tmp_path: Path, script: str, code: str) -> None:
-    with GatewayClient(base_url='http://gateway.invalid') as http:
+    with GatewayClient(base_url='http://127.0.0.1:1') as http:
         session = AcpSession(peer(tmp_path, script), AcpClientAdapter(http, 'run-1'), WorkspaceMapping(tmp_path), timeout_s=.3)
         with pytest.raises(AcpClientError, match=code) as caught:
             session.run('synthetic task')
@@ -143,7 +143,7 @@ def test_wrong_session_paths_and_unadvertised_methods_have_no_effect(tmp_path: P
  r=recv(); assert 'error' in r
 reply(prompt, {'stopReason':'end_turn'})
 '''
-    with GatewayClient(transport=httpx.MockTransport(gateway), base_url='http://gateway.invalid') as http:
+    with GatewayClient(transport=httpx.MockTransport(gateway), base_url='http://127.0.0.1:1') as http:
         with AcpSession(peer(tmp_path, script), AcpClientAdapter(http, 'run-1'), WorkspaceMapping(tmp_path), timeout_s=2) as session:
             assert session.run('synthetic task')['stopReason']=='end_turn'
     assert sent == []
@@ -155,7 +155,7 @@ def test_notification_cannot_execute_file_write(tmp_path: Path) -> None:
     script = HANDSHAKE + '''send({'jsonrpc':'2.0','method':'fs/write_text_file','params':{'sessionId':'synthetic-session','path':root+'/new.txt','content':'unauthorized'}})
 time.sleep(10)
 '''
-    with GatewayClient(transport=httpx.MockTransport(lambda r: sent.append(r) or httpx.Response(500)), base_url='http://gateway.invalid') as http:
+    with GatewayClient(transport=httpx.MockTransport(lambda r: sent.append(r) or httpx.Response(500)), base_url='http://127.0.0.1:1') as http:
         session = AcpSession(peer(tmp_path, script), AcpClientAdapter(http, 'run-1'), WorkspaceMapping(tmp_path), timeout_s=2)
         with pytest.raises(AcpClientError, match='ACP_UNSUPPORTED_NOTIFICATION'):
             session.run('synthetic task')
@@ -171,7 +171,7 @@ assert r['method']=='session/cancel' and 'id' not in r
 open(sys.argv[1], 'w').write(r['params']['sessionId'])
 time.sleep(10)
 '''
-    with GatewayClient(base_url='http://gateway.invalid') as http:
+    with GatewayClient(base_url='http://127.0.0.1:1') as http:
         session = AcpSession(peer(tmp_path, script) + [str(marker)], AcpClientAdapter(http, 'run-1'), WorkspaceMapping(tmp_path), timeout_s=.3)
         with pytest.raises(AcpClientError, match='ACP_TIMEOUT'):
             session.run('synthetic task')
@@ -200,7 +200,7 @@ for i,method,extra in [(20,'fs/read_text_file',{}),(21,'fs/write_text_file',{'co
  r=recv(); assert 'result' in r
 reply(prompt, {'stopReason':'end_turn'})
 '''
-    with GatewayClient(transport=httpx.MockTransport(lambda r: httpx.Response(201, json=receipt(request=r))), base_url='http://gateway.invalid') as http:
+    with GatewayClient(transport=httpx.MockTransport(lambda r: httpx.Response(201, json=receipt(request=r))), base_url='http://127.0.0.1:1') as http:
         with AcpSession(peer(tmp_path, script), AcpClientAdapter(http, 'run-1'), WorkspaceMapping(tmp_path), timeout_s=3) as session:
             session.run('synthetic task')
     methods = {'initialize':'Initialize', 'session/new':'NewSession', 'session/prompt':'Prompt',
@@ -356,7 +356,7 @@ def test_session_output_budget_stops_notification_flood(tmp_path: Path, mode: st
  send({{'jsonrpc':'2.0','method':'session/update','params':{{'sessionId':'synthetic-session','update':{{'sessionUpdate':'agent_message_chunk','content':{{'type':'text','text':'x'*{size}}}}}}}}})
 time.sleep(10)
 '''
-    with GatewayClient(base_url='http://gateway.invalid') as http:
+    with GatewayClient(base_url='http://127.0.0.1:1') as http:
         session = AcpSession(peer(tmp_path, script), AcpClientAdapter(http, 'run-1'), WorkspaceMapping(tmp_path), timeout_s=3)
         with pytest.raises(AcpClientError, match='ACP_OUTPUT_LIMIT'):
             session.run('synthetic task')
@@ -375,7 +375,7 @@ def test_failed_missing_oversized_and_partial_read_receipts_are_tool_errors(tmp_
 r=recv(); assert 'error' in r and 'PRIVATE' not in json.dumps(r)
 reply(prompt, {'stopReason':'end_turn'})
 '''
-    with GatewayClient(transport=httpx.MockTransport(lambda r: httpx.Response(201, json=body)), base_url='http://gateway.invalid') as http:
+    with GatewayClient(transport=httpx.MockTransport(lambda r: httpx.Response(201, json=body)), base_url='http://127.0.0.1:1') as http:
         with AcpSession(peer(tmp_path, script), AcpClientAdapter(http, 'run-1'), WorkspaceMapping(tmp_path), timeout_s=3) as session:
             assert session.run('synthetic task')['stopReason']=='end_turn'
 
@@ -387,7 +387,7 @@ def test_gateway_body_withheld_and_response_bytes_bounded(tmp_path: Path, respon
 r=recv(); assert 'error' in r and 'PRIVATE' not in json.dumps(r) and len(json.dumps(r))<1000
 reply(prompt, {'stopReason':'end_turn'})
 '''
-    with GatewayClient(transport=httpx.MockTransport(lambda r: response), base_url='http://gateway.invalid') as http:
+    with GatewayClient(transport=httpx.MockTransport(lambda r: response), base_url='http://127.0.0.1:1') as http:
         with AcpSession(peer(tmp_path, script), AcpClientAdapter(http, 'run-1'), WorkspaceMapping(tmp_path), timeout_s=3) as session:
             session.run('synthetic task')
 
@@ -440,7 +440,7 @@ def test_receipts_must_match_run_action_resource_and_whole_content(tmp_path: Pat
 r=recv(); assert 'error' in r and 'content' not in r.get('result',{})
 reply(prompt, {'stopReason':'end_turn'})
 '''
-    with GatewayClient(transport=httpx.MockTransport(gateway),base_url='http://gateway.invalid') as http:
+    with GatewayClient(transport=httpx.MockTransport(gateway),base_url='http://127.0.0.1:1') as http:
         with AcpSession(peer(tmp_path,script),AcpClientAdapter(http,'run-1'),WorkspaceMapping(tmp_path),timeout_s=3) as session:
             session.run('synthetic task')
 
@@ -451,7 +451,7 @@ def test_bidirectional_id_zero_number_and_string_do_not_collide(tmp_path: Path) 
  r=recv(); assert type(r['id']) is type(request_id) and r['id']==request_id and r['result']=={'content':'synthetic file'}
 reply(prompt, {'stopReason':'end_turn'})
 '''
-    with GatewayClient(transport=httpx.MockTransport(lambda r: httpx.Response(201,json=receipt(request=r))),base_url='http://gateway.invalid') as http:
+    with GatewayClient(transport=httpx.MockTransport(lambda r: httpx.Response(201,json=receipt(request=r))),base_url='http://127.0.0.1:1') as http:
         with AcpSession(peer(tmp_path,script),AcpClientAdapter(http,'run-1'),WorkspaceMapping(tmp_path),timeout_s=3) as session:
             session.run('synthetic task')
 
@@ -466,7 +466,7 @@ def test_read_ranges_are_lines_and_preserve_line_endings(tmp_path: Path, options
 r=recv(); assert r['result']=={{'content':{expected!r}}}
 reply(prompt, {{'stopReason':'end_turn'}})
 '''
-    with GatewayClient(transport=httpx.MockTransport(lambda r: httpx.Response(201,json=receipt('one\r\ntwo\nthree',r))),base_url='http://gateway.invalid') as http:
+    with GatewayClient(transport=httpx.MockTransport(lambda r: httpx.Response(201,json=receipt('one\r\ntwo\nthree',r))),base_url='http://127.0.0.1:1') as http:
         with AcpSession(peer(tmp_path,script),AcpClientAdapter(http,'run-1'),WorkspaceMapping(tmp_path),timeout_s=3) as session:
             session.run('synthetic task')
 
@@ -478,7 +478,7 @@ def test_invalid_read_ranges_do_not_submit_gateway_actions(tmp_path: Path, optio
 r=recv(); assert 'error' in r
 reply(prompt, {{'stopReason':'end_turn'}})
 '''
-    with GatewayClient(transport=httpx.MockTransport(lambda r: sent.append(r) or httpx.Response(500)),base_url='http://gateway.invalid') as http:
+    with GatewayClient(transport=httpx.MockTransport(lambda r: sent.append(r) or httpx.Response(500)),base_url='http://127.0.0.1:1') as http:
         with AcpSession(peer(tmp_path,script),AcpClientAdapter(http,'run-1'),WorkspaceMapping(tmp_path),timeout_s=3) as session:
             session.run('synthetic task')
     assert sent==[]
@@ -529,7 +529,7 @@ def test_optional_initialize_fields_and_unknown_additions(tmp_path: Path, init: 
     # Replace only the peer initialize result; all later lifecycle checks stand.
     old="reply(q, {'protocolVersion':1,'agentCapabilities':{},'agentInfo':{'name':'synthetic-peer','version':'1'}})"
     script=HANDSHAKE.replace(old,'reply(q, '+repr(init)+')')+"reply(prompt,{'stopReason':'end_turn'})\n"
-    with GatewayClient(base_url='http://gateway.invalid') as http:
+    with GatewayClient(base_url='http://127.0.0.1:1') as http:
         with AcpSession(peer(tmp_path,script),AcpClientAdapter(http,'run-1'),WorkspaceMapping(tmp_path),timeout_s=2) as session:
             session.run('synthetic task')
 
@@ -543,7 +543,7 @@ def test_empty_write_and_forged_context_cannot_change_bound_gateway_action(tmp_p
 r=recv(); assert r['id']==0 and r['result']=={}
 reply(prompt,{'stopReason':'end_turn'})
 '''
-    with GatewayClient(transport=httpx.MockTransport(gateway),base_url='http://gateway.invalid') as http:
+    with GatewayClient(transport=httpx.MockTransport(gateway),base_url='http://127.0.0.1:1') as http:
         with AcpSession(peer(tmp_path,script),AcpClientAdapter(http,'run-1'),WorkspaceMapping(tmp_path),timeout_s=2) as session:
             session.run('synthetic task')
     assert len(sent)==1
@@ -578,14 +578,16 @@ send({{'jsonrpc':'2.0','id':20,'method':'session/request_permission','params':{{
 r=recv(); assert r['result']=={{'outcome':{{'outcome':'cancelled'}}}}
 reply(prompt, {{'stopReason':'end_turn'}})
 '''
-    with GatewayClient(base_url='http://gateway.invalid') as http:
+    with GatewayClient(base_url='http://127.0.0.1:1') as http:
         with AcpSession(peer(tmp_path, script), AcpClientAdapter(http, 'run-1'), WorkspaceMapping(tmp_path)) as session:
             assert session.run('synthetic task')['session_id'] == session_id
 
 
 @pytest.mark.parametrize('stage', ['headers', 'body'])
-def test_absolute_http_deadline_interrupts_continuing_slow_drip(stage: str, tmp_path: Path) -> None:
+@pytest.mark.parametrize('host', ['127.0.0.1', 'localhost'])
+def test_absolute_http_deadline_interrupts_continuing_slow_drip(stage: str, host: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import threading
+    import socket
     import time
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from scopewatch.acp_client import _BoundedGateway
@@ -616,8 +618,17 @@ def test_absolute_http_deadline_interrupts_continuing_slow_drip(stage: str, tmp_
     server = ThreadingHTTPServer(('127.0.0.1', 0), Drip)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    # A real HTTP transport must not start resolver workers, even when the OS
+    # resolver stalls. Literal localhost is mapped before HTTPX sees the URL.
+    lookups = []
+    original_lookup = socket.getaddrinfo
+    def stalled_lookup(*args, **kwargs):
+        lookups.append(args)
+        time.sleep(1.2)
+        return original_lookup(*args, **kwargs)
+    monkeypatch.setattr(socket, 'getaddrinfo', stalled_lookup)
     try:
-        with GatewayClient(base_url=f'http://127.0.0.1:{server.server_port}') as http:
+        with GatewayClient(base_url=f'http://{host}:{server.server_port}') as http:
             start = time.monotonic()
             with pytest.raises(AcpClientError, match='ACP_TIMEOUT'):
                 _BoundedGateway(http, start + .15).get('/synthetic-drip')
@@ -631,7 +642,7 @@ r=recv(); assert r['method']=='session/cancel' and 'id' not in r
 open({str(marker)!r}, 'w').write('cancelled')
 time.sleep(10)
 '''
-        with GatewayClient(base_url=f'http://127.0.0.1:{server.server_port}') as http:
+        with GatewayClient(base_url=f'http://{host}:{server.server_port}') as http:
             session = AcpSession(peer(tmp_path, script), AcpClientAdapter(http, 'run-1'), WorkspaceMapping(workspace), timeout_s=.25)
             start = time.monotonic()
             with pytest.raises(AcpClientError, match='ACP_TIMEOUT'):
@@ -639,6 +650,7 @@ time.sleep(10)
             assert time.monotonic() - start < 1.2
             assert session.transport.process.poll() is not None
             assert marker.read_text() == 'cancelled'
+        assert lookups == [], 'bounded local requests must never invoke DNS'
     finally:
         server.shutdown()
         server.server_close()
@@ -696,7 +708,7 @@ def test_receipt_arguments_must_match_the_submitted_write(tmp_path: Path) -> Non
 r=recv(); assert 'error' in r and 'result' not in r
 reply(prompt, {'stopReason':'end_turn'})
 '''
-    with GatewayClient(base_url='http://gateway.invalid', transport=httpx.MockTransport(gateway)) as http:
+    with GatewayClient(base_url='http://127.0.0.1:1', transport=httpx.MockTransport(gateway)) as http:
         with AcpSession(peer(tmp_path, script), AcpClientAdapter(http, 'run-1'), WorkspaceMapping(tmp_path)) as session:
             session.run('synthetic task')
 
@@ -711,6 +723,40 @@ send({{'jsonrpc':'2.0','id':20,'method':'session/request_permission','params':{{
 r=recv(); assert r['id']==20 and r['result']=={{'outcome':{{'outcome':'cancelled'}}}}
 reply(prompt, {{'stopReason':'end_turn'}})
 '''
-    with GatewayClient(base_url='http://gateway.invalid') as http:
+    with GatewayClient(base_url='http://127.0.0.1:1') as http:
         with AcpSession(peer(tmp_path, script), AcpClientAdapter(http, 'run-1'), WorkspaceMapping(tmp_path)) as session:
             session.run('synthetic task')
+
+
+@pytest.mark.parametrize('endpoint', [
+    'http://example.test', 'http://127.0.0.1.example.test', 'http://192.0.2.1',
+    'https://127.0.0.1', 'http://user:synthetic@127.0.0.1', 'http://[::1%25lo]',
+    'http://127.0.0.1?query=1', 'http://127.0.0.1#fragment', 'http://127.0.0.1/path',
+])
+def test_gateway_refuses_non_numeric_or_nonlocal_endpoints_before_lookup(endpoint: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+    def no_lookup(*args, **kwargs):
+        pytest.fail('rejected gateway configuration must never resolve a hostname')
+    monkeypatch.setattr(socket, 'getaddrinfo', no_lookup)
+    with pytest.raises(AcpClientError, match='ACP_NUMERIC_LOOPBACK_REQUIRED'):
+        GatewayClient(base_url=endpoint)
+
+
+@pytest.mark.parametrize('target', ['http://example.test/', 'http://127.0.0.2/', 'http://127.0.0.1:2/'])
+def test_absolute_request_target_cannot_leave_the_pinned_gateway(target: str) -> None:
+    sent = []
+    with GatewayClient(base_url='http://127.0.0.1:1', transport=httpx.MockTransport(lambda r: sent.append(r) or httpx.Response(200))) as http:
+        with pytest.raises(AcpClientError, match='ACP_GATEWAY_DESTINATION_MISMATCH'):
+            http.get(target)
+    assert sent == []
+
+
+def test_request_hook_cannot_reintroduce_a_hostname_lookup() -> None:
+    sent = []
+    with GatewayClient(base_url='http://127.0.0.1:1', transport=httpx.MockTransport(lambda r: sent.append(r) or httpx.Response(200))) as http:
+        def retarget(request):
+            request.url = httpx.URL('http://example.test/')
+        http.event_hooks['request'].append(retarget)
+        with pytest.raises(AcpClientError, match='ACP_GATEWAY_DESTINATION_MISMATCH'):
+            http.get('/')
+    assert sent == []
