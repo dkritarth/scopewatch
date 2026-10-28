@@ -8,7 +8,7 @@ and holds no second copy of the rules.
 """
 
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from scopewatch.models import ReasonCode
 from scopewatch.scope_paths import (
@@ -54,6 +54,8 @@ def scoped_path_reason(
     blocked_paths: Iterable[str],
     *,
     case_insensitive: bool | None = None,
+    workspace_root: Path | None = None,
+    case_probe: Callable[[str], bool | None] | None = None,
 ) -> tuple[ReasonCode, str | None] | None:
     """Check both names; an allowed alias cannot authorize a blocked target.
 
@@ -61,7 +63,8 @@ def scoped_path_reason(
     :func:`scopewatch.scope_paths.volume_is_case_insensitive` (#305):
     ``True`` (folds case), ``False`` (does not), or ``None``/omitted
     (unknown, which folds the blocked check only so a failed probe never
-    widens the allowed scope).
+    widens the allowed scope). With ``workspace_root``, the shared matcher
+    checks each directory instead of inheriting a root-wide verdict.
     """
     denial = _scoped_path_denial(
         requested.parts,
@@ -69,6 +72,8 @@ def scoped_path_reason(
         allowed_paths,
         blocked_paths,
         case_insensitive=case_insensitive,
+        workspace_root=str(workspace_root) if workspace_root is not None else None,
+        case_probe=case_probe,
     )
     if denial is None:
         return None

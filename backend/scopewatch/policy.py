@@ -19,7 +19,6 @@ import uuid
 
 from scopewatch.executor import get_executor_backend
 from scopewatch.path_access import (
-    is_descendant_or_equal as _is_descendant_or_equal,
     normalize_relative_path as _normalize_relative_path,
     scoped_path_reason,
     volume_is_case_insensitive,
@@ -270,13 +269,9 @@ def _evaluate_policy_rules(
         )
 
     # Step 12: Check both the submitted alias and its canonical target.
-    # On a case-insensitive volume, `Path.resolve()` only canonicalises the
-    # casing of path components that exist on disk, so a nonexistent write
-    # target keeps the requested casing and an upper-case alias of a blocked
-    # path would slip the raw string match. The probe answers insensitive /
-    # sensitive / unknown; the matcher folds the blocked side on insensitive
-    # *or* unknown and the allowed side only on insensitive, so an
-    # undetectable volume can tighten but never widen the scope (#305).
+    # Existing identity and per-directory lookup semantics also cover
+    # nonexistent write targets below Linux casefold directories (#319).
+    # Unknown semantics can tighten blocked matching, never widen allows.
     canonical_rel = candidate_path.relative_to(resolved_workspace)
     scope_error = scoped_path_reason(
         normalized_rel,
@@ -284,6 +279,8 @@ def _evaluate_policy_rules(
         scope.allowed_paths,
         scope.blocked_paths,
         case_insensitive=volume_is_case_insensitive(str(resolved_workspace)),
+        workspace_root=resolved_workspace,
+        case_probe=volume_is_case_insensitive,
     )
     if scope_error is not None:
         reason, blocked = scope_error
@@ -456,11 +453,8 @@ def _check_run_command_path(
     membership requirement: command arguments and the command cwd only need
     traversal/blocked/containment validation.
 
-    ``case_insensitive`` is the volume's three-state verdict from
-    :func:`scopewatch.path_access.volume_is_case_insensitive` (#305); the
-    blocked check folds case when the volume folds case (``True``) or when it
-    is unknown (``None``), so an alias of a blocked path can never slip through
-    on an undetectable volume.
+    Per-directory probes take precedence over the legacy root-wide
+    ``case_insensitive`` hint (#319). Unknown folds blocked paths only.
     """
     if "\x00" in value:
         return (
@@ -539,18 +533,17 @@ def _check_run_command_path(
                 "RULE_RUN_COMMAND_MALFORMED_PATH",
             )
     canonical = candidate.relative_to(resolved_workspace)
-    blocked_folds = case_insensitive is None or case_insensitive is True
-    for blocked in scope.blocked_paths:
-        blocked_norm = _normalize_relative_path(blocked)
-        if blocked_norm and (
-            _is_descendant_or_equal(normalized, blocked_norm, case_insensitive=blocked_folds)
-            or _is_descendant_or_equal(canonical, blocked_norm, case_insensitive=blocked_folds)
-        ):
-            return (
-                ReasonCode.BLOCKED_PATH,
-                f"{describe} is under blocked path '{blocked}'.",
-                "RULE_RUN_COMMAND_BLOCKED_PATH_MATCHED",
-            )
+    denial = scoped_path_reason(
+        normalized, canonical, ["."], scope.blocked_paths,
+        workspace_root=resolved_workspace, case_probe=volume_is_case_insensitive,
+    )
+    if denial is not None:
+        _, blocked = denial
+        return (
+            ReasonCode.BLOCKED_PATH,
+            f"{describe} is under blocked path '{blocked}'.",
+            "RULE_RUN_COMMAND_BLOCKED_PATH_MATCHED",
+        )
     return None
 
 
@@ -571,10 +564,8 @@ def _check_staged_resolved_target(
     values fail closed. Nonexistent paths resolve non-strictly to their
     would-be location, so output files that do not exist yet still pass.
 
-    ``case_insensitive`` is the volume's three-state verdict from
-    :func:`scopewatch.path_access.volume_is_case_insensitive` (#305); the
-    blocked check folds case when the volume folds case (``True``) or when it
-    is unknown (``None``), so a resolved alias of a blocked path is refused.
+    Per-directory probes take precedence over the legacy root-wide
+    ``case_insensitive`` hint (#319). Unknown folds blocked paths only.
     """
     normalized = _normalize_relative_path(value)
     if normalized is None:
@@ -599,22 +590,17 @@ def _check_staged_resolved_target(
             f"{describe} escapes the workspace boundary at dispatch.",
             "RULE_RUN_COMMAND_SYMLINK_ESCAPE_REJECTED",
         )
-    resolved_parts = resolved_relative.parts
-    blocked_folds = case_insensitive is None or case_insensitive is True
-    for blocked in scope.blocked_paths:
-        blocked_norm = _normalize_relative_path(blocked)
-        if blocked_norm is None:
-            continue
-        if not blocked_norm.parts or _is_descendant_or_equal(
-            Path(*resolved_parts), blocked_norm, case_insensitive=blocked_folds
-        ):
-            # ``blocked_norm`` empty means the blocked path is the workspace
-            # root itself; anything resolved inside it is blocked.
-            return (
-                ReasonCode.BLOCKED_PATH,
-                f"{describe} resolves into blocked path '{blocked}' at dispatch.",
-                "RULE_RUN_COMMAND_BLOCKED_PATH_MATCHED",
-            )
+    denial = scoped_path_reason(
+        normalized, resolved_relative, ["."], scope.blocked_paths,
+        workspace_root=staged_root, case_probe=volume_is_case_insensitive,
+    )
+    if denial is not None:
+        _, blocked = denial
+        return (
+            ReasonCode.BLOCKED_PATH,
+            f"{describe} resolves into blocked path '{blocked}' at dispatch.",
+            "RULE_RUN_COMMAND_BLOCKED_PATH_MATCHED",
+        )
     return None
 
 

@@ -1,0 +1,30 @@
+name: Monitor ablation PoC tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  monitor-ablation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+      - run: python -m pip install --require-hashes -r backend/requirements.lock
+      - name: Run offline ablation and mocked provider tests
+        run: python -m pytest poc/monitor-ablation -q
+        env:
+          PYTHONPATH: backend
+      - name: Generate and check an offline replay artifact
+        run: |
+          python poc/monitor-ablation/runner.py --output "$RUNNER_TEMP/monitor-ablation.json"
+          python poc/monitor-ablation/runner.py --check "$RUNNER_TEMP/monitor-ablation.json"
