@@ -511,6 +511,42 @@ def check_staged_workspace_size(
     return total_bytes
 
 
+def resolve_workspace_target(
+    workspace_root: Path,
+    target_path: Path,
+    *,
+    directory_without_links: bool = False,
+) -> Path:
+    """Resolve a backend target inside its workspace or raise ``ValueError``.
+
+    Local/Docker target validation, the runner, and copy-back share this rule.
+    Copy-back additionally requires real destination directories, including
+    the supplied root and its ancestors. Check components before resolution so
+    in-workspace and dangling directory links are refused. Missing directories
+    are allowed for subsequent creation. This does not make concurrent host
+    filesystem replacement atomic.
+    """
+    if directory_without_links:
+        root = workspace_root.absolute()
+        target = target_path.absolute()
+        target.relative_to(root)
+        if ".." in target.parts:
+            raise ValueError("Path escapes workspace boundary.")
+        # Include root ancestors: a supplied root below a directory link is
+        # still an alias, even when the root's own lstat reports a directory.
+        for current in (*reversed(target.parents), target):
+            try:
+                mode = current.lstat().st_mode
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISDIR(mode):
+                raise ValueError("Destination is not a real directory.")
+    resolved_root = workspace_root.resolve()
+    resolved_target = target_path.resolve()
+    resolved_target.relative_to(resolved_root)
+    return resolved_target
+
+
 def sync_copy_back(
     workspace_copy: Path,
     workspace_root: Path,
@@ -524,9 +560,9 @@ def sync_copy_back(
 
     Returns the sorted relative paths that were refused (issue #183): any
     entry whose requested name falls under a ``blocked_paths`` prefix, and any
-    directory whose *resolved host destination* is blocked or lies outside
-    ``workspace_root`` (a host-side alias such as ``alias -> secrets`` would
-    otherwise be written through). A refused directory is skipped as a whole.
+    directory whose host destination is a link, is blocked, or lies outside
+    ``workspace_root``. The destination root itself must not be a link.
+    A refused directory is skipped as a whole.
     Refusal skips the entry instead of failing the receipt, so the container's
     legitimate writes still land; the caller reports the refused list.
 
@@ -549,18 +585,17 @@ def sync_copy_back(
     blocked = normalize_blocked_paths(blocked_paths)
     staged = Path(workspace_copy)
     dest_root = Path(workspace_root)
-    resolved_root = dest_root.resolve()
     refused: set[str] = set()
     for dirpath, dirnames, filenames in os.walk(staged, followlinks=False):
         staged_dir = Path(dirpath)
         rel = staged_dir.relative_to(staged)
         rel_parts = () if str(rel) == "." else rel.parts
         dest_dir = dest_root.joinpath(*rel_parts)
-        # Resolved-destination check: a directory on the host may be a link
+        # Destination check: a directory on the host may be a link
         # the staged copy never had (it was excluded at staging, or created
         # since). Writing below it would follow the link onto its target.
-        if rel_parts and not _dest_dir_allowed(dest_dir, resolved_root, blocked, case_insensitive, path_matcher):
-            refused.add("/".join(rel_parts))
+        if not _dest_dir_allowed(dest_dir, dest_root, blocked, case_insensitive, path_matcher):
+            refused.add("/".join(rel_parts) or ".")
             dirnames[:] = []
             continue
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -580,8 +615,8 @@ def sync_copy_back(
                     refused.add("/".join((*rel_parts, name)))
                     continue
                 replace_link(src_entry, dest_dir / name)
-            else:
-                (dest_dir / name).mkdir(parents=True, exist_ok=True)
+            # Real directories are checked and created when the walk visits
+            # them, before any mkdir can follow a destination alias.
         for name in filenames:
             if _is_blocked((*rel_parts, name), blocked, case_insensitive, path_matcher) or _contains_blocked(
                 (*rel_parts, name), blocked, case_insensitive, path_matcher
@@ -814,18 +849,18 @@ def _blocked_ignore(
 
 def _dest_dir_allowed(
     dest_dir: Path,
-    resolved_root: Path,
+    workspace_root: Path,
     blocked: tuple[tuple[str, ...], ...],
     case_insensitive: Optional[bool] = None,
     path_matcher: Optional[BlockedPathMatcher] = None,
 ) -> bool:
-    """Copy-back may write into ``dest_dir`` only if it resolves in scope."""
+    """Apply shared containment, then the existing blocked-path matcher."""
     try:
-        resolved = dest_dir.resolve()
-    except (OSError, RuntimeError):
-        return False
-    rel = _relative_parts(resolved, resolved_root)
-    if rel is None:
+        resolved = resolve_workspace_target(
+            workspace_root, dest_dir, directory_without_links=True
+        )
+        rel = resolved.relative_to(workspace_root.resolve()).parts
+    except (OSError, RuntimeError, ValueError):
         return False
     return not _is_blocked(rel, blocked, case_insensitive, path_matcher)
 

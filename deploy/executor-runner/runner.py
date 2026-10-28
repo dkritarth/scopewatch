@@ -121,6 +121,7 @@ from scopewatch.docker_job import (  # noqa: E402
     normalize_blocked_paths,
     prepare_docker_job,
     replace_link,
+    resolve_workspace_target,
     run_docker_process,
     stage_workspace_copy,
     sync_copy_back,
@@ -323,8 +324,7 @@ def validate_resource_inside_workspace(
     if ".." in parts:
         return None, "path escapes workspace boundary"
     try:
-        resolved = (workspace_root / resource).resolve()
-        resolved.relative_to(workspace_root.resolve())
+        resolved = resolve_workspace_target(workspace_root, workspace_root / resource)
     except ValueError:
         return None, "path escapes workspace boundary"
     except Exception:
