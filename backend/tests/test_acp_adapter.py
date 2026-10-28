@@ -18,8 +18,10 @@ from pydantic import ValidationError
 
 from scopewatch.acp_adapter import (
     COVERAGE_STATEMENT,
+    MAX_RELAYED_ENTRIES,
     MAX_RELAYED_ERROR_CHARS,
     MAX_RELAYED_FILE_CHARS,
+    MAX_RELAYED_NAME_CHARS,
     MAX_RELAYED_STREAM_CHARS,
     RELAY_TRUNCATION_MARKER,
     AcpClientAdapter,
@@ -853,3 +855,374 @@ def test_write_text_non_integer_byte_count_is_reported_as_unknown() -> None:
     assert "error" not in resp, resp
     assert resp["result"]["bytes_written"] is None
     assert resp["result"]["status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# Residual gateway strings (issue #179): the four relay paths #169 left
+# verbatim — receipt status/error codes, the gateway HTTP error body, policy
+# explanation/reason text, and listing-entry sub-keys. Same clean room, and
+# every test asserts the marker or the error text is actually present: a test
+# that only checks "the response is short" passes even when the truncation
+# is broken.
+# ---------------------------------------------------------------------------
+
+
+def _gateway_client(status_code: int, body: Any) -> httpx.Client:
+    """Gateway client answering every request with one status code and body."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(status_code, json=body))
+    return httpx.Client(transport=transport, base_url="http://gateway.invalid")
+
+
+def _assert_clipped_and_marked(relayed: Any, limit: int, *, label: str) -> None:
+    """Assert relayed text is inside the bound *and* admits that it was cut."""
+    assert isinstance(relayed, str), f"{label}: relayed a {type(relayed).__name__}, expected text"
+    assert len(relayed) <= limit, f"{label} must be bounded to {limit} characters"
+    assert RELAY_TRUNCATION_MARKER in relayed, f"{label}: truncation must be visible, never silent"
+
+
+def test_failed_receipt_status_and_error_code_are_bounded_and_marked() -> None:
+    """Receipt status/error_code ride the error-detail bound and the marker."""
+    status = "FAILED" + "s" * 5_000
+    error_code = "NONZERO_EXIT" + "e" * 5_000
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            201,
+            json={
+                "action_request": {"id": "action-179-codes"},
+                "policy_decision": {"outcome": "ALLOW"},
+                "execution_receipt": {
+                    "status": status,
+                    "error_code": error_code,
+                    "sanitized_result": {"error": "boom", "exit_code": 2},
+                },
+            },
+        )
+    )
+    with httpx.Client(transport=transport, base_url="http://gateway.invalid") as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), "terminal/run", {"command": "pytest tests/"})
+
+    assert "result" not in resp
+    err = resp["error"]
+    data = err["data"]
+    assert data["action_id"] == "action-179-codes", "the tool error must still join the evidence"
+    _assert_clipped_and_marked(data["status"], MAX_RELAYED_ERROR_CHARS, label="status")
+    _assert_clipped_and_marked(data["error_code"], MAX_RELAYED_ERROR_CHARS, label="error_code")
+    _assert_clipped_and_marked(data["reason_code"], MAX_RELAYED_ERROR_CHARS, label="reason_code")
+    assert data["status"].startswith("FAILED"), "the head of the code must survive"
+    assert str(len(status)) in data["status"], "the marker must name the original size"
+    assert data["reason_code"] == data["error_code"], "the derived code is the relayed code"
+    # The message interpolates both fields, so it is bounded and marked too.
+    assert RELAY_TRUNCATION_MARKER in err["message"]
+    assert len(err["message"]) <= 2 * MAX_RELAYED_ERROR_CHARS + 250
+
+
+def test_failed_receipt_codes_within_the_bound_are_relayed_unchanged() -> None:
+    """Codes that fit are relayed byte for byte, and absent codes keep their
+    documented defaults: the bound must not rewrite what already fits."""
+    short_transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            201,
+            json={
+                "action_request": {"id": "action-179-short"},
+                "policy_decision": {"outcome": "ALLOW"},
+                "execution_receipt": {
+                    "status": "FAILED",
+                    "error_code": "READ_FAILED",
+                    "sanitized_result": {"error": "nope"},
+                },
+            },
+        )
+    )
+    with httpx.Client(transport=short_transport, base_url="http://gateway.invalid") as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), "fs/read_text_file", {"path": "outputs/x.txt"})
+    data = resp["error"]["data"]
+    assert data["status"] == "FAILED"
+    assert data["error_code"] == "READ_FAILED"
+    assert data["reason_code"] == "READ_FAILED"
+    assert RELAY_TRUNCATION_MARKER not in data["status"]
+    assert RELAY_TRUNCATION_MARKER not in data["error_code"]
+
+    # A receipt that reports no status and no error code still says MISSING /
+    # EXECUTION_FAILED rather than null or an empty string.
+    bare_transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            201,
+            json={
+                "action_request": {"id": "action-179-bare"},
+                "policy_decision": {"outcome": "ALLOW"},
+                "execution_receipt": {"sanitized_result": {}},
+            },
+        )
+    )
+    with httpx.Client(transport=bare_transport, base_url="http://gateway.invalid") as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), "fs/read_text_file", {"path": "outputs/x.txt"})
+    data = resp["error"]["data"]
+    assert data["status"] == "MISSING"
+    assert data["error_code"] == "EXECUTION_FAILED"
+    assert data["reason_code"] == "EXECUTION_FAILED"
+    assert RELAY_TRUNCATION_MARKER not in resp["error"]["message"]
+
+
+@pytest.mark.parametrize("body", [
+    {"detail": "synthetic raw stack trace" * 5000, "action_id": "forged"},
+    {"detail": [{"msg": "bad input", "input": "synthetic raw request" * 5000}]},
+    ["synthetic raw body" * 5000],
+    "synthetic raw body",
+    None,
+])
+def test_gateway_http_error_body_is_not_relayed(body: Any) -> None:
+    with _gateway_client(422, body) as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), "terminal/run", {"command": "pytest tests/"})
+    assert resp["error"] == {
+        "code": -32000,
+        "message": "Gateway HTTP error 422: action rejected",
+        "data": {"action_id": None, "reason_code": "GATEWAY_HTTP_ERROR", "http_status": 422},
+    }
+
+
+def test_policy_deny_decision_text_is_bounded_and_marked() -> None:
+    """A policy DENY relays decision text through the error-detail bound."""
+    body = {
+        "action_request": {"id": "action-179-deny"},
+        "policy_decision": {
+            "outcome": "DENY",
+            "reason_code": "SYNTHETIC_" + "r" * 5_000,
+            "explanation": "e" * 5_000,
+            "matched_rule": "RULE_" + "m" * 5_000,
+        },
+    }
+    with _gateway_client(201, body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"), "fs/read_text_file", {"path": "outputs/x.txt"}
+        )
+
+    err = resp["error"]
+    data = err["data"]
+    assert data["action_id"] == "action-179-deny"
+    for field in ("reason_code", "explanation", "matched_rule"):
+        _assert_clipped_and_marked(data[field], MAX_RELAYED_ERROR_CHARS, label=f"deny.{field}")
+    assert data["reason_code"].startswith("SYNTHETIC_"), "the head of the code must survive"
+    assert RELAY_TRUNCATION_MARKER in err["message"]
+    assert len(err["message"]) <= len("Operation denied by policy: ") + MAX_RELAYED_ERROR_CHARS
+
+
+def test_policy_deny_decision_text_that_fits_is_relayed_unchanged() -> None:
+    """Short DENY text is byte for byte, and absent text stays null."""
+    short_body = {
+        "action_request": {"id": "action-179-deny-short"},
+        "policy_decision": {
+            "outcome": "DENY",
+            "reason_code": "BLOCKED_PATH",
+            "explanation": "Path is blocked by policy.",
+            "matched_rule": "RULE_BLOCKED_PATH_MATCHED",
+        },
+    }
+    with _gateway_client(201, short_body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"), "fs/read_text_file", {"path": "outputs/x.txt"}
+        )
+    data = resp["error"]["data"]
+    assert data["reason_code"] == "BLOCKED_PATH"
+    assert data["explanation"] == "Path is blocked by policy."
+    assert data["matched_rule"] == "RULE_BLOCKED_PATH_MATCHED"
+    assert RELAY_TRUNCATION_MARKER not in resp["error"]["message"]
+
+    bare_body = {
+        "action_request": {"id": "action-179-deny-bare"},
+        "policy_decision": {"outcome": "DENY"},
+    }
+    with _gateway_client(201, bare_body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"), "fs/read_text_file", {"path": "outputs/x.txt"}
+        )
+    data = resp["error"]["data"]
+    assert data["explanation"] is None, "absent stays absent, not an empty string"
+    assert data["matched_rule"] is None
+    assert data["reason_code"] == "POLICY_ERROR"
+    assert resp["error"]["message"] == "Operation denied by policy: POLICY_ERROR"
+
+
+def test_unknown_decision_outcome_is_bounded_and_marked() -> None:
+    """An unrecognised decision outcome is relayed bounded, not verbatim."""
+    body = {
+        "action_request": {"id": "action-179-outcome"},
+        "policy_decision": {"outcome": "WEIRD" * 2_000},
+    }
+    with _gateway_client(201, body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"), "fs/read_text_file", {"path": "outputs/x.txt"}
+        )
+
+    err = resp["error"]
+    assert err["code"] == -32000
+    data = err["data"]
+    assert data["action_id"] == "action-179-outcome"
+    _assert_clipped_and_marked(data["outcome"], MAX_RELAYED_ERROR_CHARS, label="outcome")
+    assert RELAY_TRUNCATION_MARKER in err["message"]
+    assert len(err["message"]) <= len("Unknown gateway decision outcome: ") + MAX_RELAYED_ERROR_CHARS
+
+
+@pytest.mark.parametrize(
+    ("outcome", "text_field"),
+    [("ALLOW", "explanation"), ("HOLD", "reason"), ("DENY", "reason")],
+)
+def test_preflight_decision_text_is_bounded_and_marked(outcome: str, text_field: str) -> None:
+    """Preflight relays the gateway's decision text bounded, in every branch."""
+    body = {
+        "id": "preview-179",
+        "action_request_id": "action-179-preview",
+        "outcome": outcome,
+        "reason_code": "SYNTHETIC_" + "c" * 5_000,
+        "explanation": "x" * 5_000,
+        "matched_rule": "RULE_" + "m" * 5_000,
+        "decided_at": "2026-10-03T00:00:00+00:00",
+        "deterministic": True,
+    }
+    with _gateway_client(200, body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"),
+            "session/request_permission",
+            {"operation": "read_text", "path": "outputs/x.txt"},
+        )
+
+    result = resp["result"]
+    _assert_clipped_and_marked(
+        result[text_field], MAX_RELAYED_ERROR_CHARS, label=f"{outcome}.{text_field}"
+    )
+    assert result[text_field].startswith("x"), "the head of the explanation must survive"
+    _assert_clipped_and_marked(result["reason_code"], MAX_RELAYED_ERROR_CHARS, label="reason_code")
+    _assert_clipped_and_marked(result["matched_rule"], MAX_RELAYED_ERROR_CHARS, label="matched_rule")
+    assert result["decision"] == {"ALLOW": "allow", "HOLD": "requires_approval", "DENY": "deny"}[
+        outcome
+    ]
+
+
+def test_preflight_decision_text_that_fits_is_relayed_unchanged() -> None:
+    """Short preflight text is byte for byte; an absent explanation still
+    falls back to the gateway template, exactly as before #179."""
+    short_body = {
+        "id": "preview-179-short",
+        "outcome": "DENY",
+        "reason_code": "BLOCKED_PATH",
+        "explanation": "Path is blocked by policy.",
+        "matched_rule": "RULE_BLOCKED_PATH_MATCHED",
+    }
+    with _gateway_client(200, short_body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"),
+            "session/request_permission",
+            {"operation": "read_text", "path": "outputs/x.txt"},
+        )
+    result = resp["result"]
+    assert result["decision"] == "deny"
+    assert result["reason"] == "Path is blocked by policy."
+    assert result["reason_code"] == "BLOCKED_PATH"
+    assert result["matched_rule"] == "RULE_BLOCKED_PATH_MATCHED"
+    assert RELAY_TRUNCATION_MARKER not in str(result)
+
+    bare_body = {"id": "preview-179-bare", "outcome": "DENY", "reason_code": "BLOCKED_PATH"}
+    with _gateway_client(200, bare_body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"),
+            "session/request_permission",
+            {"operation": "read_text", "path": "outputs/x.txt"},
+        )
+    result = resp["result"]
+    assert result["reason"] == "Operation 'read_text' denied by policy."
+    assert result["matched_rule"] is None, "absent stays absent, not an empty string"
+    assert RELAY_TRUNCATION_MARKER not in str(result)
+
+
+def test_list_directory_extra_entry_keys_are_omitted_and_marked() -> None:
+    entry = {"name": "a.txt", "path": "outputs/a.txt", "type": "file",
+             "note": "synthetic hidden payload" * 5000, "stat": {"owner": "synthetic"}}
+    body = _executed_receipt({"items": [entry]})
+    with _stub_gateway(body) as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), "fs/list_directory", {"path": "outputs"})
+    out = resp["result"]["entries"][0]
+    assert out == {"name": "a.txt", "path": "outputs/a.txt", "type": "file",
+                   "relay_notice": RELAY_TRUNCATION_MARKER + ": unsupported entry metadata omitted"}
+    assert "hidden payload" not in str(resp)
+
+
+def test_list_directory_oversized_name_and_path_clips_are_marked() -> None:
+    """The #154 name/path clip was silent; it keeps its length contract and
+    gains the marker, so a clipped name never looks like the whole name."""
+    name = "n" * 100_000
+    path = "p" * 100_000
+    gateway_body = _executed_receipt(
+        {"operation": "list_directory", "items": [{"name": name, "path": path}]}
+    )
+    with _stub_gateway(gateway_body) as fake:
+        resp = _rpc(
+            AcpClientAdapter(fake, "run-1"), "fs/list_directory", {"path": "outputs"}
+        )
+
+    out = resp["result"]["entries"][0]
+    _assert_clipped_and_marked(out["name"], MAX_RELAYED_NAME_CHARS, label="name")
+    assert len(out["name"]) == MAX_RELAYED_NAME_CHARS, "the #154 length contract is unchanged"
+    assert str(len(name)) in out["name"], "the marker must name the original size"
+    _assert_clipped_and_marked(out["path"], MAX_RELAYED_NAME_CHARS, label="path")
+    assert len(out["path"]) == MAX_RELAYED_NAME_CHARS
+
+
+@pytest.mark.parametrize("entries", [None, {}, [123], [{"name": {"nested": "synthetic"}}],
+    [{"path": ["synthetic"]}], [{"type": "file" * 5000}], [{"type": False}]])
+def test_list_directory_malformed_fields_are_refused(entries: Any) -> None:
+    body = _executed_receipt({"items": entries})
+    with _stub_gateway(body) as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), "fs/list_directory", {"path": "outputs"})
+    assert "result" not in resp
+    assert resp["error"]["data"] == {
+        "action_id": body["action_request"]["id"], "reason_code": "MALFORMED_DIRECTORY_RESULT"}
+    assert "synthetic" not in str(resp)
+
+
+@pytest.mark.parametrize("method,body", [
+    ("terminal/run", {"policy_decision": {"outcome": "ALLOW"},
+        "execution_receipt": {"status": {"raw": "synthetic"}, "error_code": ["synthetic"]}}),
+    ("fs/read_text_file", {"policy_decision": {"outcome": "DENY", "reason_code": {"raw": "synthetic"},
+        "explanation": ["synthetic"], "matched_rule": {"raw": "synthetic"}}}),
+])
+def test_non_text_codes_are_not_coerced_into_payloads(method: str, body: Any) -> None:
+    body["action_request"] = {"id": "action-typed-179"}
+    with _gateway_client(201, body) as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), method, {"path": "outputs/a", "command": "pytest tests/"})
+    assert "result" not in resp
+    assert resp["error"]["data"]["action_id"] == "action-typed-179"
+    assert resp["error"]["data"]["reason_code"]
+    assert "synthetic" not in str(resp)
+
+
+def test_preflight_unknown_outcome_is_sanitized() -> None:
+    with _gateway_client(200, {"outcome": "synthetic" * 5000}) as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), "session/request_permission", {"operation": "read_text", "path": "outputs/a"})
+    assert resp["result"]["decision"] == "deny"
+    assert resp["result"]["reason_code"] == "POLICY_ERROR"
+    assert "synthetic" not in str(resp)
+
+
+@pytest.mark.parametrize("outcome", ["HOLD", "DENY"])
+def test_preflight_fallback_reason_is_bounded(outcome: str) -> None:
+    with _gateway_client(200, {"outcome": outcome}) as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), "session/request_permission",
+                    {"operation": "o" * 5000, "path": "outputs/a"})
+    _assert_clipped_and_marked(resp["result"]["reason"], MAX_RELAYED_ERROR_CHARS, label="reason")
+    assert resp["result"]["action_id"] is None
+    assert resp["result"]["reason_code"] == "POLICY_ERROR"
+
+
+def test_list_directory_count_clip_is_marked() -> None:
+    body = _executed_receipt({"items": ["short.txt"] * (MAX_RELAYED_ENTRIES + 1)})
+    with _stub_gateway(body) as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), "fs/list_directory", {"path": "outputs"})
+    result = resp["result"]
+    assert len(result["entries"]) == MAX_RELAYED_ENTRIES
+    assert RELAY_TRUNCATION_MARKER in result["relay_notice"]
+
+
+def test_list_directory_legacy_name_clip_is_marked() -> None:
+    body = _executed_receipt({"items": ["n" * 5000]})
+    with _stub_gateway(body) as fake:
+        resp = _rpc(AcpClientAdapter(fake, "run-1"), "fs/list_directory", {"path": "outputs"})
+    _assert_clipped_and_marked(resp["result"]["entries"][0], MAX_RELAYED_NAME_CHARS, label="legacy name")
