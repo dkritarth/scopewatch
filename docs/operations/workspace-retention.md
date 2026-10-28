@@ -83,7 +83,10 @@ on a later run.
 Run, action, policy decision, approval, receipt, and existing evidence records
 remain in SQLite. The existing events API exposes retention evidence; the
 offline evidence verifier accepts actionless retention events after run
-closure. No public API or dashboard control is added.
+closure. The dashboard labels attempts, successful pruning, and failures as
+operator retention evidence, separately from agent actions and policy outcomes.
+The failed filter includes retention failures; attempt and pruned filters keep
+those outcomes separate. No public API or dashboard control is added.
 
 The database lock coordinates gateway processes using the same SQLite file.
 It does not coordinate manual host filesystem changes, volume remounts, or an

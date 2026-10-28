@@ -121,6 +121,8 @@ export function getHoldIcon(kind) {
 
 export const STATUS_GLYPHS = {
   attempted: "○",
+  "retention-attempted": "◇",
+  pruned: "⌫",
   allowed: "✓",
   held: "⏸",
   denied: "✕",
@@ -766,6 +768,30 @@ function renderEvidence() {
       evidenceHeading,
       evidenceList(event.evidence),
     );
+    return;
+  }
+
+  if (event.operatorRetention) {
+    const retention = event.operatorRetention;
+    const title = document.createElement("h3");
+    title.textContent = event.title;
+    const description = document.createElement("p");
+    description.textContent = event.statusDescription;
+    const heading = document.createElement("h4");
+    heading.textContent = "Operator workspace retention";
+    const scope = document.createElement("p");
+    scope.textContent = "Tool action, policy decision, approval, and execution receipt: not applicable. This is an operator maintenance event.";
+    article.append(title, description, heading, evidenceList([
+      { label: "Retention outcome", value: retention.outcome },
+      { label: "Operator", value: retention.actor ?? "Unavailable" },
+      { label: "Attempt ID", value: retention.attemptId ?? "Unavailable" },
+      { label: "Workspace key", value: retention.workspaceKey ?? "Unavailable" },
+      { label: "Logical bytes reported", value: retention.bytes ?? "Unavailable" },
+      { label: "Retention days", value: retention.retentionDays ?? "Unavailable" },
+      { label: "Cutoff", value: retention.cutoff ?? "Unavailable" },
+      { label: "Failure reason", value: retention.reason ?? "None recorded" },
+      { label: "Timestamp", value: event.timestamp ?? "Unavailable" },
+    ]), scope);
     return;
   }
 
@@ -1641,9 +1667,48 @@ export function shouldShowPolicyVersion(eventType, policyVersion) {
   return POLICY_DECISION_EVENT_TYPES.has(eventType);
 }
 
+function eventOffset(ev) {
+  const timestampRaw = ev.timestamp ?? ev.created_at ?? ev.occurred_at ?? null;
+  let offset = `+00:${String(ev.sequence ?? 0).padStart(2, "0")}`;
+  if (timestampRaw) {
+    const parsed = new Date(timestampRaw);
+    if (!Number.isNaN(parsed.getTime())) {
+      const runKey = ev.run_id || ev.runId || ev.action_request_id || ev.turn_id || "_default";
+      if (!timestampOffsetBaseline.has(runKey)) {
+        timestampOffsetBaseline.set(runKey, parsed.getTime());
+      }
+      const diffSec = Math.max(0, Math.round((parsed.getTime() - timestampOffsetBaseline.get(runKey)) / 1000));
+      offset = `+${String(Math.floor(diffSec / 60)).padStart(2, "0")}:${String(diffSec % 60).padStart(2, "0")}`;
+    }
+  }
+  return offset;
+}
+
 export function transformApiEvent(ev, context = null) {
   const type = ev.event_type || ev.type || "UNKNOWN";
   const d = ev.details || ev.payload || {};
+  if (["WORKSPACE_PRUNE_ATTEMPTED", "WORKSPACE_PRUNED", "WORKSPACE_PRUNE_FAILED"].includes(type)) {
+    const outcome = type === "WORKSPACE_PRUNED" ? "pruned" : type === "WORKSPACE_PRUNE_FAILED" ? "failed" : "attempted";
+    const statusDescription = outcome === "pruned"
+      ? "Operator retention completed: run workspace removed."
+      : outcome === "failed"
+      ? "Operator retention failed; workspace removal may be partial."
+      : "Operator retention attempted; no result is recorded in this event. Outcome remains unresolved.";
+    return {
+      id: ev.id, sequence: ev.sequence, eventType: type, isFixture: false,
+      offset: eventOffset(ev), timestamp: ev.timestamp || ev.created_at,
+      title: ev.summary || "Operator workspace retention", description: statusDescription,
+      tool: "N/A", operation: "N/A", resource: "Run workspace",
+      status: outcome === "attempted" ? "retention-attempted" : outcome,
+      statusLabel: `Retention: ${outcome}`, statusDescription,
+      operatorRetention: { outcome, attemptId: d.attempt_id ?? null,
+        bytes: d.bytes ?? null, reason: d.reason ?? null, actor: ev.actor ?? null,
+        workspaceKey: d.workspace_key ?? null, retentionDays: d.retention_days ?? null,
+        cutoff: d.cutoff ?? null },
+      actionRequestId: null, action_request_id: null, policyOutcome: null,
+      executionStatus: null, approvalStatus: null, reasoningAudit: null,
+    };
+  }
   const actionReq = ev.action_request || context?.actionRequest || d.action_request || {};
   const actionReqId =
     ev.action_request_id ||
@@ -1838,19 +1903,7 @@ export function transformApiEvent(ev, context = null) {
     statusDescription = "Action call submitted to gateway.";
   }
 
-  const timestampRaw = ev.timestamp ?? ev.created_at ?? ev.occurred_at ?? null;
-  let offset = `+00:${String(ev.sequence ?? 0).padStart(2, "0")}`;
-  if (timestampRaw) {
-    const parsed = new Date(timestampRaw);
-    if (!Number.isNaN(parsed.getTime())) {
-      const runKey = ev.run_id || ev.runId || ev.action_request_id || ev.turn_id || "_default";
-      if (!timestampOffsetBaseline.has(runKey)) {
-        timestampOffsetBaseline.set(runKey, parsed.getTime());
-      }
-      const diffSec = Math.max(0, Math.round((parsed.getTime() - timestampOffsetBaseline.get(runKey)) / 1000));
-      offset = `+${String(Math.floor(diffSec / 60)).padStart(2, "0")}:${String(diffSec % 60).padStart(2, "0")}`;
-    }
-  }
+  const offset = eventOffset(ev);
   const title = ev.summary || (d.operation ? `${d.operation} on ${d.resource}` : `${type}`);
 
   // Approval tracking & join across turn / action events (#134)
@@ -2050,7 +2103,7 @@ export function transformApiEvent(ev, context = null) {
 
 export function reconcileRunActionStates(events) {
   if (!Array.isArray(events) || events.length === 0) return events;
-  const liveEvents = events.filter((ev) => ev && ev.isFixture === false);
+  const liveEvents = events.filter((ev) => ev && ev.isFixture === false && !ev.operatorRetention);
   if (liveEvents.length === 0) return events;
 
   const actionGroups = new Map();
