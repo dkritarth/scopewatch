@@ -528,3 +528,22 @@ def test_malformed_env_override_falls_back_to_default(monkeypatch: pytest.Monkey
     assert max_request_body_bytes() == DEFAULT_MAX_REQUEST_BODY_BYTES
     monkeypatch.setenv("SCOPEWATCH_MAX_BODY_BYTES", "0")
     assert max_request_body_bytes() == DEFAULT_MAX_REQUEST_BODY_BYTES
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_validation_errors_never_echo_unknown_field_names(
+    raw_env: tuple[Any, Path], nested: bool
+) -> None:
+    app, db_file = raw_env
+    payload = json.loads(run_payload())
+    marker = "SYNTHETIC_PRIVATE_FIELD_" + "Q" * 70000
+    target = payload["task_scope"] if nested else payload
+    target[marker] = True
+    before = count_rows(db_file, "runs")
+    with TestClient(app) as client:
+        response = client.post("/api/v1/runs", json=payload)
+    assert response.status_code == 422
+    assert "SYNTHETIC_PRIVATE_FIELD_" not in response.text
+    assert len(response.content) < 512
+    assert response.json()["error"]["code"] == "SCHEMA_VALIDATION_ERROR"
+    assert count_rows(db_file, "runs") == before
