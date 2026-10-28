@@ -117,6 +117,8 @@ a rule-matcher structural check, not model accuracy.
 
 ## Feedback for Nebius
 
+A longer form, based on the same earlier synthetic probes, is in [provider-feedback.md](provider-feedback.md).
+
 1. **Product migration confused us:** older AI Studio examples use a different
    hostname, while current Token Factory documentation uses
    `api.tokenfactory.nebius.com`. A migration notice beside old examples would

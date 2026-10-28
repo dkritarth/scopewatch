@@ -128,7 +128,7 @@ issue still in flight).
 | Working demo + testing instructions | done (local) / pending-human (hosted) | `./scripts/run_demo.sh`, `./scripts/validate.sh`; judge instructions in `docs/submission/testing-instructions.md`; `<HOSTED_URL>` placeholder until issue #43 lands |
 | Source, assets, setup/run instructions, license | done | This repo; `README.md`, `BUILDING.md`, MIT `LICENSE` |
 | English description + public YouTube demo <3 min | done (draft+script) / pending-human (record+publish) | This file; `docs/submission/demo-script.md` (362 spoken words ≈ 2:35 at 140 wpm); recording in issue #45 |
-| Explain Nebius+NVIDIA use + feedback | done (draft) | `docs/submission/nebius-nvidia.md` |
+| Explain Nebius+NVIDIA use + feedback | done (draft) | `docs/submission/nebius-nvidia.md`; paste-ready feedback in `docs/submission/provider-feedback.md` (from earlier synthetic probes; a human publishes it) |
 | Available for judging through 2026-12-15 | pending-human | Needs the hosted instance (issue #43) plus an availability owner and budget |
 | Eligibility, team rep, ownership/licensing review | pending-human | Issue #41; third-party license notes in `nebius-nvidia.md` are input, not legal review |
 

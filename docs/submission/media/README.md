@@ -122,18 +122,8 @@ For each real capture:
   files exist, and check README/Devpost previews. Human owners publish the assets
   and record the public URLs. Leave these boxes open until actually verified.
 
-## Integration notes
+## Notes
 
-#294's draft [PR #324](https://github.com/dkritarth/scopewatch/pull/324) owns
-README and submission positioning. Prefer #324 first, then this PR's minimal
-image/link hunks. Preserve #324's wording if a conflict occurs; this gallery does
-not assert a shipped profile pair or change that positioning. This PR changes
-only the README hero image/caption and appends a gallery link to the submission
-description. It leaves older September screenshots and the separately maintained
-`site/` assets intact; those older assets are not the current gallery. The site
-can be refreshed separately after the judge path is stable.
+The gallery does not assert a shipped agent/auditor profile pair (issue #214). Older September screenshots and the `site/` assets are separate from this set.
 
-#290 owns frontend/runtime judge-path changes. These captures deliberately pin
-pre-#290 main. Rerun after #290 merges and review the actual output before
-replacing this set. No new runtime route, frontend patch, or model call belongs
-to this media work.
+The captures were taken from `main` before the hosted judge review controls (#290, #328) landed, so they do not show approval expiry or the reset and reseed controls. Rerun the capture and review the output before replacing this set. No model call is involved.

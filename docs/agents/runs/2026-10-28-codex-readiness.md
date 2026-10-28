@@ -1,3 +1,6 @@
+> Historical handoff record, written before the merge. Its draft statuses and "none merged" counts are out of date.
+> All 17 drafts were integrated and merged on 2026-10-28. Current status is in [docs/STATUS.md](../../STATUS.md).
+
 # Scopewatch readiness audit, 2026-10-28
 
 Prepared by Codex / GPT-6.1 Sol; implementation and review results are attributed below. Refs [#287](https://github.com/dkritarth/scopewatch/issues/287).
