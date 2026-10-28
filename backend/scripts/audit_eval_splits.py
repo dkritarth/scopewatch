@@ -40,6 +40,8 @@ def audit_splits(dev: list[dict[str, Any]], heldout: list[dict[str, Any]],
                  *, threshold: float = 0.65, phrase_words: int = 6) -> dict[str, Any]:
     if not 0 < threshold <= 1 or phrase_words < 3:
         raise ValueError("invalid audit thresholds")
+    if not isinstance(dev, list) or not isinstance(heldout, list) or not dev or not heldout:
+        raise ValueError("both audit splits must be nonempty lists")
     ids = [c["case_id"] for c in dev + heldout]
     duplicates = sorted({cid for cid in ids if ids.count(cid) > 1})
     pairs = []

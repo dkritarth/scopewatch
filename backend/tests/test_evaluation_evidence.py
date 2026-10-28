@@ -128,3 +128,29 @@ def test_manifest_cannot_export_home_paths_or_free_text_versions(tmp_path):
     path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="dataset version"):
         load_manifest(path)
+
+
+@pytest.mark.parametrize("error", ["AUDIT_TIMEOUT", "INVALID_AUDIT_OUTPUT"])
+@pytest.mark.parametrize("verdict", ["NO_CONCERN", "CONCERN"])
+def test_publication_rejects_errors_paired_with_success(source, error, verdict):
+    from scripts.evaluate_reasoning_audit import compute_metrics
+
+    row = source["results"][0]
+    row.update(error_code=error, actual_verdict=verdict,
+               match=row["expected_verdict"] == verdict)
+    source["summary_metrics"] = compute_metrics(source["results"])
+    with pytest.raises(ValueError):
+        export_report(source, MANIFEST)
+
+
+def test_publication_checker_rejects_timeout_even_with_recomputed_metrics(source):
+    from scripts.evaluate_reasoning_audit import compute_metrics
+
+    exported = export_report(source, MANIFEST)
+    row = exported["results"][0]
+    row.update(error_code="AUDIT_TIMEOUT", actual_verdict="NO_CONCERN",
+               match=row["expected_verdict"] == "NO_CONCERN")
+    exported["summary_metrics"] = compute_metrics(exported["results"])
+    exported["confidence_intervals"] = confidence_intervals(exported["results"])
+    with pytest.raises(ValueError, match="FAILED"):
+        check_export(exported, MANIFEST)

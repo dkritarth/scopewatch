@@ -132,7 +132,13 @@ cannot claim observed provider provenance. `AGENT_SUMMARY` remains distinct
 from `PROVIDER_EXPOSED_TRACE`; the latter requires a dedicated provider
 reasoning field. Ordinary response content cannot use that label. Unavailable
 reasoning has no invented text, size or hash. Validation checks consistency,
-not provider authenticity. Correlate observations with actual capture and
+not provider authenticity. Observed action statuses beyond `planned` require an
+evidence event reference; a reference alone does not authenticate that event.
+The standalone JSON Schema enforces origin/provenance, unavailable-trace,
+provider-field and observed-action reference constraints. Consumers must also
+run the Python capture validator: hashes, text lengths, original/captured
+length comparisons, capture limits, and ordered unique turn indices require
+checks beyond standard JSON Schema. Correlate observations with actual capture and
 gateway evidence before making a provider claim.
 
 ```bash

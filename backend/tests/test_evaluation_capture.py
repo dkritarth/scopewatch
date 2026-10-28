@@ -62,3 +62,50 @@ def test_truncated_trace_preserves_unknown_original_size():
     trace.update(text="bounded", captured_chars=7, original_chars=None, complete=False,
                  truncation="provider_length", sha256=hashlib.sha256(b"bounded").hexdigest())
     LongTraceCapture.model_validate_json(json.dumps(value))
+
+
+@pytest.mark.parametrize("status", ["attempted", "allowed", "held", "denied", "approved", "executed", "failed"])
+def test_observed_action_requires_evidence_reference(status):
+    value = json.loads(EXAMPLE.read_text())
+    value["capture_origin"] = "observed"
+    value["turns"] = value["turns"][:1]
+    value["turns"][0]["trace"]["provenance"] = "AGENT_SUMMARY"
+    action = value["turns"][0]["actions"][0]
+    action.update(status=status, evidence_event_id=None)
+    with pytest.raises(ValueError, match="evidence"):
+        LongTraceCapture.model_validate_json(json.dumps(value))
+    action["evidence_event_id"] = "synthetic-event-reference"
+    LongTraceCapture.model_validate_json(json.dumps(value))
+
+
+@pytest.mark.parametrize("mutation", ["observed_synthetic", "unavailable_text", "unavailable_size", "provider_field", "summary_field", "synthetic_private", "observed_execution", "complete_truncation"])
+def test_standalone_json_schema_rejects_expressible_contradictions(mutation):
+    from jsonschema import Draft202012Validator, FormatChecker
+
+    value = json.loads(EXAMPLE.read_text())
+    schema = json.loads((EXAMPLE.parent / "long-trace-capture.schema.json").read_text())
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    validator.validate(value)
+    trace = value["turns"][0]["trace"]
+    if mutation == "observed_synthetic":
+        value["capture_origin"] = "observed"
+    elif mutation == "unavailable_text":
+        value["turns"][-1]["trace"]["text"] = "invented"
+    elif mutation == "unavailable_size":
+        value["turns"][-1]["trace"]["captured_chars"] = 1
+    elif mutation == "provider_field":
+        value["capture_origin"] = "observed"
+        trace["provenance"] = "PROVIDER_EXPOSED_TRACE"
+    elif mutation == "summary_field":
+        value["capture_origin"] = "observed"
+        trace.update(provenance="AGENT_SUMMARY", provider_field="message.reasoning")
+    elif mutation == "synthetic_private":
+        value["content_origin"] = "private"
+    elif mutation == "observed_execution":
+        value["capture_origin"] = "observed"
+        value["turns"] = value["turns"][:1]
+        trace["provenance"] = "AGENT_SUMMARY"
+        value["turns"][0]["actions"][0].update(status="executed", evidence_event_id=None)
+    else:
+        trace["truncation"] = "capture_limit"
+    assert list(validator.iter_errors(value))

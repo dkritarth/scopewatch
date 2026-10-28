@@ -51,6 +51,109 @@
     },
     "TraceCapture": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "else": {
+            "allOf": [
+              {
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "else": {
+                  "properties": {
+                    "truncation": {
+                      "enum": [
+                        "capture_limit",
+                        "provider_length",
+                        "interrupted"
+                      ]
+                    }
+                  }
+                },
+                "if": {
+                  "properties": {
+                    "complete": {
+                      "const": true
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "truncation": {
+                      "const": "none"
+                    },
+                    "original_chars": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              {
+                "else": {
+                  "properties": {
+                    "provider_field": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "if": {
+                  "properties": {
+                    "provenance": {
+                      "const": "PROVIDER_EXPOSED_TRACE"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "provider_field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "if": {
+            "properties": {
+              "provenance": {
+                "const": "UNAVAILABLE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "text": {
+                "type": "null"
+              },
+              "sha256": {
+                "type": "null"
+              },
+              "original_chars": {
+                "type": "null"
+              },
+              "provider_field": {
+                "type": "null"
+              },
+              "captured_chars": {
+                "const": 0
+              },
+              "complete": {
+                "const": false
+              },
+              "truncation": {
+                "const": "unavailable"
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "provenance": {
           "enum": [
@@ -279,6 +382,81 @@
     }
   },
   "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "turns": {
+            "items": {
+              "properties": {
+                "trace": {
+                  "properties": {
+                    "provenance": {
+                      "enum": [
+                        "PROVIDER_EXPOSED_TRACE",
+                        "AGENT_SUMMARY",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  }
+                },
+                "actions": {
+                  "items": {
+                    "if": {
+                      "properties": {
+                        "status": {
+                          "not": {
+                            "const": "planned"
+                          }
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "evidence_event_id": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "capture_origin": {
+            "const": "synthetic"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "content_origin": {
+            "const": "synthetic"
+          },
+          "turns": {
+            "items": {
+              "properties": {
+                "trace": {
+                  "properties": {
+                    "provenance": {
+                      "enum": [
+                        "SYNTHETIC_TRACE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "schema_version": {
       "const": 1,

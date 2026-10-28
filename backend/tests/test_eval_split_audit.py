@@ -32,3 +32,27 @@ def test_distinct_cases_pass_checks_without_claiming_semantic_independence():
     audit = audit_splits([case("d", "Sum orchard basket weights.", "orchard")],
                          [case("h", "Repair telescope coordinate rounding.", "telescope")])
     assert audit["clean_under_checks"]
+
+
+def test_empty_or_one_sided_splits_never_pass_clean_gate():
+    import pytest
+
+    nonempty = [case("d", "Inventory orchard fruit weights.", "orchard")]
+    for dev, heldout in (([], []), ([], nonempty), (nonempty, [])):
+        with pytest.raises(ValueError, match="nonempty"):
+            audit_splits(dev, heldout)
+
+
+def test_empty_split_cli_refuses_without_publishing(tmp_path, monkeypatch):
+    import json
+    from scripts.audit_eval_splits import main
+
+    for split in ("dev", "heldout"):
+        directory = tmp_path / split
+        directory.mkdir()
+        (directory / "cases.json").write_text(json.dumps([]))
+    output = tmp_path / "audit.json"
+    monkeypatch.setattr("sys.argv", ["audit", "--cases-dir", str(tmp_path),
+                                    "--output", str(output), "--require-clean"])
+    assert main() == 1
+    assert not output.exists()

@@ -32,6 +32,27 @@ class Usage(CaptureModel):
 
 
 class TraceCapture(CaptureModel):
+    # JSON Schema consumers receive the same expressible provenance rules.
+    # Python validation additionally checks hashes and cross-field lengths.
+    model_config = ConfigDict(json_schema_extra={"allOf": [{
+        "if": {"properties": {"provenance": {"const": "UNAVAILABLE"}}},
+        "then": {"properties": {
+            "text": {"type": "null"}, "sha256": {"type": "null"},
+            "original_chars": {"type": "null"}, "provider_field": {"type": "null"},
+            "captured_chars": {"const": 0}, "complete": {"const": False},
+            "truncation": {"const": "unavailable"},
+        }},
+        "else": {"allOf": [
+            {"properties": {"text": {"type": "string"}, "sha256": {"type": "string"}}},
+            {"if": {"properties": {"complete": {"const": True}}},
+             "then": {"properties": {"truncation": {"const": "none"},
+                                      "original_chars": {"type": "integer"}}},
+             "else": {"properties": {"truncation": {"enum": ["capture_limit", "provider_length", "interrupted"]}}}},
+            {"if": {"properties": {"provenance": {"const": "PROVIDER_EXPOSED_TRACE"}}},
+             "then": {"properties": {"provider_field": {"type": "string"}}},
+             "else": {"properties": {"provider_field": {"type": "null"}}}},
+        ]},
+    }]})
     provenance: Literal["PROVIDER_EXPOSED_TRACE", "AGENT_SUMMARY", "SYNTHETIC_TRACE", "UNAVAILABLE"]
     provider_field: Literal["message.reasoning", "message.reasoning_content", "message.reasoning_details"] | None
     text: str | None
@@ -82,6 +103,24 @@ class TurnCapture(CaptureModel):
 
 
 class LongTraceCapture(CaptureModel):
+    model_config = ConfigDict(json_schema_extra={"allOf": [{
+        "if": {"properties": {"capture_origin": {"const": "synthetic"}}},
+        "then": {"properties": {
+            "content_origin": {"const": "synthetic"},
+            "turns": {"items": {"properties": {"trace": {"properties": {
+                "provenance": {"enum": ["SYNTHETIC_TRACE", "UNAVAILABLE"]},
+            }}}}},
+        }},
+        "else": {"properties": {"turns": {"items": {"properties": {
+            "trace": {"properties": {"provenance": {
+                "enum": ["PROVIDER_EXPOSED_TRACE", "AGENT_SUMMARY", "UNAVAILABLE"],
+            }}},
+            "actions": {"items": {
+                "if": {"properties": {"status": {"not": {"const": "planned"}}}},
+                "then": {"properties": {"evidence_event_id": {"type": "string"}}},
+            }},
+        }}}}},
+    }]})
     schema_version: Literal[1]
     capture_origin: Literal["observed", "synthetic"]
     content_origin: Literal["synthetic", "private"]
@@ -105,6 +144,10 @@ class LongTraceCapture(CaptureModel):
             provenance = turn.trace.provenance
             if provenance != "UNAVAILABLE" and ((self.capture_origin == "synthetic") != (provenance == "SYNTHETIC_TRACE")):
                 raise ValueError("synthetic text cannot claim observed provenance")
+            if self.capture_origin == "observed":
+                for action in turn.actions:
+                    if action.status != "planned" and action.evidence_event_id is None:
+                        raise ValueError("observed action status requires an evidence reference")
             if turn.trace.captured_chars > self.capture_limit_chars:
                 raise ValueError("capture exceeds declared limit")
         return self

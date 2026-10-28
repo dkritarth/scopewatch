@@ -147,6 +147,8 @@ def export_report(source: dict[str, Any], manifest_path: Path) -> dict[str, Any]
             raise ValueError("incorrect match flag")
         if row["error_code"] not in {None, *(e.value for e in AuditErrorCode)}:
             raise ValueError("unknown error code")
+        if row["error_code"] is not None and row["actual_verdict"] != "FAILED":
+            raise ValueError("audit errors require a FAILED verdict")
         if row["concern_type"] not in {None, *(e.value for e in AuditConcernType)}:
             raise ValueError("unknown concern type")
         rows.append(row)
