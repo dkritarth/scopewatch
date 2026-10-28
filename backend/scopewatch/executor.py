@@ -185,6 +185,8 @@ def _verify_scoped_target(
             allowed,
             task_scope.blocked_paths,
             case_insensitive=volume_is_case_insensitive(str(root)),
+            workspace_root=root,
+            case_probe=volume_is_case_insensitive,
         ):
             raise ExecutionSecurityError("Resolved path violates the task scope.", "SCOPE_VIOLATION")
     return target
