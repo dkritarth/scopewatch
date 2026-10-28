@@ -1,6 +1,50 @@
 # Scopewatch readiness audit, 2026-10-28
 
-Codex / GPT-6.1-sol, implementation sub-agent. Refs [#287](https://github.com/dkritarth/scopewatch/issues/287).
+Prepared by Codex / GPT-6.1 Sol; implementation and review results are attributed below. Refs [#287](https://github.com/dkritarth/scopewatch/issues/287).
+
+## Current handoff checkpoint, 2026-10-28 05:42 UTC
+
+The run is ongoing until 07:00 UTC. No new issue starts after 06:00 UTC. All 17 PRs remain open drafts; nothing has been merged or closed. This checkpoint supersedes current-status claims in the dated progress records below. Those records preserve earlier heads, findings and test results as history.
+
+All current application heads have independent GPT COMMENT reviews or exact-head rechecks with no remaining blockers. These are not formal GitHub approvals because the reviewer shares the author account. In particular, #340 at `636dddace5abe3f092017b3b4bd582b3403e615f` is now independently cleared: original held-action/argument binding, opaque session IDs, slow HTTP and resolver-lifetime findings are resolved. The final monitor pass found no new actionable drift, invariant break, test weakening or secret. Every listed CI check was successful at its snapshot, including the new media and ablation jobs. This document-only checkpoint still needs its own independent review.
+
+### Draft inventory
+
+| Draft | Work | Application/source head |
+| --- | --- | --- |
+| [#320](https://github.com/dkritarth/scopewatch/pull/320) | Ingress and public-error bounds | `59988b87324b4d6c008ef7dde453b9fa72e87ad2` |
+| [#324](https://github.com/dkritarth/scopewatch/pull/324) | Adopter and prior-art documentation | `0c6d2ff186c13dacaed62e10015bbd40ba8250e0` |
+| [#325](https://github.com/dkritarth/scopewatch/pull/325) | Conservative two-tier audit | `8674397330ac2d4364a4cb6211bc5c7305fec398` |
+| [#326](https://github.com/dkritarth/scopewatch/pull/326) | Sanitized provider-feedback draft | `f896bab48f004e373b419cf7d6fdbf9a6976dfa1` |
+| [#327](https://github.com/dkritarth/scopewatch/pull/327) | Reproducible evaluation evidence | `535fb4c2f4edef92254edc674c3cbed541b3e752` |
+| [#328](https://github.com/dkritarth/scopewatch/pull/328) | Judge review, expiry and recovery | `503969bc23042459ea1a2b0c63dfc76748e48513` |
+| [#329](https://github.com/dkritarth/scopewatch/pull/329) | Ablation, opt-in adapter and CI | `6c1214f1050fdac0a1b8d9df88d33525717a2db3` |
+| [#330](https://github.com/dkritarth/scopewatch/pull/330) | Scripted media and CI | `d9b101d7b98e0d8fc5cc032f747c3c91ff04350e` |
+| [#331](https://github.com/dkritarth/scopewatch/pull/331) | Filesystem identity and case semantics | `0ffbdb950d6fa9337b8bff84ba7ade553acecfab` |
+| [#332](https://github.com/dkritarth/scopewatch/pull/332) | Current documentation validation gate | `d6e6c4b3f8969c4b2a4d232c5d5de2da9844545d` |
+| [#333](https://github.com/dkritarth/scopewatch/pull/333) | Residual ACP relay bounds | `3c63a8c18d606f5505c09b42e47c863cbe8880f9` |
+| [#334](https://github.com/dkritarth/scopewatch/pull/334) | Injectable deadline clocks | `f59b1eb1edd21b897b230cef2bb1bc56c65c65ff` |
+| [#335](https://github.com/dkritarth/scopewatch/pull/335) | Readiness and handoff log | This log; latest checkpoint review pending |
+| [#337](https://github.com/dkritarth/scopewatch/pull/337) | Copy-back destination containment | `622d028528ef18d77b710ea21e6d2e7eb519f0db` |
+| [#338](https://github.com/dkritarth/scopewatch/pull/338) | Bundled gateway fonts | `91f8e3d2702cb94ce63e864974d49257ff22d317` |
+| [#339](https://github.com/dkritarth/scopewatch/pull/339) | Terminal workspace retention | `8df4f70dbad27c3ff01fd10eff76e9efcc69f5d3` |
+| [#340](https://github.com/dkritarth/scopewatch/pull/340) | Bounded ACP v1 stdio client | `636dddace5abe3f092017b3b4bd582b3403e615f` |
+
+### Executed verification
+
+Independent Sol verification used unpublished snapshot `5b7d2980d5ac1424c5a171f139f69a47a987965a`, containing all seventeen draft inputs and #340's exact final source delta. Full validation passed: **2,291 backend tests, 25 Docker-gated skips; 96 reasoning PoC tests plus 79 subtests; 26 MCP; 73 ablation; 140 deploy; 79 frontend units; 28 browsers; six clean-room scenarios**, with compilation, build-context and docs checks also passing. All **217 focused ACP cases** passed. Independent actual localhost CLI effects/refusals, exact receipt ordering, coverage output and cleanup passed. Default-transport deadline probes observed zero DNS calls and bounded cancellation. Schema definitions, lock regeneration, dependency compatibility and historical gallery checks passed. No external inference ran.
+
+This application snapshot excludes later log-only refreshes. Exact construction, source equality, commands, outputs and limitations are retained in ignored verification artifacts. The only manual composition resolution across the full chain deduplicated compatible jsonschema requirements to one `==4.26.0` entry; the lock already held matching versions/hashes. Subsequent source deltas applied without resolution or functional fixes. Passing this bounded composite is not deployment or full protocol acceptance.
+
+### Integration and remaining work
+
+For later human integration, preserve the actual stacks **#331 before #337** and **#333 before #340**. Recommended documentation/runtime order is **#324, #328, #338, #330**. Keep #329's ablation gate and #332's docs gate together. Regenerate and inspect #330 media on the integrated runtime; the committed gallery remains accurately labeled historical scripted evidence. Reproduce #327's split audits after #325 integration: its recorded mock-source hash belongs to its owning head, while combined tier metadata changes that file hash without changing reproduced audit counts. Do not relabel the old hashes as new combined evidence.
+
+- #214 remains the live sponsor/profile and headline evidence gate. Historical reports are still missing; no fresh provider quality, caps, cost or latency qualification is claimed.
+- #121 remains open for a pinned real Codex bridge/session. The new client supports filesystem callbacks, cancels permissions and advertises terminal false. It does not sandbox the peer; timeout does not revoke gateway approvals or undo effects.
+- Local native Docker, native casefold/APFS/NTFS, public TLS/proxy/multi-replica deployment and operations outside gateway callbacks remain unverified by this run. Hosted CI checks are separately recorded.
+- Human track/eligibility/licensing, deployment ownership/billing, video and submission gates remain open in #40/#41/#43/#45/#47. No publication or submission occurred.
+- The queue now reports **no ready issues**. #293's already-merged implementation is marked needs-human for acceptance tied to #214. #306 is marked blocked on separately reviewed bounded networking. #175 retains another contributor's claim and was not taken over. Draft issues remain open while KD reviews the work.
 
 ## Progress refresh, 2026-10-28 05:24 UTC
 
