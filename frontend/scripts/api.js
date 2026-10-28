@@ -136,6 +136,10 @@ export async function checkHealth() {
   }
 }
 
+export async function reseedDemo() {
+  return fetchJson("/api/v1/demo/reseed", { method: "POST" });
+}
+
 export async function resetDemo() {
   return fetchJson("/api/v1/demo/reset", { method: "POST" });
 }

@@ -34,9 +34,10 @@ What lives here
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import unicodedata
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 # Denial codes, as plain strings (the gateway maps them to ReasonCode; the
 # runner maps them to HTTP statuses). Ordered exactly as
@@ -44,10 +45,10 @@ from typing import Iterable, Optional
 BLOCKED_PATH = "BLOCKED_PATH"
 PATH_NOT_ALLOWED = "PATH_NOT_ALLOWED"
 
-# Confirmed volume answers only; never holds an unknown (``None``) result.
-# Keyed by (resolved root, device) so a different filesystem at the same path
-# is re-probed. See :func:`volume_is_case_insensitive`.
-_CASE_PROBE_CACHE: dict[tuple[str, int], bool] = {}
+# Confirmed directory answers only; never holds an unknown (``None``) result.
+# Device, inode and Linux flags distinguish replacements and +F changes.
+# See :func:`volume_is_case_insensitive`.
+_CASE_PROBE_CACHE: dict[tuple[str, int, int, Optional[int]], bool] = {}
 
 
 def _fold(segments: tuple[str, ...], case_insensitive: bool) -> tuple[str, ...]:
@@ -72,7 +73,7 @@ def _fold(segments: tuple[str, ...], case_insensitive: bool) -> tuple[str, ...]:
 
 
 def volume_is_case_insensitive(root: str) -> Optional[bool]:
-    """Probe whether ``root`` sits on a case-insensitive volume (#305).
+    """Probe name lookup inside ``root``, including Linux per-directory casefold.
 
     Three states, because "the probe failed" is not the same fact as
     "the volume folds case":
@@ -91,17 +92,22 @@ def volume_is_case_insensitive(root: str) -> Optional[bool]:
 
     Side effect: the probe creates a short-lived ``.scopewatch-case-*`` file
     inside ``root`` and deletes it. That is why confirmed answers are cached
-    per ``(resolved root, os.stat(root).st_dev)``: repeated policy and
+    per resolved directory, device, inode and Linux flags: repeated policy and
     dispatch checks on the same volume do not keep writing to the agent's
     workspace. Unknown (``None``) answers are never cached, so a volume that
     later becomes writable is re-probed.
     """
     try:
         resolved_root = os.path.realpath(root)
-        device = os.stat(resolved_root).st_dev
+        info = os.stat(resolved_root)
     except OSError:
         return None
-    key = (resolved_root, device)
+    flags = _linux_directory_flags(resolved_root)
+    # ext4/f2fs casefold belongs to this directory, not its mount. Read flags
+    # before consulting the cache so changing +F cannot reuse a stale answer.
+    if flags is not None and flags & 0x40000000:  # FS_CASEFOLD_FL
+        return True
+    key = (resolved_root, info.st_dev, info.st_ino, flags)
     cached = _CASE_PROBE_CACHE.get(key)
     if cached is not None:
         return cached
@@ -109,6 +115,27 @@ def volume_is_case_insensitive(root: str) -> Optional[bool]:
     if verdict is not None:
         _CASE_PROBE_CACHE[key] = verdict
     return verdict
+
+
+def _linux_directory_flags(directory: str) -> Optional[int]:
+    """Read Linux inode flags without writing; unsupported filesystems fall back."""
+    if sys.platform != "linux":
+        return None
+    import array
+    import fcntl
+
+    try:
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            flags = array.array("l", [0])
+            # _IOR('f', 1, long), FS_IOC_GETFLAGS from linux/fs.h.
+            request = 0x80006601 | (flags.itemsize << 16)
+            fcntl.ioctl(fd, request, flags, True)
+            return flags[0]
+        finally:
+            os.close(fd)
+    except OSError:
+        return None
 
 
 def _probe_case_insensitivity(root: str) -> Optional[bool]:
@@ -140,6 +167,115 @@ def _probe_case_insensitivity(root: str) -> Optional[bool]:
                 os.unlink(probe)
             except OSError:
                 pass
+
+
+def _directory_verdict(directory: str, probe: Callable[[str], Optional[bool]]) -> Optional[bool]:
+    """Use the deepest existing parent; never inherit a verdict across an existing dir."""
+    while True:
+        try:
+            os.stat(directory)
+        except FileNotFoundError:
+            parent = os.path.dirname(directory)
+            if parent == directory:
+                return None
+            directory = parent
+            continue
+        except OSError:
+            return None
+        return probe(directory)
+
+
+def _same_file(left: str, right: str) -> Optional[bool]:
+    try:
+        return os.path.samefile(left, right)
+    except (OSError, ValueError):
+        return None
+
+
+def _exists_for_identity(path: str) -> Optional[bool]:
+    """Distinguish an absent lookup from unavailable identity evidence."""
+    try:
+        os.stat(path)
+        return True
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return None
+
+
+def _simple_fold(name: str) -> str:
+    """Do not authorize Unicode expansions such as sharp-s to ss."""
+    return "".join(
+        char.casefold() if len(char.casefold()) == 1 else char
+        for char in unicodedata.normalize("NFC", name)
+    )
+
+
+def filesystem_path_within(
+    path: Iterable[str], prefix: str, workspace_root: str, *,
+    allowed: bool = False,
+    case_probe: Optional[Callable[[str], Optional[bool]]] = None,
+) -> bool:
+    """Match using parent-directory semantics and exact existing-path identity.
+
+    Identity can catch blocked hard-link aliases even at a different depth.
+    Distinct existing prefix heads disprove a folded alias, avoiding false
+    blocks such as sharp-s versus ss. Missing/inaccessible identity evidence
+    retains conservative blocked folding; unknown never folds an allowlist.
+    This is a pre-I/O check, not protection against concurrent path replacement.
+    """
+    path = tuple(path)
+    prefix_parts = normalize_relative_segments(prefix)
+    probe = case_probe or volume_is_case_insensitive
+    if not prefix_parts:
+        return True
+    blocked_root = os.path.join(workspace_root, *prefix_parts)
+    if not allowed:
+        for depth in range(len(path) + 1):
+            if _same_file(os.path.join(workspace_root, *path[:depth]), blocked_root) is True:
+                return True
+    if len(path) < len(prefix_parts):
+        return False
+    for index, (name, expected) in enumerate(zip(path, prefix_parts)):
+        if name == expected:
+            continue
+        left = os.path.join(workspace_root, *path[:index + 1])
+        right = os.path.join(workspace_root, *prefix_parts[:index + 1])
+        identity = _same_file(left, right)
+        if identity is None and _simple_fold(name) != _simple_fold(expected):
+            # An expansion alias would also exist if its counterpart exists.
+            # This matters after staging excludes the blocked spelling: ss
+            # can remain while sharp-s is absent, proving distinct lookups.
+            left_exists = _exists_for_identity(left)
+            right_exists = _exists_for_identity(right)
+            if (
+                left_exists is not None and right_exists is not None
+                and left_exists != right_exists
+            ):
+                return False
+        if identity is False:
+            return False
+        if identity is True and not allowed:
+            continue
+        parent = os.path.join(workspace_root, *path[:index])
+        verdict = _directory_verdict(parent, probe)
+        if verdict is False or (allowed and verdict is not True):
+            return False
+        if allowed:
+            if _simple_fold(name) != _simple_fold(expected):
+                return False
+        elif _fold((name,), True) != _fold((expected,), True):
+            return False
+    return True
+
+
+def blocked_path_matcher(
+    workspace_root: str, case_probe: Optional[Callable[[str], Optional[bool]]] = None,
+) -> Callable[[tuple[str, ...], tuple[str, ...]], bool]:
+    """Bind filesystem checks for staging/copy-back without coupling docker_job."""
+    return lambda path, prefix: filesystem_path_within(
+        path, "/".join(prefix), workspace_root, case_probe=case_probe
+    )
 
 
 def clear_case_probe_cache() -> None:
@@ -190,6 +326,8 @@ def scoped_path_denial(
     blocked_paths: Iterable[str],
     *,
     case_insensitive: Optional[bool] = None,
+    workspace_root: Optional[str] = None,
+    case_probe: Optional[Callable[[str], Optional[bool]]] = None,
 ) -> Optional[tuple[str, Optional[str]]]:
     """Check both names of one target against the task scope.
 
@@ -214,6 +352,12 @@ def scoped_path_denial(
       policy authorized: ``allowed=["outputs"]`` must not accept ``OUTPUTS``
       on a case-sensitive volume.
 
+    With ``workspace_root``, per-directory probes and existing identity take
+    precedence over the legacy root-wide flag. ``case_probe`` can supply
+    synthetic directory semantics in tests. Allowlist folding never expands
+    Unicode characters; blocked fallback folding remains conservative when
+    exact identity is unavailable.
+
     A caller that omits the flag gets ``None`` (unknown), which is the
     fail-closed default: no widening, and blocked matching at its strongest.
     """
@@ -221,13 +365,29 @@ def scoped_path_denial(
     resolved = tuple(resolved)
     blocked_folds = case_insensitive is None or case_insensitive is True
     allowed_folds = case_insensitive is True
+    allowed_paths, blocked_paths = tuple(allowed_paths), tuple(blocked_paths)
+
+    def within(path: tuple[str, ...], prefix: str, *, allowed: bool) -> bool:
+        if workspace_root is not None:
+            return filesystem_path_within(
+                path, prefix, workspace_root, allowed=allowed, case_probe=case_probe
+            )
+        if allowed and allowed_folds:
+            prefix_parts = normalize_relative_segments(prefix)
+            return tuple(_simple_fold(part) for part in path[:len(prefix_parts)]) == tuple(
+                _simple_fold(part) for part in prefix_parts
+            )
+        return segments_within(
+            path, prefix, case_insensitive=blocked_folds if not allowed else False
+        )
+
     for path in (requested, resolved):
         for blocked in blocked_paths:
-            if segments_within(path, blocked, case_insensitive=blocked_folds):
+            if within(path, blocked, allowed=False):
                 return BLOCKED_PATH, blocked
     for path in (requested, resolved):
         if not any(
-            segments_within(path, allowed, case_insensitive=allowed_folds)
+            within(path, allowed, allowed=True)
             for allowed in allowed_paths
         ):
             return PATH_NOT_ALLOWED, None

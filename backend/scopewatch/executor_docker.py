@@ -37,6 +37,7 @@ from scopewatch.config import (
 )
 from scopewatch.dispatch_gate import authorize_dispatch
 from scopewatch.path_access import volume_is_case_insensitive
+from scopewatch.scope_paths import blocked_path_matcher
 
 # Shared Docker job construction lives in scopewatch.docker_job (issue #106):
 # image pin, hardening constants, helper code, `docker run` flag list, and the
@@ -336,9 +337,8 @@ class DockerExecutor:
             resolved_workspace = workspace_root.resolve()
             if not resolved_workspace.exists():
                 return _failed("EXECUTION_FAILED", "Workspace root not found.")
-            # One volume verdict per job: the same answer governs staging's
-            # blocked exclusion and copy-back's blocked destination checks
-            # (#305), computed once from the run's workspace root.
+            # Preserve the legacy fallback verdict. The bound matcher checks
+            # per-directory semantics and existing identity on the live root.
             case_insensitive = volume_is_case_insensitive(str(resolved_workspace))
             # run_command (issues #68, #183): revalidate against the run's own
             # workspace immediately before staging as well as against the
@@ -364,6 +364,7 @@ class DockerExecutor:
                     resolved_workspace,
                     blocked_paths,
                     case_insensitive=case_insensitive,
+                    path_matcher=blocked_path_matcher(str(resolved_workspace), volume_is_case_insensitive),
                 )
             except OSError:
                 return _failed("EXECUTION_FAILED", "Workspace staging failed.")
@@ -475,6 +476,7 @@ class DockerExecutor:
                         max_bytes=MAX_COPY_BACK_BYTES,
                         max_files=MAX_COPY_BACK_FILES,
                         case_insensitive=case_insensitive,
+                        path_matcher=blocked_path_matcher(str(resolved_workspace), volume_is_case_insensitive),
                     )
                 except OversizedCopyBackError as err:
                     return _failed("OVERSIZED_WORKSPACE", f"Copy-back refused: {err}")

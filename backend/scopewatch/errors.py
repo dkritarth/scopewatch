@@ -45,14 +45,14 @@ async def scopewatch_api_error_handler(request: Request, exc: ScopewatchAPIError
 
 async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     request_id = str(uuid.uuid4())
-    first_error = exc.errors()[0] if exc.errors() else {"msg": "Validation failed"}
-    msg = f"{first_error.get('loc', ['body'])[-1]}: {first_error.get('msg', 'Invalid input')}"
+    # Error locations and validator messages can contain submitted keys or values.
+    # Keep the public envelope independent of all untrusted validation details.
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
             "error": {
                 "code": "SCHEMA_VALIDATION_ERROR",
-                "message": msg,
+                "message": "Request validation failed.",
                 "request_id": request_id,
             }
         },

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "checked_at": "2026-10-28T03:01:21Z",
+  "search_scope": "Current checkout, tracked paths and git history for the four named report paths; no report source exists here. No private home-directory search was performed.",
+  "historical_metrics": "Frozen as documented in docs/evaluation.md. Historical checker verdicts are documentation claims, not verification reproduced by this change. No rows, token totals or confidence intervals have been reconstructed from prose.",
+  "artifacts": [
+    {
+      "id": "2026-10-03-openrouter-heldout",
+      "source_file": "reports/live_heldout_openrouter.json",
+      "source_sha256": null,
+      "status": "missing",
+      "verification": "documented_only_unverified",
+      "documented_in": "docs/evaluation.md"
+    },
+    {
+      "id": "2026-10-03-nebius-heldout",
+      "source_file": "reports/live_heldout_nebius.json",
+      "source_sha256": null,
+      "status": "missing",
+      "verification": "documented_only_unverified",
+      "documented_in": "docs/evaluation.md"
+    },
+    {
+      "id": "2026-10-03-openrouter-dev",
+      "source_file": "reports/live_dev_openrouter.json",
+      "source_sha256": null,
+      "status": "missing",
+      "verification": "documented_only_unverified",
+      "documented_in": "docs/evaluation.md"
+    },
+    {
+      "id": "2026-10-03-nebius-dev",
+      "source_file": "reports/live_dev_nebius.json",
+      "source_sha256": null,
+      "status": "missing",
+      "verification": "documented_only_unverified",
+      "documented_in": "docs/evaluation.md",
+      "note": "The documented five dev attempts have no surviving per-attempt filenames or source reports in this checkout. This is the documented command's path, not proof that it held all five runs."
+    }
+  ]
+}

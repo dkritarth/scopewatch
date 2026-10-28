@@ -1,9 +1,11 @@
 """Agent Client Protocol (ACP) adapter: mediates Codex/ACP agent actions via the gateway.
 
-Implementation for issue #49 (following spike #48). This module acts as the
-host/client side of the Agent Client Protocol (ACP), accepting JSON-RPC 2.0
-requests from an ACP-compliant coding agent (such as Codex via codex-acp) and
-mediating every capability request through the Scopewatch gateway HTTP API.
+Legacy synthetic dictionary dispatcher from issue #49, following spike #48.
+It preserves that local contract for existing callers and tests. Its initialize,
+permission, extra filesystem methods, and terminal/run are NOT an ACP v1 wire
+implementation. The actual stdio client/session launcher is ``acp_client.py``;
+that module advertises only v1 filesystem read/write and no terminal capability.
+Shared receipt, HOLD, and relay handling below is reused by that client.
 
 Design rules (following AGENTS.md and ADR-0001 invariants):
 
@@ -33,12 +35,16 @@ Design rules (following AGENTS.md and ADR-0001 invariants):
   clipped with a visible RELAY_TRUNCATION_MARKER (never silently), file
   content is refused above MAX_RELAYED_FILE_CHARS rather than clipped, and
   directory listings are capped by count and name length.
+* Residual relay fields (#179): receipt identifiers and decision text are
+  type-checked and bounded with visible markers. HTTP error bodies are
+  withheld because they can echo raw requests or traces. Listings expose
+  only typed name/path/type fields and mark omitted runner metadata.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NoReturn, Optional
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -112,6 +118,11 @@ def _bounded_text(value: Any, limit: int) -> str:
     return text[:kept] + marker
 
 
+def _bounded_optional(value: Any, limit: int) -> Optional[str]:
+    """Relay optional text only; malformed objects must not become payloads."""
+    return _bounded_text(value, limit) if isinstance(value, str) else None
+
+
 def _receipt_int(value: Any) -> Optional[int]:
     """Relay an executor-reported integer, or ``None`` when it is not one.
 
@@ -124,23 +135,45 @@ def _receipt_int(value: Any) -> Optional[int]:
     return value if type(value) is int else None
 
 
-def _bounded_entries(entries: Any) -> list[Any]:
-    """Cap a relayed directory listing by count and by per-entry name length."""
+def _bounded_entries(
+    entries: Any, *, action_id: Optional[str] = None
+) -> list[str | dict[str, str]]:
+    """Relay typed name/path/type fields only; mark omitted runner metadata.
+
+    Unknown keys are deliberately withheld, including nested metadata. No ACP
+    consumer needs runner extensions and their size/type has no contract.
+    """
+    def malformed() -> NoReturn:
+        raise AcpRpcError(
+            code=-32000,
+            message="Gateway returned a malformed directory listing",
+            data={"action_id": action_id, "reason_code": "MALFORMED_DIRECTORY_RESULT"},
+        )
+
     if not isinstance(entries, list):
-        return []
-    bounded: list[Any] = []
+        malformed()
+    bounded: list[str | dict[str, str]] = []
     for entry in entries[:MAX_RELAYED_ENTRIES]:
-        if isinstance(entry, str):
-            bounded.append(entry[:MAX_RELAYED_NAME_CHARS])
+        if isinstance(entry, str):  # Legacy listing format.
+            bounded.append(_bounded_text(entry, MAX_RELAYED_NAME_CHARS))
         elif isinstance(entry, dict):
-            clipped = dict(entry)
-            for key in ("name", "path"):
-                value = clipped.get(key)
-                if isinstance(value, str):
-                    clipped[key] = value[:MAX_RELAYED_NAME_CHARS]
-            bounded.append(clipped)
+            shown: dict[str, str] = {}
+            for key in ("name", "path", "type"):
+                if key not in entry:
+                    continue
+                value = entry[key]
+                if not isinstance(value, str):
+                    malformed()
+                if key == "type" and value not in ("file", "directory"):
+                    malformed()
+                shown[key] = _bounded_text(value, MAX_RELAYED_NAME_CHARS)
+            if any(key not in ("name", "path", "type") for key in entry):
+                shown["relay_notice"] = (
+                    RELAY_TRUNCATION_MARKER + ": unsupported entry metadata omitted"
+                )
+            bounded.append(shown)
         else:
-            bounded.append(entry)
+            malformed()
     return bounded
 
 
@@ -484,7 +517,13 @@ class AcpClientAdapter:
         entries = sanitized.get("entries", sanitized.get("items", []))
         return {
             "path": path,
-            "entries": _bounded_entries(entries),
+            "entries": _bounded_entries(
+                entries, action_id=(action_resp.get("action_request") or {}).get("id")
+            ),
+            "relay_notice": (
+                RELAY_TRUNCATION_MARKER + ": directory entry count capped"
+                if isinstance(entries, list) and len(entries) > MAX_RELAYED_ENTRIES else None
+            ),
             "action_id": (action_resp.get("action_request") or {}).get("id"),
         }
 
@@ -610,9 +649,13 @@ class AcpClientAdapter:
             )
 
         outcome = decision.get("outcome")
-        reason_code = decision.get("reason_code") or "POLICY_ERROR"
-        explanation = decision.get("explanation") or ""
-        matched_rule = decision.get("matched_rule")
+        # Preview is side-effect-free, so its refusal has no stored action ID.
+        # All decision text uses the same typed, marked error-detail bound.
+        reason_code = (
+            _bounded_optional(decision.get("reason_code"), MAX_RELAYED_ERROR_CHARS) or "POLICY_ERROR"
+        )
+        explanation = _bounded_optional(decision.get("explanation"), MAX_RELAYED_ERROR_CHARS) or ""
+        matched_rule = _bounded_optional(decision.get("matched_rule"), MAX_RELAYED_ERROR_CHARS)
 
         if outcome == "ALLOW":
             # Provisional by construction: the deterministic layer allowed it,
@@ -633,20 +676,31 @@ class AcpClientAdapter:
         if outcome == "HOLD":
             return {
                 "decision": "requires_approval",
-                "reason": explanation
-                or f"Operation '{operation}' requires human approval before execution.",
+                "action_id": None,
+                # The template embeds the agent-supplied operation name, which
+                # is never length-checked, so the finished reason is bounded
+                # even though `explanation` already is (#179).
+                "reason": _bounded_text(
+                    explanation
+                    or f"Operation '{operation}' requires human approval before execution.",
+                    MAX_RELAYED_ERROR_CHARS,
+                ),
                 "reason_code": reason_code,
                 "matched_rule": matched_rule,
             }
         if outcome == "DENY":
             return {
                 "decision": "deny",
-                "reason": explanation or f"Operation '{operation}' denied by policy.",
+                "action_id": None,
+                "reason": _bounded_text(
+                    explanation or f"Operation '{operation}' denied by policy.",
+                    MAX_RELAYED_ERROR_CHARS,
+                ),
                 "reason_code": reason_code,
                 "matched_rule": matched_rule,
             }
         return self._preflight_denial(
-            f"Gateway policy preflight returned an unknown outcome ({outcome!r}); failing closed.",
+            "Gateway policy preflight returned an unknown outcome; failing closed.",
             "POLICY_ERROR",
         )
 
@@ -657,6 +711,7 @@ class AcpClientAdapter:
         """Build a fail-closed preflight denial without echoing gateway bodies."""
         denial: dict[str, Any] = {
             "decision": "deny",
+            "action_id": None,
             "reason": reason,
             "reason_code": reason_code,
             "provisional": False,
@@ -711,15 +766,18 @@ class AcpClientAdapter:
         resp = self.http.post(url, json=payload)
 
         if resp.status_code >= 400:
-            err_data: dict[str, Any] = {}
-            try:
-                err_data = resp.json()
-            except Exception:
-                err_data = {"error": "Gateway returned non-JSON HTTP error"}
+            # Deliberately withhold the entire body, including detail: FastAPI
+            # validation can echo requests and upstream errors can contain raw
+            # traces. HTTP status is enough to diagnose this refusal. No stored
+            # action ID is available on this path; never trust one in the body.
             raise AcpRpcError(
                 code=-32000,
-                message=f"Gateway HTTP error {resp.status_code}: {err_data.get('detail', 'Action rejected')}",
-                data=err_data,
+                message=f"Gateway HTTP error {resp.status_code}: action rejected",
+                data={
+                    "action_id": None,
+                    "reason_code": "GATEWAY_HTTP_ERROR",
+                    "http_status": resp.status_code,
+                },
                 status_code=resp.status_code,
             )
 
@@ -729,14 +787,23 @@ class AcpClientAdapter:
         action_id = (data.get("action_request") or {}).get("id")
 
         if outcome == "DENY":
+            # Bound all gateway decision text; malformed/missing codes get a
+            # stable local fallback. Preserve action IDs for exact evidence joins.
+            reason_code = _bounded_optional(
+                decision_info.get("reason_code"), MAX_RELAYED_ERROR_CHARS
+            ) or "POLICY_ERROR"
             raise AcpRpcError(
                 code=-32000,
-                message=f"Operation denied by policy: {decision_info.get('reason_code')}",
+                message=f"Operation denied by policy: {reason_code}",
                 data={
-                    "reason_code": decision_info.get("reason_code"),
-                    "explanation": decision_info.get("explanation"),
+                    "reason_code": reason_code,
+                    "explanation": _bounded_optional(
+                        decision_info.get("explanation"), MAX_RELAYED_ERROR_CHARS
+                    ),
                     "action_id": action_id,
-                    "matched_rule": decision_info.get("matched_rule"),
+                    "matched_rule": _bounded_optional(
+                        decision_info.get("matched_rule"), MAX_RELAYED_ERROR_CHARS
+                    ),
                 },
             )
 
@@ -746,10 +813,14 @@ class AcpClientAdapter:
         if outcome == "ALLOW":
             return self._require_executed_receipt(data)
 
+        # Same decision-object rule as the DENY branch above (#179): an
+        # unrecognised outcome is still relayed, but bounded, and an absent
+        # one stays null rather than becoming an empty string.
+        shown_outcome = _bounded_optional(outcome, MAX_RELAYED_ERROR_CHARS)
         raise AcpRpcError(
             code=-32000,
-            message=f"Unknown gateway decision outcome: {outcome}",
-            data={"outcome": outcome, "action_id": action_id},
+            message=f"Unknown gateway decision outcome: {shown_outcome}",
+            data={"outcome": shown_outcome, "action_id": action_id, "reason_code": "POLICY_ERROR"},
         )
 
     def _require_executed_receipt(
@@ -776,14 +847,18 @@ class AcpClientAdapter:
 
         status = receipt.get("status") if isinstance(receipt, dict) else None
         error_code = receipt.get("error_code") if isinstance(receipt, dict) else None
+        # Remote runners may return malformed identifiers. Bound text, use
+        # defaults for other types, and derive reason_code from the shown code.
+        status = _bounded_optional(status, MAX_RELAYED_ERROR_CHARS) or "MISSING"
+        error_code = _bounded_optional(error_code, MAX_RELAYED_ERROR_CHARS) or "EXECUTION_FAILED"
         sanitized = receipt.get("sanitized_result") if isinstance(receipt, dict) else None
         sanitized = sanitized if isinstance(sanitized, dict) else {}
 
         error_data: dict[str, Any] = {
             "action_id": action_id,
-            "status": status or "MISSING",
-            "error_code": error_code or "EXECUTION_FAILED",
-            "reason_code": error_code or "EXECUTION_FAILED",
+            "status": status,
+            "error_code": error_code,
+            "reason_code": error_code,
         }
 
         detail = sanitized.get("error")
@@ -836,7 +911,11 @@ class AcpClientAdapter:
                     raise AcpRpcError(
                         code=-32000,
                         message=f"Held action was not approved: {approval.get('status')}",
-                        data={"action_id": action_id, "status": approval.get("status")},
+                        data={
+                            "action_id": action_id,
+                            "status": approval.get("status"),
+                            "reason_code": "APPROVAL_NOT_GRANTED",
+                        },
                     )
 
                 # An approved hold reports success only on an EXECUTED

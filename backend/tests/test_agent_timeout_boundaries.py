@@ -3,12 +3,12 @@
 from concurrent.futures import ThreadPoolExecutor
 import json
 import threading
-import time
 from typing import Any
 
 import httpx
 import pytest
 
+from tests.scripted_clock import ScriptedClock
 from tests.test_agent_loop import create_test_run, test_env, wait_for_approval
 from scopewatch.agent.loop import AgentLoop
 from scopewatch.agent.tools import GatewayDispatcher, convert_tool_call_to_submit_request
@@ -101,13 +101,16 @@ def test_completion_retry_crossing_wall_deadline_fails_after_receipt(
 ) -> None:
     import scopewatch.service as service
 
+    clock = ScriptedClock()
+    test_env["app"].state.service.time_fn = clock
     client = test_env["client"]
     run_id = create_test_run(client, requires_approval=["read_text"])
-    dispatcher = GatewayDispatcher(http_client=client)
+    dispatcher = GatewayDispatcher(http_client=client, time_fn=clock, sleep_fn=clock.sleep)
     held = dispatcher.submit_action(run_id, convert_tool_call_to_submit_request(
         "read_text", {"path": "invoices/approved/vendor-a.txt"},
     ))
     executing, release, refused = threading.Event(), threading.Event(), threading.Event()
+    return_refusal = threading.Event()
     execute, post = service.execute_action, client.post
 
     def gated_execute(*args, **kwargs):
@@ -119,6 +122,7 @@ def test_completion_retry_crossing_wall_deadline_fails_after_receipt(
         response = post(url, *args, **kwargs)
         if url.endswith("/complete") and response.status_code == 409:
             refused.set()
+            assert return_refusal.wait(5)
         return response
 
     monkeypatch.setattr(service, "execute_action", gated_execute)
@@ -126,17 +130,19 @@ def test_completion_retry_crossing_wall_deadline_fails_after_receipt(
     provider = MockProviderClient()
     provider.enqueue(ChatResult(content="Finished.", model="mock", profile="mock", tool_calls=[]))
     loop = AgentLoop(run_id=run_id, provider_client=provider, dispatcher=dispatcher,
-                     wall_clock_timeout_s=.2)
+                     wall_clock_timeout_s=.2, time_fn=clock, sleep_fn=clock.sleep)
     with ThreadPoolExecutor(max_workers=2) as workers:
         review = workers.submit(client.post, f"/api/v1/approvals/{held.approval_request.id}/approve", json={})
         try:
             assert executing.wait(5)
             future = workers.submit(loop.run)
             assert refused.wait(5)
-            # Cross the real agent deadline only after the gateway refused completion.
-            threading.Event().wait(.25)
+            # Cross the deadline only after the gateway refused completion.
+            clock.advance(.25)
+            return_refusal.set()
             assert not future.done()
         finally:
+            return_refusal.set()
             release.set()
         assert review.result(timeout=10).status_code == 200
         result = future.result(timeout=10)
@@ -177,10 +183,15 @@ def test_review_timeout_atomically_expires_pending_and_is_idempotent(test_env: d
 
 
 def test_unreviewed_timeout_feedback_matches_expired_evidence(test_env: dict[str, Any]) -> None:
+    clock = ScriptedClock()
+    test_env["app"].state.service.time_fn = clock
     client = test_env["client"]
     run_id = create_test_run(client, requires_approval=["read_text"])
     result = AgentLoop(run_id=run_id, provider_client=read_provider(),
-                       dispatcher=GatewayDispatcher(http_client=client), approval_timeout_s=0).run()
+                       dispatcher=GatewayDispatcher(http_client=client, time_fn=clock, sleep_fn=clock.sleep),
+                       approval_timeout_s=0.1, poll_interval_s=0.05,
+                       time_fn=clock, sleep_fn=clock.sleep).run()
+    assert clock.sleeps == [0.05, 0.05]
     assert result.status == "COMPLETED"
     assert "not executed" in result.final_response
     feedback = [json.loads(m["content"]) for m in result.messages if m.get("role") == "tool"]
@@ -245,8 +256,9 @@ def test_timeout_wins_against_reviewer_with_stale_pending_read(
     assert not any(event["event_type"] == "EXECUTION_STARTED" for event in events)
 
 
+@pytest.mark.parametrize("lock_wait", [0.25, 0.35])
 def test_completion_retry_refreshes_deadline_budget_under_write_lock(
-    test_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+    test_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, lock_wait: float,
 ) -> None:
     """A deferred completion retry recomputes its deadline budget under real SQLite lock contention.
 
@@ -263,9 +275,10 @@ def test_completion_retry_refreshes_deadline_budget_under_write_lock(
     import scopewatch.service as service
     from scopewatch.repository import ScopewatchRepository
 
+    clock = ScriptedClock()
     client = test_env["client"]
     run_id = create_test_run(client, requires_approval=["read_text"])
-    dispatcher = GatewayDispatcher(http_client=client)
+    dispatcher = GatewayDispatcher(http_client=client, time_fn=clock, sleep_fn=clock.sleep)
     held = dispatcher.submit_action(
         run_id,
         convert_tool_call_to_submit_request(
@@ -277,6 +290,7 @@ def test_completion_retry_refreshes_deadline_budget_under_write_lock(
     executing = threading.Event()
     release_execution = threading.Event()
     first_refused = threading.Event()
+    return_first_refusal = threading.Event()
     persisting = threading.Event()
     release_receipt = threading.Event()
     second_entered = threading.Event()
@@ -302,11 +316,18 @@ def test_completion_retry_refreshes_deadline_budget_under_write_lock(
     def observed_complete_svc(*args: Any, **kwargs: Any) -> Any:
         nonlocal complete_svc_calls
         complete_svc_calls += 1
-        if complete_svc_calls == 2:
-            second_entered.set()
         return real_complete_svc(*args, **kwargs)
 
+    def service_time() -> float:
+        now = clock()
+        if complete_svc_calls == 2:
+            second_entered.set()
+        return now
+
+    test_env["app"].state.service.time_fn = service_time
+
     sent_budgets: list[float] = []
+    completion_errors: list[str] = []
     complete_post_calls = 0
 
     def tracking_post(url: str, *args: Any, **kwargs: Any) -> httpx.Response:
@@ -317,10 +338,13 @@ def test_completion_retry_refreshes_deadline_budget_under_write_lock(
             if isinstance(params, dict) and "deadline_budget" in params:
                 sent_budgets.append(float(params["deadline_budget"]))
             resp = real_post(url, *args, **kwargs)
+            if resp.status_code == 409:
+                completion_errors.append(resp.json()["error"]["code"])
             if complete_post_calls == 1 and resp.status_code == 409:
                 first_refused.set()
                 # Consume time before returning so the next attempt dispatches with less remaining budget
-                time.sleep(0.25)
+                clock.advance(0.25)
+                assert return_first_refusal.wait(5), "Receipt lock was not acquired"
             return resp
         return real_post(url, *args, **kwargs)
 
@@ -336,8 +360,9 @@ def test_completion_retry_refreshes_deadline_budget_under_write_lock(
     loop = AgentLoop(
         run_id=run_id,
         provider_client=provider,
-        dispatcher=GatewayDispatcher(http_client=client),
+        dispatcher=GatewayDispatcher(http_client=client, time_fn=clock, sleep_fn=clock.sleep),
         wall_clock_timeout_s=wall_clock,
+        time_fn=clock, sleep_fn=clock.sleep,
     )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -346,7 +371,7 @@ def test_completion_retry_refreshes_deadline_budget_under_write_lock(
         )
         try:
             assert executing.wait(5), "Action never began executing"
-            start_time = time.monotonic()
+            start_time = clock()
             loop_future = pool.submit(loop.run)
 
             # 1. First completion attempt encounters 409 APPROVED_ACTION_IN_FLIGHT
@@ -355,19 +380,21 @@ def test_completion_retry_refreshes_deadline_budget_under_write_lock(
             # 2. Let execution finish and enter receipt persistence where SQLite write lock is held
             release_execution.set()
             assert persisting.wait(5), "Receipt persistence never acquired lock"
+            return_first_refusal.set()
 
             # 3. Second complete request arrives and waits for the SQLite write lock
             assert second_entered.wait(5), "Second complete attempt never entered service"
 
             # Verify the second request started within the deadline
-            elapsed_at_second = time.monotonic() - start_time
+            elapsed_at_second = clock() - start_time
             assert elapsed_at_second < wall_clock, f"Second request dispatched after deadline: {elapsed_at_second}s"
 
-            # Hold SQLite write lock for 0.35s:
-            # 0.35s > refreshed remaining budget (~0.20s), but < initial budget (0.55s)
-            time.sleep(0.35)
+            # The real SQLite lock spans exactly the refreshed budget or longer.
+            # Both waits remain shorter than the stale initial budget.
+            clock.advance(lock_wait)
             assert not loop_future.done(), "Loop terminated prematurely before lock release"
         finally:
+            return_first_refusal.set()
             release_execution.set()
             release_receipt.set()
 
@@ -378,6 +405,10 @@ def test_completion_retry_refreshes_deadline_budget_under_write_lock(
     # Assertions
     assert complete_post_calls >= 2, f"Expected >= 2 complete POSTs, got {complete_post_calls}"
     assert len(sent_budgets) >= 2, f"Expected >= 2 sent budgets, got {sent_budgets}"
+    assert sent_budgets[:2] == pytest.approx([0.55, 0.25])
+    assert lock_wait >= 0.25
+    assert lock_wait < sent_budgets[0]
+    assert completion_errors == ["APPROVED_ACTION_IN_FLIGHT", "COMPLETION_DEADLINE_EXCEEDED"]
     assert sent_budgets[1] < sent_budgets[0], (
         f"Deadline budget was not refreshed on retry: initial={sent_budgets[0]}, retry={sent_budgets[1]}"
     )
