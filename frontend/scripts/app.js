@@ -29,6 +29,8 @@ import {
 import {
   approveAction,
   checkHealth,
+  resetDemo,
+  reseedDemo,
   clearReviewerToken,
   connectLiveEvents,
   createRun,
@@ -481,7 +483,7 @@ const elements = typeof document !== "undefined" ? {
   timelineStatus: document.getElementById("timeline-status"),
 } : {};
 
-let activeRuns = typeof window !== "undefined" && isLiveRequested(window.location.search, window.location.port, window.__SCOPEWATCH_LIVE__) ? [] : [...fixtureRuns];
+let activeRuns = typeof window !== "undefined" && isLiveRequested(window.location.search, window.location.port, gatewayLiveFlag()) ? [] : [...fixtureRuns];
 // Baseline timestamps per run, used to turn event timestamps into relative
 // durations instead of synthetic sequence numbers (#211).
 const timestampOffsetBaseline = new Map();
@@ -620,6 +622,39 @@ function wireReviewerAccess() {
     });
   }
   renderReviewerAccess();
+}
+
+function configureDemoControls(health) {
+  const panel = document.getElementById("demo-controls");
+  if (!panel) return;
+  panel.hidden = false;
+  document.getElementById("demo-controls-note").textContent =
+    `${health.demo_reset_enabled ? "Reset and reseed are enabled." : "Reset and reseed are disabled by the operator."} ` +
+    `Approvals last ${health.approval_ttl_seconds} seconds from creation. Expiry never approves an action. ` +
+    "Resolve pending approvals before reset. Reseed creates one synthetic scenario-06 HOLD with a mock auditor, not live inference.";
+  for (const id of ["demo-reset", "demo-reseed"]) {
+    document.getElementById(id).disabled = !health.demo_reset_enabled;
+  }
+}
+
+async function manageDemo(kind) {
+  const status = document.getElementById("demo-controls-status");
+  if (!isLiveMode) return;
+  if (kind === "reset" && !window.confirm("Delete stored demo evidence? Pending approvals must be resolved first. This does not delete workspace files or reset runtime budgets.")) return;
+  const buttons = ["demo-reset", "demo-reseed"].map(id => document.getElementById(id));
+  buttons.forEach(button => { button.disabled = true; });
+  status.textContent = "Working…";
+  try {
+    await (kind === "reset" ? resetDemo() : reseedDemo());
+    await bootstrap();
+    status.textContent = kind === "reset"
+      ? "Demo evidence reset. Choose Reseed scenario 06 for a fresh synthetic HOLD. Workspace files and runtime budgets are retained."
+      : "Scenario 06 reseeded as synthetic mock replay. Open Activity to inspect the HOLD, then Requests to Deny. Nothing was autoapproved.";
+  } catch (error) {
+    status.textContent = `Request refused: ${error.message}${authFailureHint(error)}`;
+  } finally {
+    buttons.forEach(button => { button.disabled = false; });
+  }
 }
 
 function renderRunButtons() {
@@ -1214,9 +1249,11 @@ export function formatApprovalCardData(appr, runs = activeRuns, selectedRun = ge
   }
 
   const rawExpiry = appr.expires_at || appr.expiry || (timelineEvent?.expires_at ?? null);
-  const expiryText = rawExpiry
-    ? (typeof rawExpiry === "string" && rawExpiry.includes("T") ? rawExpiry.slice(11, 19) : String(rawExpiry))
-    : "none specified";
+  const expiryMs = Date.parse(rawExpiry);
+  const expired = !Number.isFinite(expiryMs) || expiryMs <= Date.now();
+  const expiryText = Number.isFinite(expiryMs)
+    ? `${new Date(expiryMs).toISOString()} (${expired ? "Expired; no approval or execution" : `${Math.ceil((expiryMs - Date.now()) / 1000)} seconds remaining`})`
+    : "Unavailable; approval disabled";
 
   return {
     run,
@@ -1225,6 +1262,7 @@ export function formatApprovalCardData(appr, runs = activeRuns, selectedRun = ge
     holdReason,
     argsPreview,
     expiryText,
+    expired,
   };
 }
 
@@ -1256,7 +1294,9 @@ export function updateApprovalCard(card, appr) {
     ? "Could not load the proposed action. Retry loading approvals before approving."
     : JSON.stringify(appr.arguments || {}, null, 2);
   const approveControl = card.querySelector(".btn-approve");
-  if (approveControl && appr.detailsError) approveControl.disabled = true;
+  if (approveControl) approveControl.disabled = Boolean(appr.detailsError || data.expired || card.dataset.resolving === "true");
+  const denyControl = card.querySelector(".btn-deny");
+  if (denyControl) denyControl.disabled = data.expired || card.dataset.resolving === "true";
 
   const requestedTime = (appr.requested_at || appr.created_at || "").slice(11, 19);
   const metaEl = card.querySelector(".approval-card-meta");
@@ -1403,6 +1443,8 @@ export function createApprovalCard(appr) {
   }
 
   async function resolveApproval(fire) {
+    if (formatApprovalCardData(appr).expired) { updateApprovalCard(card, appr); return; }
+    card.dataset.resolving = "true";
     confirmState = "pending";
     approveBtn.disabled = true;
     denyBtn.disabled = true;
@@ -1413,7 +1455,12 @@ export function createApprovalCard(appr) {
         if (fire === "approve") {
           await approveAction(appr.id, note);
         } else {
-          await denyAction(appr.id, note);
+          const result = await denyAction(appr.id, note);
+          const receipt = document.getElementById("review-receipt");
+          if (receipt) {
+            receipt.hidden = false;
+            receipt.textContent = `Review receipt: ${result.approval_request.id} DENIED. This action was not executed.`;
+          }
         }
       }
       pendingApprovals = pendingApprovals.filter((a) => a.id !== appr.id);
@@ -1431,10 +1478,12 @@ export function createApprovalCard(appr) {
         }
       }
     } catch (err) {
+      card.dataset.resolving = "false";
       confirmState = "idle";
       approveBtn.disabled = false;
       denyBtn.disabled = false;
       syncConfirmUi();
+      updateApprovalCard(card, appr);
       errorNote.hidden = false;
       errorNote.textContent = `Resolution failed: ${err.message}. No change was applied; try again.${authFailureHint(err)}`;
     }
@@ -2445,6 +2494,14 @@ export function buildStaticSimulationEvent(
 
 if (typeof document !== "undefined") {
   wireReviewerAccess();
+  document.getElementById("demo-reset")?.addEventListener("click", () => manageDemo("reset"));
+  document.getElementById("demo-reseed")?.addEventListener("click", () => manageDemo("reseed"));
+  setInterval(() => {
+    document.querySelectorAll(".approval-card").forEach(card => {
+      const approval = pendingApprovals.find(a => a.id === card.dataset.approvalId);
+      if (approval) updateApprovalCard(card, approval);
+    });
+  }, 1000);
   if (elements.sseRetry) {
     elements.sseRetry.addEventListener("click", resubscribeLiveRun);
   }
@@ -2634,11 +2691,8 @@ if (typeof document !== "undefined") {
 }
 
 /**
- * Decide whether the page should try the live gateway (#132).
- * An explicit `?live=` value wins: `0`, `false`, `off`, and `no` mean static
- * even on the default gateway port; any other value (including a bare
- * `?live`) means live. With no `live` parameter, the default gateway port or
- * the `__SCOPEWATCH_LIVE__` flag enables live mode.
+ * Explicit replay always wins over the gateway's server-owned marker.
+ * Static hosting has no marker and remains replay unless live is requested.
  */
 export function isLiveRequested(search = "", port = "", liveFlag = false) {
   const params = new URLSearchParams(search);
@@ -2646,7 +2700,12 @@ export function isLiveRequested(search = "", port = "", liveFlag = false) {
     const value = String(params.get("live") ?? "").trim().toLowerCase();
     return !["0", "false", "off", "no"].includes(value);
   }
-  return port === "8000" || Boolean(liveFlag);
+  return Boolean(liveFlag);
+}
+
+function gatewayLiveFlag() {
+  return Boolean(window.__SCOPEWATCH_LIVE__) ||
+    document.querySelector('meta[name="scopewatch-gateway"]')?.content === "live";
 }
 
 // Bootstrapping: check if live backend is requested and available
@@ -2691,7 +2750,7 @@ async function bootstrap() {
   const liveRequested = isLiveRequested(
     window.location.search,
     window.location.port,
-    window.__SCOPEWATCH_LIVE__,
+    gatewayLiveFlag(),
   );
 
   if (!liveRequested) {
@@ -2699,6 +2758,18 @@ async function bootstrap() {
     return;
   }
 
+  if (liveStreamHandle) { liveStreamHandle.close(); liveStreamHandle = null; }
+  clearInterval(window.__runRefreshInterval);
+  clearStores();
+  const oldReceipt = document.getElementById("review-receipt");
+  if (oldReceipt) oldReceipt.hidden = true;
+  const connectionError = document.getElementById("connection-error");
+  if (connectionError) connectionError.hidden = true;
+  activeRuns = [];
+  pendingApprovals = [];
+  state.runId = null;
+  state.eventId = null;
+  render();
   updateGatewayStatus("Connecting gateway...", "");
   const health = await checkHealth();
 
@@ -2709,10 +2780,11 @@ async function bootstrap() {
     if (bannerMode) {
       bannerMode.textContent = "Connected to the gateway. Hosted demos may require a reviewer token for changes.";
     }
+    configureDemoControls(health);
     // Demo mode means the gate requires the reviewer token for every mutating
     // call (#115), so offer the credential panel up front instead of letting a
     // judge discover it through a 401.
-    if (health.demo_mode === true) {
+    if (health.demo_mode === true || health.reviewer_auth === true) {
       revealReviewerAccess();
     }
 
@@ -2731,24 +2803,11 @@ async function bootstrap() {
           );
         }
         if (elements.runsRetry) elements.runsRetry.hidden = false;
-        updateGatewayStatus("Static replay mode", "disconnected");
+        updateGatewayStatus("Gateway data unavailable", "disconnected");
         return;
       }
       if (elements.runsRetry) elements.runsRetry.hidden = true;
-      if (!backendRuns || backendRuns.length === 0) {
-        const created = await createRun("Invoice Processing Run", {
-          schema_version: "1",
-          task_description: "Audit approved vendor invoices and generate summary report.",
-          allowed_paths: ["invoices/approved", "outputs"],
-          blocked_paths: ["invoices/private"],
-          allowed_tools: ["workspace"],
-          allowed_operations: ["list_directory", "read_text", "write_text"],
-          allowed_network_destinations: [],
-          requires_approval: ["delete_path"],
-          created_at: new Date().toISOString(),
-        });
-        backendRuns = [created];
-      }
+      if (!Array.isArray(backendRuns)) throw new Error("Invalid runs response");
 
       // Render EVERY backend run so all six seeded scenario runs stay
       // selectable (defect 3b); never truncate to backendRuns[0].
@@ -2762,8 +2821,7 @@ async function bootstrap() {
       }
       const formattedLiveRuns = buildLiveRuns(backendRuns, eventsByRun);
 
-      // Keep synthetic fixtures available as a fallback, but show live runs first
-      // and open on a live run with a pending approval when one exists.
+      // Show only stored gateway evidence, preferring a reviewable HOLD.
       activeRuns = formattedLiveRuns;
       elements.runButtons?.replaceChildren();
       const preferredLiveRun =
@@ -2797,12 +2855,8 @@ async function bootstrap() {
         window.__runRefreshInterval = setInterval(refreshRuns, 3000);
       }
     } catch (err) {
-      console.warn("Could not initialize live runs, falling back to fixtures:", err);
-      isLiveMode = false;
-      updateGatewayStatus("Static replay mode", "disconnected");
-      // An empty hosted gateway has to create its first run, which needs the
-      // reviewer token. Say so instead of silently showing replay fixtures
-      // that no longer match the deployment (#115).
+      updateGatewayStatus("Gateway data unavailable", "disconnected");
+      // Preserve gateway mode on failure; retry never switches to fixtures.
       const hint = authFailureHint(err);
       if (hint && elements.runsStatus) {
         renderPanelStatus(
