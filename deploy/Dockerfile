@@ -30,6 +30,7 @@ COPY backend/ ./backend/
 COPY frontend/ ./frontend/
 COPY demo/scenarios/ ./demo/scenarios/
 COPY scripts/seed_demo.py ./scripts/seed_demo.py
+COPY scripts/reap_workspaces.py ./scripts/reap_workspaces.py
 COPY deploy/docker-entrypoint.sh ./deploy/docker-entrypoint.sh
 
 # /runs holds the per-run workspaces (#117). The `chown` on it is load-bearing,
