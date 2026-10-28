@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "method": "normalized_sequence_and_word_shingles",
+  "threshold": 0.65,
+  "phrase_words": 6,
+  "counts": {
+    "dev": 12,
+    "heldout": 12
+  },
+  "duplicate_case_ids": [],
+  "cross_split_pairs": [],
+  "mock_rule_overlaps": [],
+  "mock_source_sha256": "3f116fa159d1f694ae3c730a7c69d0bdb90853dd24c8679051bf53a51da1b846",
+  "clean_under_checks": true,
+  "dataset_hashes": {
+    "dev": "c1a892b45869b93a761a1a84c6ac16f50dc8ea93ee16186e8b1aa931b5f6fa83",
+    "heldout": "030a2ef5b5803eb6e13c34ffc4a130e82ba5aa2f2defffd1bd939839b63f2e74"
+  }
+}

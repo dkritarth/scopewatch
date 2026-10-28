@@ -1,8 +1,9 @@
 """Pydantic schemas for Scopewatch domain objects and API messages."""
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from scopewatch.config import MAX_WRITE_BYTES
 from scopewatch.models import (
     ApprovalStatus,
     EventType,
@@ -13,6 +14,21 @@ from scopewatch.models import (
     RunStatus,
     format_policy_version,
 )
+
+# --- Ingress payload bounds (issue #304) -------------------------------------
+#
+# The middleware in scopewatch.ingress bounds the whole request body; these
+# bounds cap the individual string fields so a single oversized reasoning
+# trace, summary, or argument cannot dominate a (now bounded) body, and so
+# oversized values fail fast with a sanitized 422. Bounds apply to the API
+# request schemas only (SubmitActionRequest, ResolveApprovalRequest): the
+# ActionRequest storage model must stay validatable over legacy rows.
+MAX_REASONING_SUMMARY_CHARS = 8_000
+MAX_REASONING_TRACE_CHARS = 32_000
+MAX_RESOLUTION_REASON_CHARS = 2_000
+# Argument strings cannot exceed what the executor itself accepts for a
+# write (MAX_WRITE_BYTES), so no legitimate write flow is newly rejected.
+MAX_ARGUMENT_STRING_CHARS = MAX_WRITE_BYTES
 
 
 class TaskScope(BaseModel):
@@ -221,6 +237,27 @@ class EvidenceEvent(BaseModel):
     synthetic: bool = True
 
 
+class AuditTierEvidence(BaseModel):
+    """One tier's result. Model is reported or configured, not proof of availability."""
+    model_config = ConfigDict(extra="forbid")
+
+    tier: str
+    attempted: bool
+    configured_model: str
+    resolved_profile: Optional[str] = None
+    profile: str
+    model: str
+    verdict: str
+    concern_type: Optional[str] = None
+    flagged_excerpts: list[str] = Field(default_factory=list)
+    explanation: str
+    latency_ms: float
+    total_tokens: Optional[int] = None
+    error_code: Optional[str] = None
+    timeout_s: float
+    max_tokens: int
+
+
 class ReasoningAuditRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -237,6 +274,8 @@ class ReasoningAuditRecord(BaseModel):
     latency_ms: float = 0.0
     error_code: Optional[str] = None
     audited_at: str
+    total_tokens: Optional[int] = None
+    tiers: list[AuditTierEvidence] = Field(default_factory=list)
 
 
 class CreateRunRequest(BaseModel):
@@ -261,10 +300,37 @@ class SubmitActionRequest(BaseModel):
     resource: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     requested_by: Optional[str] = "synthetic-agent"
-    reasoning_summary: Optional[str] = None
-    exposed_reasoning_trace: Optional[str] = None
+    reasoning_summary: Optional[str] = Field(
+        None, max_length=MAX_REASONING_SUMMARY_CHARS
+    )
+    exposed_reasoning_trace: Optional[str] = Field(
+        None, max_length=MAX_REASONING_TRACE_CHARS
+    )
     reasoning_provenance: Optional[ReasoningProvenance] = None
-    turn_id: Optional[str] = None
+    turn_id: Optional[str] = Field(None, max_length=256)
+
+    @field_validator("arguments")
+    @classmethod
+    def bound_argument_strings(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """Reject argument string values over MAX_ARGUMENT_STRING_CHARS (#304)."""
+
+        # Iterative walk: a deeply nested payload must not be able to
+        # blow the Python recursion limit (and crash the process with no
+        # traceback) just by being deeply nested (#304).
+        stack: list[Any] = [value]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, str):
+                if len(node) > MAX_ARGUMENT_STRING_CHARS:
+                    raise ValueError(
+                        "argument string exceeds the maximum length of "
+                        f"{MAX_ARGUMENT_STRING_CHARS} characters"
+                    )
+            elif isinstance(node, dict):
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+        return value
 
 
 class ActionResponse(BaseModel):
@@ -282,7 +348,9 @@ class ActionResponse(BaseModel):
 class ResolveApprovalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    resolution_reason: Optional[str] = None
+    resolution_reason: Optional[str] = Field(
+        None, max_length=MAX_RESOLUTION_REASON_CHARS
+    )
     reviewer_id: Optional[str] = None
 
 
@@ -303,3 +371,5 @@ class HealthResponse(BaseModel):
     # token is actually required (#115). Never carries the token itself.
     demo_mode: bool = False
     reviewer_auth: bool = False
+    demo_reset_enabled: bool = False
+    approval_ttl_seconds: int = 300
