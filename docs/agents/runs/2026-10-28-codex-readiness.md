@@ -2,6 +2,20 @@
 
 Codex / GPT-6.1-sol, implementation sub-agent. Refs [#287](https://github.com/dkritarth/scopewatch/issues/287).
 
+## Progress refresh, 2026-10-28 04:43 UTC
+
+The latest unpublished combined snapshot `488c3d7` includes #329's CI/shared-validation gate at `6c1214f1050fdac0a1b8d9df88d33525717a2db3`, #330's media workflow at `d9b101d7b98e0d8fc5cc032f747c3c91ff04350e`, and #339's operator evidence fix at `8df4f70dbad27c3ff01fd10eff76e9efcc69f5d3`, on the earlier sixteen-draft composition. Every follow-up applied cleanly with no manual resolution. Parent full validation passed: 2,207 backend tests, 25 skips; reasoning PoC 96 plus 79 subtests; MCP 26; newly gated ablation 73; deploy 140; frontend 79; browser 28; compilation, Docker context, docs and six clean-room scenarios all passed. This is local synthetic validation, not a merge or deployment.
+
+Independent Luna review of #329's gate found no workflow findings and verified hosted logs for all 73 tests plus offline artifact generation/check. All seven checks passed at that head. The reviewer disclosed that its supplied checkout lacked the PoC, so it could not repeat pytest locally; actionlint was unavailable. The owning implementer ran local tests and both validation modes, and the parent full combined gate includes the actual 73-test run. #330 and #339 retain their independent exact-head rechecks from the preceding update.
+
+Two bounded independent Astra campaigns found no new blockers on `f1c6380`. The filesystem/retention pass reports 102 repository tests and 29 adversarial cases covering protected bytes, copied markers, SQLite locks, stale approvals, rejected paths, dispatch and evidence ordering. The metrics/provenance pass reports 2,063 Wilson-bound checks, 81 mixed populations, nine campaigns with 792 task/arm replays, 25 rejected mutations and 36 CLI invocations. Neither campaign made source edits or external inference calls.
+
+Integration caveat: #327's committed split-audit source hashes match that PR's exact source. Additive #325 tier metadata changes the combined mock-source file hash. The independent campaign reproduced all audit counts unchanged, but the committed audits are not byte-identical to regeneration on the combined checkout. Regenerate and inspect source-bound audit artifacts after integration; do not relabel the owning-PR hashes as combined-source evidence.
+
+At 04:42 UTC, the parent promoted existing unclaimed #121 to ready and claimed it after assessing its concrete ACP v1 acceptance as unblocked. A Sol implementer is building a bounded client/session transport, stacked on reviewed #333, with terminal capability explicitly disabled. No PR or acceptance result exists yet. Real Codex bridge evidence remains pending unless actually obtained, and this work is excluded from the combined snapshot above. This later pickup supersedes the prior statement that no eligible new implementation was assigned; the 06:00 UTC cutoff and 07:00 UTC stop remain in force.
+
+All 16 currently published PRs remain drafts. Nothing was merged or closed. Native Docker/casefold platforms, public TLS/deployment, real provider behavior and human submission gates remain open. The final handoff refresh is still required.
+
 ## Progress refresh, 2026-10-28 04:34 UTC
 
 The #339 fix at `8df4f70dbad27c3ff01fd10eff76e9efcc69f5d3` now has an independent Astra recheck. The prior evidence-labeling P2 is resolved, with no new blockers. The recheck reports 46 focused tests, 19 browser tests, actual Chromium/backend flows and remaining validation stages passed. All six CI checks pass. Its COMMENT review is not a formal GitHub approval.
