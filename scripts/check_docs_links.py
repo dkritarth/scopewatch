@@ -54,7 +54,7 @@ PLACEHOLDERS = ["<HOSTED_URL>", "<YOUTUBE_URL>", "<DOMAIN>", "<TOKEN>"]
 
 # Stale claims the submission docs once made (issue #217). The third field
 # marks patterns whose honest historical explanation may stay: a match is
-# skipped only when its own line describes the historical credential problem.
+# skipped only inside a narrowly described, resolved historical claim.
 BANNED_STALE_CLAIMS = [
     (r"\b70B\b", "stale 70B model claim (configured model is Nemotron 3.5 Lightning)", False),
     (r"\b287\s+(?:backend\s+)?(?:tests?|passed|collected)\b", "stale 287 test count claim", False),
@@ -62,7 +62,14 @@ BANNED_STALE_CLAIMS = [
     (r"no [`']deploy/`", "stale 'no deploy/ directory' claim", False),
     (r"(?:returned|returns)\s+HTTP\s+401|HTTP\s+401[^\n.]*unverified|unverified[^\n.]*HTTP\s+401", "stale HTTP 401 unverified claim (resolved with Token Factory key)", True),
 ]
-HISTORY_WORDS = ("earlier", "diagnosed", "resolved", "wrong credential", "replacement")
+# A nearby history word cannot excuse a separate present-tense claim. Exempt
+# only the matched span of a resolved past request or an explicitly quoted old
+# note. Current status words prevent the past-request exception.
+HISTORICAL_401_CLAIMS = (
+    r"\b(?:earlier|previous|historical)\s+(?:calls|requests|attempts)\s+returned\s+HTTP\s+401\b"
+    r"(?:(?!\b(?:currently|remains?|still|returns|unverified)\b)[^.\n])*?\b(?:was|were|has been|had been)\s+resolved\b",
+    r'\bearlier\s+["“][^"”\n]*HTTP\s+401[^"”\n]*["”]\s+note\s+was\s+(?:a\s+)?wrong\s+credential\b',
+)
 
 
 def check_stale_claims(root: pathlib.Path, rel: str, errors: list[str]) -> None:
@@ -72,12 +79,12 @@ def check_stale_claims(root: pathlib.Path, rel: str, errors: list[str]) -> None:
     text = re.sub(r"https?://[^\s<>]+", "", path.read_text(encoding="utf-8"))
     for pat, label, history_ok in BANNED_STALE_CLAIMS:
         for m in re.finditer(pat, text, re.IGNORECASE):
-            if history_ok:
-                start = text.rfind("\n", 0, m.start()) + 1
-                end = text.find("\n", m.end())
-                window = text[start:end if end != -1 else len(text)].lower()
-                if any(w in window for w in HISTORY_WORDS):
-                    continue
+            if history_ok and any(
+                old.start() <= m.start() and m.end() <= old.end()
+                for historical in HISTORICAL_401_CLAIMS
+                for old in re.finditer(historical, text, re.IGNORECASE)
+            ):
+                continue
             errors.append(f"{rel}: {label}: '{m.group(0)}'")
 
 

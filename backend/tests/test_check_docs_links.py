@@ -130,3 +130,16 @@ def test_nested_docs_resolve_deploy_and_encoded_local_links(tmp_path):
         "deploy/compose.yaml": "services: {}\n",
     })
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("claim", [
+    "Earlier provider returns HTTP 401 and remains unverified.",
+    "Resolved earlier credential issue; current endpoint returns HTTP 401 and is unverified.",
+    "Earlier calls returned HTTP 401 and remain currently unverified; this was resolved.",
+    "Earlier calls returned HTTP 401 and is unverified; this was resolved.",
+    "Earlier calls returned HTTP 401; this was resolved. The endpoint returns HTTP 401 and is unverified.",
+])
+def test_history_words_never_hide_current_401_claim_on_same_line(tmp_path, claim):
+    result = check(tmp_path, claim)
+    assert result.returncode == 1, result.stdout
+    assert "stale HTTP 401" in result.stdout
