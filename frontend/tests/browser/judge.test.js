@@ -245,3 +245,51 @@ test('reset and reseed discard a delayed denial receipt from the deleted run', {
   const pending = await (await fetch(`${origin}/api/v1/approvals?status=PENDING`)).json();
   assert.deepEqual(pending.map(approval => approval.id), [newApproval.id]);
 });
+
+for (const reply of ['denial', 'error']) {
+  test(`reset discards a delayed simulator ${reply} response`, { timeout: 30000 }, async t => {
+    const { origin, page } = await gateway(t);
+    await login(page);
+    await reseed(page);
+    const oldApproval = (await (await fetch(`${origin}/api/v1/approvals`)).json())[0];
+    assert.equal((await fetch(`${origin}/api/v1/approvals/${oldApproval.id}/deny`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Reviewer-Token': reviewer }, body: '{}',
+    })).status, 200);
+    let captured;
+    const capturedSubmission = new Promise(resolve => { captured = resolve; });
+    let release;
+    const releaseSubmission = new Promise(resolve => { release = resolve; });
+    t.after(() => release());
+    const endpoint = `/api/v1/runs/${oldApproval.run_id}/actions`;
+    await page.route(`**${endpoint}`, async route => {
+      const response = await route.fetch();
+      assert.equal(response.status(), 201);
+      captured();
+      await releaseSubmission;
+      if (reply === 'error') {
+        await route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"synthetic delayed error"}' });
+      } else {
+        await route.fulfill({ response });
+      }
+    });
+    await page.locator('.rail-nav [data-view-target="test"]').click();
+    await page.locator('#action-preset').selectOption('blocked_path');
+    await page.locator('#submit-action-btn').click();
+    await capturedSubmission;
+    page.on('dialog', dialog => dialog.accept());
+    await page.locator('#demo-reset').click();
+    await page.waitForFunction(() => document.querySelector('#demo-controls-status').textContent.includes('evidence reset'));
+    await reseed(page);
+    const finished = page.waitForEvent('requestfinished', { predicate: request => request.url().endsWith(endpoint) });
+    release();
+    await finished;
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.locator('#action-status-msg').textContent(), '', 'deleted submission must not update the new dashboard status');
+    const keys = await page.evaluate(async () => {
+      const app = await import('/scripts/app.js');
+      return [...app.actionRequestStore.keys(), ...app.auditStore.keys(), ...app.approvalStore.keys()];
+    });
+    assert.ok(keys.every(key => !key.includes(oldApproval.run_id)), 'deleted run evidence must stay absent');
+    assert.equal(await page.locator('#submit-action-btn').isDisabled(), false);
+  });
+}

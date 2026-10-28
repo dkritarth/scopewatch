@@ -642,20 +642,28 @@ function configureDemoControls(health) {
 async function manageDemo(kind) {
   const status = document.getElementById("demo-controls-status");
   if (!isLiveMode) return;
+  let generation = liveReadGeneration;
   if (kind === "reset" && !window.confirm("Delete stored demo evidence? Pending approvals must be resolved first. This does not delete workspace files or reset runtime budgets.")) return;
   const buttons = ["demo-reset", "demo-reseed"].map(id => document.getElementById(id));
   buttons.forEach(button => { button.disabled = true; });
   status.textContent = "Working…";
   try {
     await (kind === "reset" ? resetDemo() : reseedDemo());
-    await bootstrap();
+    if (generation !== liveReadGeneration) return;
+    const loading = bootstrap();
+    generation = liveReadGeneration;
+    await loading;
+    if (generation !== liveReadGeneration) return;
     status.textContent = kind === "reset"
       ? "Demo evidence reset. Choose Reseed scenario 06 for a fresh synthetic HOLD. Workspace files and runtime budgets are retained."
       : "Scenario 06 reseeded as synthetic mock replay. Open Activity to inspect the HOLD, then Requests to Deny. Nothing was autoapproved.";
   } catch (error) {
+    if (generation !== liveReadGeneration) return;
     status.textContent = `Request refused: ${error.message}${authFailureHint(error)}`;
   } finally {
-    buttons.forEach(button => { button.disabled = false; });
+    if (generation === liveReadGeneration) {
+      buttons.forEach(button => { button.disabled = false; });
+    }
   }
 }
 
@@ -2546,6 +2554,7 @@ if (typeof document !== "undefined") {
     
   elements.actionForm.addEventListener("submit", async (e) => {
       e.preventDefault();
+      const generation = liveReadGeneration;
       const run = getSelectedRun();
       if (!run) return;
 
@@ -2592,6 +2601,7 @@ if (typeof document !== "undefined") {
 
         try {
           const result = await submitAction(targetRun.id, payload);
+          if (generation !== liveReadGeneration) return;
           const outcome = result.policy_decision?.outcome || "UNKNOWN";
           const reason = result.policy_decision?.reason_code || "";
           if (elements.actionStatusMsg) {
@@ -2636,15 +2646,17 @@ if (typeof document !== "undefined") {
 
           await refreshApprovals();
         } catch (err) {
+          if (generation !== liveReadGeneration) return;
           if (elements.actionStatusMsg) {
             elements.actionStatusMsg.textContent = `Submission error: ${err.message}${authFailureHint(err)}`;
           }
         } finally {
-          if (elements.submitActionBtn) elements.submitActionBtn.disabled = false;
+          if (generation === liveReadGeneration && elements.submitActionBtn) elements.submitActionBtn.disabled = false;
         }
       } else {
         // Standalone / static preview mode simulation
         setTimeout(() => {
+          if (generation !== liveReadGeneration) return;
           const isEscalatedHold =
             elements.actionPreset?.value === "escalated_hold_concern" ||
             /exfiltrat|steal|bypass/i.test(payload.exposed_reasoning_trace || "");
@@ -2679,7 +2691,7 @@ if (typeof document !== "undefined") {
           state.eventId = simEvent.id;
           renderTimeline();
           renderEvidence();
-          if (elements.submitActionBtn) elements.submitActionBtn.disabled = false;
+          if (generation === liveReadGeneration && elements.submitActionBtn) elements.submitActionBtn.disabled = false;
         }, 100);
       }
     });
@@ -2777,6 +2789,11 @@ async function bootstrap() {
 
   if (liveStreamHandle) { liveStreamHandle.close(); liveStreamHandle = null; }
   clearInterval(window.__runRefreshInterval);
+  if (elements.submitActionBtn) elements.submitActionBtn.disabled = false;
+  if (elements.actionStatusMsg) {
+    elements.actionStatusMsg.textContent = "";
+    elements.actionStatusMsg.hidden = true;
+  }
   clearStores();
   const oldReceipt = document.getElementById("review-receipt");
   if (oldReceipt) oldReceipt.hidden = true;
