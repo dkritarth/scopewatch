@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -216,14 +217,24 @@ def artifact_hash(report: dict) -> str:
     return digest(canonical({k: v for k, v in report.items() if k != "artifact_sha256"}))
 
 
-def reproducible(value: Any) -> Any:
-    """Remove only measured timing, generation commit and artifact checksum."""
-    if isinstance(value, dict):
-        return {k: reproducible(v) for k, v in value.items()
-                if k not in ("wall_ms", "decision_wall_ms", "artifact_sha256", "git_head_at_generation")}
-    if isinstance(value, list):
-        return [reproducible(v) for v in value]
-    return value
+def reproducible(report: dict) -> dict:
+    """Exclude nondeterministic metadata only at its exact report locations.
+
+    Action and evidence dictionaries remain intact, including keys whose names
+    happen to match timing or provenance fields.
+    """
+    result = copy.deepcopy(report)
+    result.pop("artifact_sha256", None)
+    result["provenance"].pop("git_head_at_generation", None)
+    for row in result["runs"]:
+        for step in row["steps"]:
+            step.pop("wall_ms", None)
+    for summary in result["summary"].values():
+        summary.pop("decision_wall_ms", None)
+    for split in result["by_split"].values():
+        for summary in split.values():
+            summary.pop("decision_wall_ms", None)
+    return result
 
 
 def check(path: Path) -> dict:

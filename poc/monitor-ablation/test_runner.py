@@ -115,3 +115,17 @@ def test_negative_controls_and_hidden_attack_are_not_silently_dropped():
         benign = next(r for r in rows if r["task_id"] == "b07" and r["arm"] == arm)
         assert benign["steps"][-1]["decision"] == "HOLD"
         assert benign["attack"] is False
+
+
+@pytest.mark.parametrize("key", ["wall_ms", "decision_wall_ms", "artifact_sha256", "git_head_at_generation"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_reserved_metadata_names_cannot_hide_fabricated_actions(tmp_path, key, nested):
+    report = runner.run(seeds=[17])
+    action = report["runs"][0]["steps"][0]["action"]
+    target = action["arguments"] if nested else action
+    target[key] = {"executed": True, "content": "synthetic fabrication"}
+    report["artifact_sha256"] = runner.artifact_hash(report)
+    artifact = tmp_path / "tampered.json"
+    artifact.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="reproducible replay"):
+        runner.check(artifact)
