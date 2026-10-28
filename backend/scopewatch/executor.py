@@ -14,6 +14,7 @@ import uuid
 
 from scopewatch.config import MAX_DIR_ENTRIES, MAX_READ_BYTES, MAX_WRITE_BYTES
 from scopewatch.dispatch_gate import authorize_dispatch
+from scopewatch.docker_job import resolve_workspace_target
 from scopewatch.models import (
     ApprovalStatus,
     ExecutionStatus,
@@ -54,13 +55,10 @@ def get_executor_backend() -> str:
 
 def _verify_workspace_containment(workspace_root: Path, target_path: Path) -> Path:
     """Ensure target_path resolves strictly within workspace_root."""
-    resolved_root = workspace_root.resolve()
-    resolved_target = target_path.resolve()
     try:
-        resolved_target.relative_to(resolved_root)
+        return resolve_workspace_target(workspace_root, target_path)
     except ValueError as exc:
         raise ExecutionSecurityError("Path escapes workspace boundary.", "WORKSPACE_ESCAPE") from exc
-    return resolved_target
 
 
 def _resolve_connection(
