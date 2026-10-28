@@ -1,0 +1,322 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { chromium } from 'playwright';
+
+const reviewer = 'synthetic-judge-reviewer';
+const agent = 'synthetic-judge-agent';
+
+async function gateway(t, ttl = 300, auth = true) {
+  const root = join(import.meta.dirname, '../../..');
+  const dir = mkdtempSync(join(tmpdir(), 'scopewatch-judge-'));
+  mkdirSync(join(dir, 'workspace'));
+  const socket = createServer();
+  socket.listen(0, '127.0.0.1');
+  await once(socket, 'listening');
+  const port = socket.address().port;
+  await new Promise(resolve => socket.close(resolve));
+  const script = `
+from pathlib import Path
+import uvicorn
+from scopewatch.app import create_app
+from scopewatch.db import init_db
+p = Path(${JSON.stringify(dir)})
+init_db(p / 'test.db')
+uvicorn.run(create_app(db_path=p / 'test.db', workspace_root=p / 'workspace'), host='127.0.0.1', port=${port}, log_level='warning')
+`;
+  const proc = spawn('python3', ['-c', script], { stdio: ['ignore', 'pipe', 'pipe'], env: {
+    ...process.env, PYTHONPATH: join(root, 'backend'), DEMO_TOKEN: auth ? agent : '',
+    SCOPEWATCH_API_KEY: '', SCOPEWATCH_REVIEWER_TOKEN: auth ? reviewer : '',
+    SCOPEWATCH_ALLOW_RESET: 'true', SCOPEWATCH_AUDITOR_PROFILE: 'mock',
+    SCOPEWATCH_REASONING_AUDIT: 'true', SCOPEWATCH_APPROVAL_TTL: String(ttl),
+    SCOPEWATCH_RUN_WORKSPACES_DIR: join(dir, 'runs'),
+  } });
+  let output = '';
+  proc.stderr.on('data', chunk => { output += chunk; });
+  t.after(async () => {
+    proc.kill('SIGTERM');
+    await once(proc, 'exit');
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const origin = `http://127.0.0.1:${port}`;
+  let healthy = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { healthy = (await fetch(`${origin}/api/v1/health`)).ok; } catch { /* process binding */ }
+    if (healthy) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.ok(healthy, output);
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(origin);
+  await page.locator('#demo-reseed').waitFor({ state: 'visible' });
+  return { origin, page, errors, dir };
+}
+
+function workspaceFiles(root) {
+  assert.ok(existsSync(root), 'inspect the actual existing run workspace');
+  return Object.fromEntries(readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter(entry => entry.isFile()).map(entry => {
+      const path = join(entry.parentPath, entry.name);
+      return [path.slice(root.length + 1), createHash('sha256').update(readFileSync(path)).digest('hex')];
+    }));
+}
+
+async function login(page, token = reviewer) {
+  await page.locator('#reviewer-token-input').fill(token);
+  await page.locator('#reviewer-token-save').click();
+}
+
+async function reseed(page) {
+  await page.locator('#demo-reseed').click();
+  await page.waitForFunction(() => document.querySelector('#demo-controls-status').textContent.includes('reseeded'));
+}
+
+test('stranger on arbitrary gateway port authenticates, reviews 06, denies and recovers safely', { timeout: 30000 }, async t => {
+  const { origin, page, errors, dir } = await gateway(t);
+  assert.match(await page.locator('#gateway-status').innerText(), /Live gateway connected/);
+  assert.equal(await page.locator('#run-buttons button').count(), 0, 'opening empty gateway never creates a run');
+  await page.locator('#demo-reseed').click();
+  await page.waitForFunction(() => document.querySelector('#demo-controls-status').textContent.includes('refused'));
+  await login(page, agent);
+  await page.locator('#demo-reseed').click();
+  await page.waitForFunction(() => document.querySelector('#demo-controls-status').textContent.includes('agent credentials'));
+  await login(page);
+  await reseed(page);
+  assert.match(await page.locator('#run-buttons').innerText(), /06 Invoice injection.*synthetic mock replay/);
+  await page.locator('.rail-nav [data-view-target="activity"]').click();
+  assert.match(await page.locator('#event-evidence').innerText(), /HOLD|held|pending/i);
+  assert.match(await page.locator('#event-evidence').innerText(), /Synthetic fixture/);
+  await page.locator('.rail-nav [data-view-target="requests"]').click();
+  const card = page.locator('.approval-card');
+  await card.waitFor();
+  assert.match(await card.innerText(), /partner-payment-details/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+  await page.screenshot({ path: '/tmp/290-judge-review.png', fullPage: true });
+  assert.match(await card.locator('.approval-card-expiry').innerText(), /\d{4}-\d\d-\d\dT.*Z.*seconds remaining/);
+  page.on('dialog', dialog => dialog.accept());
+  await page.locator('#demo-reset').click();
+  await page.waitForFunction(() => document.querySelector('#demo-controls-status').textContent.includes('Resolve pending'));
+  assert.equal(await card.count(), 1);
+  const storedRuns = await (await fetch(`${origin}/api/v1/runs`)).json();
+  const runWorkspace = join(dir, 'runs', storedRuns[0].id);
+  const before = workspaceFiles(runWorkspace);
+  const storedApprovals = await (await fetch(`${origin}/api/v1/approvals`)).json();
+  await card.locator('.btn-deny').click();
+  const denialResponse = page.waitForResponse(response => response.url().endsWith(`/approvals/${storedApprovals[0].id}/deny`));
+  await card.locator('.btn-deny').click();
+  const denied = await (await denialResponse).json();
+  assert.equal(denied.execution_receipt.status, 'NOT_EXECUTED');
+  assert.equal(denied.execution_receipt.action_request_id, storedApprovals[0].action_request_id);
+  assert.equal(denied.execution_receipt.error_code, 'APPROVAL_DENIED');
+  assert.deepEqual(workspaceFiles(runWorkspace), before);
+  await page.locator('#review-receipt').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#review-receipt').innerText(), /DENIED.*not executed/);
+  const runs = await (await fetch(`${origin}/api/v1/runs`)).json();
+  const events = await (await fetch(`${origin}/api/v1/runs/${runs[0].id}/events`)).json();
+  assert.ok(events.some(event => event.event_type === 'APPROVAL_DENIED'));
+  assert.ok(!events.some(event => event.event_type.startsWith('EXECUTION_')));
+  await page.locator('#demo-reset').click();
+  await page.waitForFunction(() => document.querySelector('#demo-controls-status').textContent.includes('evidence reset'));
+  assert.equal(await page.locator('#run-buttons button').count(), 0);
+  await reseed(page);
+  await page.reload();
+  assert.match(await page.locator('#reviewer-access-state').innerText(), /No token set/);
+  await page.goto(`${origin}/?live=0`);
+  assert.match(await page.locator('#gateway-status').innerText(), /Static replay mode/);
+  assert.ok(await page.locator('#run-buttons button').count() > 1);
+  assert.equal(await page.locator('#demo-controls').isHidden(), true);
+  assert.deepEqual(errors, []);
+});
+
+test('expired review never autoapproves or executes and can be reset', { timeout: 30000 }, async t => {
+  const { origin, page } = await gateway(t, 2);
+  await login(page);
+  await reseed(page);
+  await page.locator('.rail-nav [data-view-target="requests"]').click();
+  await page.waitForFunction(() => document.querySelector('.approval-card-expiry')?.textContent.includes('Expired'));
+  assert.equal(await page.locator('.btn-approve').isDisabled(), true);
+  const runs = await (await fetch(`${origin}/api/v1/runs`)).json();
+  // Approval GET reconciles expiry, but never resolves it as an approval.
+  const pending = await (await fetch(`${origin}/api/v1/approvals?status=PENDING`)).json();
+  assert.deepEqual(pending, []);
+  const events = await (await fetch(`${origin}/api/v1/runs/${runs[0].id}/events`)).json();
+  assert.ok(events.some(event => event.event_type === 'APPROVAL_EXPIRED'));
+  assert.ok(!events.some(event => /EXECUTION_|APPROVAL_GRANTED/.test(event.event_type)));
+});
+
+test('gateway connection and run failures never substitute replay fixtures', { timeout: 30000 }, async t => {
+  const { origin, page } = await gateway(t);
+  await page.route('**/api/v1/runs', route => route.fulfill({ status: 503,
+    contentType: 'application/json', body: '{"error":"unavailable"}' }));
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('#gateway-status').textContent.includes('Gateway data unavailable'));
+  assert.equal(await page.locator('#run-buttons button').count(), 0);
+  assert.equal(await page.locator('#runs-retry').isVisible(), true);
+  await page.route('**/api/v1/health', route => route.abort());
+  await page.goto(origin);
+  await page.locator('#connection-error').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#gateway-status').innerText(), /Gateway unavailable/);
+  assert.equal(await page.locator('#run-buttons button').count(), 0);
+});
+
+test('reset discards a polling response captured before deletion', { timeout: 30000 }, async t => {
+  const { origin, page } = await gateway(t);
+  await login(page);
+  await reseed(page);
+  const approvals = await (await fetch(`${origin}/api/v1/approvals`)).json();
+  const denied = await fetch(`${origin}/api/v1/approvals/${approvals[0].id}/deny`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Reviewer-Token': reviewer },
+    body: '{}',
+  });
+  assert.equal(denied.status, 200);
+  let captured;
+  const capturedRead = new Promise(resolve => { captured = resolve; });
+  let release;
+  const releaseRead = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  let first = true;
+  await page.route('**/api/v1/runs', async route => {
+    if (!first) return route.continue();
+    first = false;
+    const response = await route.fetch();
+    captured();
+    await releaseRead;
+    await route.fulfill({ response });
+  });
+  await page.evaluate(() => {
+    window.__scopewatch.refreshRuns().finally(() => { window.__oldPollFinished = true; });
+  });
+  await capturedRead;
+  page.on('dialog', dialog => dialog.accept());
+  await page.locator('#demo-reset').click();
+  await page.waitForFunction(() => document.querySelector('#demo-controls-status').textContent.includes('evidence reset'));
+  assert.equal(await page.locator('#run-buttons button').count(), 0);
+  release();
+  await page.waitForFunction(() => window.__oldPollFinished);
+  assert.deepEqual(await (await fetch(`${origin}/api/v1/runs`)).json(), []);
+  assert.equal(await page.locator('#run-buttons button').count(), 0, 'old response must not resurrect deleted runs');
+});
+
+test('reset and reseed discard a delayed denial receipt from the deleted run', { timeout: 30000 }, async t => {
+  const { origin, page } = await gateway(t);
+  await login(page);
+  await reseed(page);
+  await page.locator('.rail-nav [data-view-target="requests"]').click();
+  const oldApproval = (await (await fetch(`${origin}/api/v1/approvals`)).json())[0];
+  let captured;
+  const capturedDenial = new Promise(resolve => { captured = resolve; });
+  let release;
+  const releaseDenial = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  await page.route(`**/api/v1/approvals/${oldApproval.id}/deny`, async route => {
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    captured();
+    await releaseDenial;
+    await route.fulfill({ response });
+  });
+  const card = page.locator('.approval-card');
+  await card.locator('.btn-deny').click();
+  await card.locator('.btn-deny').click();
+  await capturedDenial;
+  page.on('dialog', dialog => dialog.accept());
+  await page.locator('#demo-reset').click();
+  await page.waitForFunction(() => document.querySelector('#demo-controls-status').textContent.includes('evidence reset'));
+  assert.equal(await page.locator('#review-receipt').isHidden(), true);
+  await reseed(page);
+  const newApproval = (await (await fetch(`${origin}/api/v1/approvals`)).json())[0];
+  assert.notEqual(newApproval.id, oldApproval.id);
+  const finished = page.waitForEvent('requestfinished', { predicate: request => request.url().endsWith(`/approvals/${oldApproval.id}/deny`) });
+  release();
+  await finished;
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.locator('#review-receipt').isHidden(), true, 'deleted approval must not regain a receipt beside the new action');
+  const pending = await (await fetch(`${origin}/api/v1/approvals?status=PENDING`)).json();
+  assert.deepEqual(pending.map(approval => approval.id), [newApproval.id]);
+});
+
+for (const reply of ['denial', 'error']) {
+  test(`reset discards a delayed simulator ${reply} response`, { timeout: 30000 }, async t => {
+    const { origin, page } = await gateway(t);
+    await login(page);
+    await reseed(page);
+    const oldApproval = (await (await fetch(`${origin}/api/v1/approvals`)).json())[0];
+    assert.equal((await fetch(`${origin}/api/v1/approvals/${oldApproval.id}/deny`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Reviewer-Token': reviewer }, body: '{}',
+    })).status, 200);
+    let captured;
+    const capturedSubmission = new Promise(resolve => { captured = resolve; });
+    let release;
+    const releaseSubmission = new Promise(resolve => { release = resolve; });
+    t.after(() => release());
+    const endpoint = `/api/v1/runs/${oldApproval.run_id}/actions`;
+    await page.route(`**${endpoint}`, async route => {
+      const response = await route.fetch();
+      assert.equal(response.status(), 201);
+      captured();
+      await releaseSubmission;
+      if (reply === 'error') {
+        await route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"synthetic delayed error"}' });
+      } else {
+        await route.fulfill({ response });
+      }
+    });
+    await page.locator('.rail-nav [data-view-target="test"]').click();
+    await page.locator('#action-preset').selectOption('blocked_path');
+    await page.locator('#submit-action-btn').click();
+    await capturedSubmission;
+    page.on('dialog', dialog => dialog.accept());
+    await page.locator('#demo-reset').click();
+    await page.waitForFunction(() => document.querySelector('#demo-controls-status').textContent.includes('evidence reset'));
+    await reseed(page);
+    const finished = page.waitForEvent('requestfinished', { predicate: request => request.url().endsWith(endpoint) });
+    release();
+    await finished;
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.locator('#action-status-msg').textContent(), '', 'deleted submission must not update the new dashboard status');
+    const keys = await page.evaluate(async () => {
+      const app = await import('/scripts/app.js');
+      return [...app.actionRequestStore.keys(), ...app.auditStore.keys(), ...app.approvalStore.keys()];
+    });
+    assert.ok(keys.every(key => !key.includes(oldApproval.run_id)), 'deleted run evidence must stay absent');
+    assert.equal(await page.locator('#submit-action-btn').isDisabled(), false);
+  });
+}
+
+
+for (const auth of [false, true]) {
+  test(`recovery and credential panels preserve the header layout (auth=${auth})`, { timeout: 30000 }, async t => {
+    const { page } = await gateway(t, 300, auth);
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      for (const theme of ['sunbeam', 'moonlit']) {
+        await page.locator(`[data-theme-target="${theme}"]`).click();
+        if (width === 1440 && theme === 'sunbeam') {
+          await page.screenshot({ path: `/tmp/scopewatch-328-header-${auth}.png`, fullPage: false });
+        }
+        const main = await page.locator('.header-main').boundingBox();
+        assert.ok(main.width >= 280, `header must retain usable width at ${width}px in ${theme}`);
+        const badge = await page.locator('#gateway-status').boundingBox();
+        for (const id of ['demo-controls', 'reviewer-access-panel']) {
+          const panel = page.locator(`#${id}`);
+          if (await panel.isHidden()) continue;
+          const box = await panel.boundingBox();
+          assert.ok(badge.y + badge.height <= box.y, `gateway status must precede ${id} without overlap`);
+          assert.ok(box.x >= 0 && box.x + box.width <= width + 1, `${id} stays inside the viewport`);
+        }
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+      }
+    }
+  });
+}

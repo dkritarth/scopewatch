@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, Header, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
@@ -21,6 +21,7 @@ from scopewatch import __version__
 from scopewatch.config import (
     ALLOW_DEMO_RESET,
     API_KEY,
+    DEFAULT_EXPIRY_SECONDS,
     CORS_ALLOW_CREDENTIALS,
     CORS_ALLOW_ORIGINS,
     DB_PATH,
@@ -58,6 +59,8 @@ from scopewatch.errors import (
     validation_error_handler,
 )
 from scopewatch.events import broadcaster
+from scopewatch.ingress import BodySizeLimitMiddleware
+from scopewatch.config import max_request_body_bytes
 from scopewatch.models import ApprovalStatus
 from scopewatch.provenance import CAPTURE_TOKEN_HEADER
 from scopewatch.reasoning_audit import ReasoningAuditor
@@ -408,6 +411,19 @@ def create_app(
         capture_token=capture_token,
         run_workspaces_root=run_workspaces_root,
     )
+
+    # Issue #304: bound public request bodies BEFORE any other middleware or
+    # route can touch them. add_middleware puts the last-registered layer
+    # outermost, so this must stay the final middleware registration in
+    # create_app: the pure-ASGI size check then runs ahead of the
+    # token/auth/CORS layers (and ahead of PR #258's middleware when that
+    # merges), and unauthenticated callers can never make the gateway
+    # allocate. See scopewatch.ingress for the rules.
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        max_body_bytes=max_request_body_bytes(),
+    )
+
     app.state.service = service
 
     def get_service() -> ScopewatchService:
@@ -527,22 +543,19 @@ def create_app(
             version=__version__,
             demo_mode=guards.config.enabled,
             reviewer_auth=bool(exp_rev),
+            demo_reset_enabled=_active_allow_demo_reset(),
+            approval_ttl_seconds=DEFAULT_EXPIRY_SECONDS,
         )
 
     # ---------------- Demo Reset ----------------
 
-    @app.post("/api/v1/demo/reset")
-    @app.post("/demo/reset")
-    def reset_demo(
-        request: Request,
-        svc: ScopewatchService = Depends(get_service),
-    ) -> Any:
+    def demo_admin_refusal(request: Request) -> Optional[JSONResponse]:
         if not _active_allow_demo_reset():
             return JSONResponse(
                 status_code=403,
                 content={
                     "error": "reset_disabled",
-                    "message": "Demo reset is disabled. Set SCOPEWATCH_ALLOW_RESET=true to enable.",
+                    "message": "Demo reset/reseed is disabled. Set SCOPEWATCH_ALLOW_RESET=true to enable.",
                 },
             )
 
@@ -581,6 +594,21 @@ def create_app(
                     },
                 )
 
+        return None
+
+    demo_admin_lock = asyncio.Lock()
+
+    @app.post("/api/v1/demo/reset")
+    @app.post("/demo/reset")
+    async def reset_demo(request: Request, svc: ScopewatchService = Depends(get_service)) -> Any:
+        refusal = demo_admin_refusal(request)
+        if refusal is not None:
+            return refusal
+        async with demo_admin_lock:
+            svc.reconcile_expired_approvals()
+            return clear_demo(svc)
+
+    def clear_demo(svc: ScopewatchService) -> Any:
         conn = svc._get_conn()
         try:
             with db_transaction(conn):
@@ -592,6 +620,13 @@ def create_app(
                             "message": "Cannot reset demo while action execution is in flight.",
                         },
                     )
+                # Pending review must be resolved explicitly, never erased by reset.
+                pending = conn.execute("SELECT 1 FROM approval_requests WHERE status = 'PENDING' LIMIT 1").fetchone()
+                if pending:
+                    return JSONResponse(status_code=409, content={
+                        "error": "pending_approvals",
+                        "message": "Resolve pending approvals before resetting. Reset never approves or denies them.",
+                    })
                 conn.execute("DELETE FROM evidence_events;")
                 conn.execute("DELETE FROM execution_receipts;")
                 conn.execute("DELETE FROM approval_requests;")
@@ -602,6 +637,21 @@ def create_app(
         finally:
             conn.close()
         return {"status": "ok", "message": "Demo state reset successfully."}
+
+    @app.post("/api/v1/demo/reseed")
+    async def reseed_demo(request: Request, svc: ScopewatchService = Depends(get_service)) -> Any:
+        refusal = demo_admin_refusal(request)
+        if refusal is not None:
+            return refusal
+        async with demo_admin_lock:
+            if svc.list_runs():
+                return JSONResponse(status_code=409, content={
+                    "error": "demo_not_empty",
+                    "message": "Resolve pending approvals and reset before reseeding. Existing evidence is preserved.",
+                })
+            from scopewatch.demo_seed import seed_judge_review
+            run_id = await seed_judge_review(svc)
+            return {"status": "ok", "run_id": run_id, "mode": "synthetic_mock_replay"}
 
     # ---------------- Runs ----------------
 
@@ -856,9 +906,13 @@ def create_app(
             app.mount("/fonts", StaticFiles(directory=fonts_dir), name="fonts")
 
         @app.get("/", include_in_schema=False)
-        def serve_index() -> FileResponse:
+        def serve_index() -> HTMLResponse:
             index_path = frontend_dir / "index.html"
-            return FileResponse(index_path)
+            # Server-owned marker avoids port and HTTPS guesses without inline JS.
+            html = index_path.read_text(encoding="utf-8").replace(
+                "</head>", '<meta name="scopewatch-gateway" content="live"></head>', 1,
+            )
+            return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     return app
 

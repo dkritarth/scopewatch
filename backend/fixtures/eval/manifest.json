@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "dataset_version": "v1",
+  "content_origin": "synthetic",
+  "split_status": "spent",
+  "frozen_at": "2026-10-28T03:00:00Z",
+  "authoring": "Historical fixtures frozen as found; no source report reconstruction.",
+  "measurement_policy": "Never tune on historical heldout. Tune only dev; freeze prompt/code/settings before any new provider heldout run. Record every run, including failures; never select the best run.",
+  "splits": {
+    "dev": {
+      "file": "backend/fixtures/eval/dev/cases.json",
+      "sha256": "8008e3b2edce9cfd279a303451f23b4eafa655c64caa14f46cc605f4f8d9eeb0",
+      "count": 13
+    },
+    "heldout": {
+      "file": "backend/fixtures/eval/heldout/cases.json",
+      "sha256": "aa28df583d15520c2d835a135d3b47faf437401b69ffa706528e217e743ff55f",
+      "count": 48
+    }
+  }
+}

@@ -811,7 +811,14 @@ def test_reset_refused_while_execution_in_flight(monkeypatch, make_gateway):
     finally:
         conn.close()
 
-    # 3. Now that execution is no longer in flight, reset succeeds
+    # 3. Execution is settled, but the independently pending review still blocks reset.
+    pending_reset = client.post("/api/v1/demo/reset")
+    assert pending_reset.status_code == 409
+    assert pending_reset.json()["error"] == "pending_approvals"
+    denied = client.post(f"/api/v1/approvals/{appr_id}/deny", json={})
+    assert denied.status_code == 200
+
+    # An explicit human resolution now permits reset.
     r_reset2 = client.post("/api/v1/demo/reset")
     assert r_reset2.status_code == 200
     assert r_reset2.json()["status"] == "ok"

@@ -1,0 +1,529 @@
+{
+  "$defs": {
+    "ActionCapture": {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "pattern": "^[a-zA-Z0-9_.-]{1,96}$",
+          "title": "Action Id",
+          "type": "string"
+        },
+        "action_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Action Sha256",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "planned",
+            "attempted",
+            "allowed",
+            "held",
+            "denied",
+            "approved",
+            "executed",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "evidence_event_id": {
+          "anyOf": [
+            {
+              "pattern": "^[a-zA-Z0-9_.-]{1,96}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Evidence Event Id"
+        }
+      },
+      "required": [
+        "action_id",
+        "action_sha256",
+        "status",
+        "evidence_event_id"
+      ],
+      "title": "ActionCapture",
+      "type": "object"
+    },
+    "TraceCapture": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "else": {
+            "allOf": [
+              {
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "else": {
+                  "properties": {
+                    "truncation": {
+                      "enum": [
+                        "capture_limit",
+                        "provider_length",
+                        "interrupted"
+                      ]
+                    }
+                  }
+                },
+                "if": {
+                  "properties": {
+                    "complete": {
+                      "const": true
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "truncation": {
+                      "const": "none"
+                    },
+                    "original_chars": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              {
+                "else": {
+                  "properties": {
+                    "provider_field": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "if": {
+                  "properties": {
+                    "provenance": {
+                      "const": "PROVIDER_EXPOSED_TRACE"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "provider_field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "if": {
+            "properties": {
+              "provenance": {
+                "const": "UNAVAILABLE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "text": {
+                "type": "null"
+              },
+              "sha256": {
+                "type": "null"
+              },
+              "original_chars": {
+                "type": "null"
+              },
+              "provider_field": {
+                "type": "null"
+              },
+              "captured_chars": {
+                "const": 0
+              },
+              "complete": {
+                "const": false
+              },
+              "truncation": {
+                "const": "unavailable"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "provenance": {
+          "enum": [
+            "PROVIDER_EXPOSED_TRACE",
+            "AGENT_SUMMARY",
+            "SYNTHETIC_TRACE",
+            "UNAVAILABLE"
+          ],
+          "title": "Provenance",
+          "type": "string"
+        },
+        "provider_field": {
+          "anyOf": [
+            {
+              "enum": [
+                "message.reasoning",
+                "message.reasoning_content",
+                "message.reasoning_details"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Provider Field"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Text"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sha256"
+        },
+        "original_chars": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Original Chars"
+        },
+        "captured_chars": {
+          "minimum": 0,
+          "title": "Captured Chars",
+          "type": "integer"
+        },
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "truncation": {
+          "enum": [
+            "none",
+            "capture_limit",
+            "provider_length",
+            "interrupted",
+            "unavailable"
+          ],
+          "title": "Truncation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provenance",
+        "provider_field",
+        "text",
+        "sha256",
+        "original_chars",
+        "captured_chars",
+        "complete",
+        "truncation"
+      ],
+      "title": "TraceCapture",
+      "type": "object"
+    },
+    "TurnCapture": {
+      "additionalProperties": false,
+      "properties": {
+        "turn_index": {
+          "minimum": 0,
+          "title": "Turn Index",
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "number"
+        },
+        "trace": {
+          "$ref": "#/$defs/TraceCapture"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        },
+        "finish_reason": {
+          "enum": [
+            "stop",
+            "tool_calls",
+            "length",
+            "error",
+            "unknown"
+          ],
+          "title": "Finish Reason",
+          "type": "string"
+        },
+        "context_window_tokens": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Context Window Tokens"
+        },
+        "output_budget_tokens": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Output Budget Tokens"
+        },
+        "recent_action_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Recent Action Ids",
+          "type": "array"
+        },
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/ActionCapture"
+          },
+          "title": "Actions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "turn_index",
+        "elapsed_ms",
+        "trace",
+        "usage",
+        "finish_reason",
+        "context_window_tokens",
+        "output_budget_tokens",
+        "recent_action_ids",
+        "actions"
+      ],
+      "title": "TurnCapture",
+      "type": "object"
+    },
+    "Usage": {
+      "additionalProperties": false,
+      "description": "None means unreported. Zero means an observed or synthetic explicit zero.",
+      "properties": {
+        "prompt_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Tokens"
+        },
+        "completion_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion Tokens"
+        },
+        "total_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Tokens"
+        }
+      },
+      "title": "Usage",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "turns": {
+            "items": {
+              "properties": {
+                "trace": {
+                  "properties": {
+                    "provenance": {
+                      "enum": [
+                        "PROVIDER_EXPOSED_TRACE",
+                        "AGENT_SUMMARY",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  }
+                },
+                "actions": {
+                  "items": {
+                    "if": {
+                      "properties": {
+                        "status": {
+                          "not": {
+                            "const": "planned"
+                          }
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "evidence_event_id": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "capture_origin": {
+            "const": "synthetic"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "content_origin": {
+            "const": "synthetic"
+          },
+          "turns": {
+            "items": {
+              "properties": {
+                "trace": {
+                  "properties": {
+                    "provenance": {
+                      "enum": [
+                        "SYNTHETIC_TRACE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "capture_origin": {
+      "enum": [
+        "observed",
+        "synthetic"
+      ],
+      "title": "Capture Origin",
+      "type": "string"
+    },
+    "content_origin": {
+      "enum": [
+        "synthetic",
+        "private"
+      ],
+      "title": "Content Origin",
+      "type": "string"
+    },
+    "captured_at": {
+      "format": "date-time",
+      "title": "Captured At",
+      "type": "string"
+    },
+    "profile": {
+      "pattern": "^[a-zA-Z0-9_.-]{1,96}$",
+      "title": "Profile",
+      "type": "string"
+    },
+    "model": {
+      "pattern": "^[a-zA-Z0-9_./:-]{1,160}$",
+      "title": "Model",
+      "type": "string"
+    },
+    "task_scope_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Task Scope Sha256",
+      "type": "string"
+    },
+    "capture_limit_chars": {
+      "minimum": 1,
+      "title": "Capture Limit Chars",
+      "type": "integer"
+    },
+    "turns": {
+      "items": {
+        "$ref": "#/$defs/TurnCapture"
+      },
+      "minItems": 1,
+      "title": "Turns",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "capture_origin",
+    "content_origin",
+    "captured_at",
+    "profile",
+    "model",
+    "task_scope_sha256",
+    "capture_limit_chars",
+    "turns"
+  ],
+  "title": "LongTraceCapture",
+  "type": "object"
+}

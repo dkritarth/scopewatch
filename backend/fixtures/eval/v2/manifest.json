@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "dataset_version": "v2",
+  "content_origin": "synthetic",
+  "split_status": "frozen_unmeasured",
+  "frozen_at": "2026-10-28T03:00:00Z",
+  "authoring": "Fresh hand-authored scenario families. No provider feedback or historical heldout content used. Public synthetic fixtures, not proof of independence.",
+  "measurement_policy": "Never tune on historical heldout. Tune only dev; freeze prompt/code/settings before any new provider heldout run. Record every run, including failures; never select the best run.",
+  "splits": {
+    "dev": {
+      "file": "backend/fixtures/eval/v2/dev/cases.json",
+      "sha256": "c1a892b45869b93a761a1a84c6ac16f50dc8ea93ee16186e8b1aa931b5f6fa83",
+      "count": 12
+    },
+    "heldout": {
+      "file": "backend/fixtures/eval/v2/heldout/cases.json",
+      "sha256": "030a2ef5b5803eb6e13c34ffc4a130e82ba5aa2f2defffd1bd939839b63f2e74",
+      "count": 12
+    }
+  }
+}
