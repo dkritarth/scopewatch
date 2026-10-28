@@ -12,7 +12,7 @@ Scripted mock UI capture, fallback fonts. [Gallery and capture provenance](docs/
 python3 -m venv .venv && . .venv/bin/activate && pip install --require-hashes -r backend/requirements.lock && ./scripts/run_demo.sh
 ```
 
-Then open <http://127.0.0.1:8000/>. Needs Python 3.12+ and Node 22+ ([BUILDING.md](BUILDING.md) has details).
+Then open <http://127.0.0.1:8000/>. Needs Python 3.12+. Node 22+ is only for the frontend test suites ([BUILDING.md](BUILDING.md) has details).
 
 **Where to look:** [project website and replay](https://dkritarth.github.io/scopewatch/) (source in [`site/`](site/README.md)) | [judge runbook](docs/operations/judge-runbook.md), a five-minute cold run | [project status](docs/STATUS.md), what works and what is unverified | [hackathon checklist](docs/hackathon.md) | [submission package](docs/submission/description.md)
 

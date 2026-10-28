@@ -28,7 +28,7 @@ All of this runs offline with the `mock` provider. Tests use synthetic fixtures 
 | Demo video | Script written, not recorded. | #45 |
 | Devpost submission | Not submitted. Needs the team representative. | #47 |
 | Track choice, team eligibility, Nemotron license confirmation | Open, owned by people. No license text is asserted in the repo. | #40, #41 |
-| Full suite on the merged tree | Last full local run was 2026-10-24, before the 17 PRs merged. Not rerun on the merged tree. | |
+| Full suite on the merged tree | Run locally 2026-10-28 on the integrated tree: all suites passed except four root-only `PermissionError` tests that pass as non-root ([hackathon.md](hackathon.md)). No Docker daemon, so 25 Docker tests were skipped. | |
 | Native Docker and casefold platforms | Docker tests were skipped and only Linux ext4 case handling was exercised. macOS and Windows volumes are untested. | |
 | Two-tier auditor, completion caps, token budgets | Synthetic responses only. Provider enforcement, latency, cost, and detection quality are unmeasured. | |
 | Claims of detection or prevention | None made. Scopewatch mediates only actions routed through its API. A concealed or obfuscated plan can pass. | |
