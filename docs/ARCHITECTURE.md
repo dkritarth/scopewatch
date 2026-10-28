@@ -129,13 +129,18 @@ completion tokens. Timeouts must be finite, positive and at most 120 seconds;
 completion caps must be integers from 1 to 16384. The effective timeout is the
 smaller of the tier and provider timeouts. Each tier makes at most one request
 with retries disabled and an explicit `max_tokens` cap that replaces profile
-token options. Existing input bounds still apply. Provider enforcement of the
+token options. Requests force one completion (`n=1`) and remove `best_of`
+generation options. Existing input bounds still apply. Provider enforcement of the
 completion cap has not been verified live. Daily token reservations use the
-actual tier profile, and refusal fails closed before its request. Invalid tier
+resolved tier profile name for both reservation and release, and refusal fails
+closed before its request. Daily accounting depends on provider-reported usage;
+unknown usage releases the reservation without a measured charge. These budgets
+are not hard remote spending ceilings. Invalid tier
 configuration or an unknown routing mode fails closed before any request.
 
 Audit records and completion/failure events include additive `tiers` evidence
-and `total_tokens`. Each tier records its name, requested profile, configured
+and `total_tokens`. Each tier records its name, requested profile, resolved
+profile name (null if lookup failed), configured
 model, resolved model identity, verdict, grounded excerpts, error, measured
 elapsed latency, timeout, completion cap and whether an audit was attempted.
 Model identity is provider-reported when present with a configured fallback;

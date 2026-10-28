@@ -269,3 +269,69 @@ def test_reported_model_and_configured_model_remain_distinct(gateway):
     assert tier.model == "synthetic-fast"
     assert tier.profile == "fast"
     assert tier.latency_ms > 0
+
+
+@pytest.mark.parametrize("option_field", ["auditor_body", "extra_body"])
+def test_tier_requests_only_one_completion(gateway, option_field):
+    _, _, clients, configure, submit = gateway
+    configure(CLEAN, CLEAN)
+    setattr(clients["fast"].profile, option_field, {"n": 4, "best_of": 4})
+    response = submit()
+    assert response.policy_decision.outcome.value == "ALLOW"
+    body = json.loads(clients["fast"].call_history[0].content)
+    assert body["n"] == 1
+    assert "best_of" not in body
+
+
+@pytest.mark.parametrize("construction_fails", [False, True])
+def test_aliased_profile_reservation_and_evidence(tmp_path, monkeypatch, construction_fails):
+    from scopewatch.budget_store import TokenLedger
+    from scopewatch.reasoning_audit import ReasoningAuditResult, ReasoningAuditVerdict
+    from scopewatch.tiered_audit import run_tiered_audit
+
+    config = tmp_path / "providers.toml"
+    config.write_text('''[profiles.fast]
+name = "canonical"
+base_url = "https://synthetic.invalid"
+model = "synthetic-fast"
+[profiles.strong]
+base_url = "mock://strong"
+model = "synthetic-strong"
+''')
+    monkeypatch.setenv("SCOPEWATCH_PROVIDERS_CONFIG", str(config))
+    monkeypatch.setenv("SCOPEWATCH_AUDITOR_ROUTING", "two-tier")
+    monkeypatch.setenv("SCOPEWATCH_AUDITOR_FAST_PROFILE", "fast")
+    monkeypatch.setenv("SCOPEWATCH_AUDITOR_STRONG_PROFILE", "strong")
+    monkeypatch.setenv("SCOPEWATCH_AUDITOR_FAST_MAX_TOKENS", "8")
+    monkeypatch.setenv("SCOPEWATCH_TOKEN_RESERVE_PER_AUDIT", "8")
+    ledger = TokenLedger()
+
+    class Client:
+        def __init__(self, profile):
+            if profile.name == "canonical":
+                assert ledger.used_today("canonical") > 0
+                if construction_fails:
+                    raise RuntimeError("Synthetic construction failure")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("scopewatch.tiered_audit.ProviderClient", Client)
+
+    async def run(auditor):
+        if auditor.profile == "canonical":
+            ledger.add("canonical", 1)
+        return ReasoningAuditResult(verdict=ReasoningAuditVerdict.NO_CONCERN,
+                                   profile=auditor.profile, model=auditor.model,
+                                   explanation="Synthetic clean response.", total_tokens=1)
+
+    result = asyncio.run(run_tiered_audit(run, ledger))
+    assert ledger.used_today("canonical") == (0 if construction_fails else 1)
+    assert ledger.used_today("fast") == 0
+    assert result.tiers[0].profile == "fast"
+    assert result.tiers[0].resolved_profile == "canonical"
+    if construction_fails:
+        assert result.verdict == ReasoningAuditVerdict.FAILED
+        assert len(result.tiers) == 2
+    else:
+        assert result.verdict == ReasoningAuditVerdict.NO_CONCERN

@@ -66,10 +66,13 @@ async def run_tiered_audit(
         attempted = False
         timeout_s = config.timeout_s
         reservation = 0
+        reservation_profile = None
+        resolved_profile = None
         client = None
         try:
             profile = get_profile(config.profile)
             model = profile.model
+            resolved_profile = profile.name
             # Each tier has one request and no retries. Remove alternate token
             # options before applying the tier's explicit completion cap.
             body = dict(profile.auditor_body)
@@ -77,7 +80,10 @@ async def run_tiered_audit(
             for options in (body, extra):
                 options.pop("max_completion_tokens", None)
                 options.pop("max_tokens", None)
+                options.pop("n", None)
+                options.pop("best_of", None)
             body["max_tokens"] = config.max_tokens
+            body["n"] = 1
             timeout_s = min(profile.timeout_s, config.timeout_s)
             profile = profile.model_copy(update={
                 "timeout_s": timeout_s,
@@ -89,6 +95,7 @@ async def run_tiered_audit(
                     raise _TierBudgetExceeded
                 tokens.add(profile.name, estimate)
                 reservation = estimate
+                reservation_profile = profile.name
             client = ProviderClient(profile)
             auditor = ReasoningAuditor(provider=client, profile=profile.name,
                                        model=model, timeout_s=profile.timeout_s)
@@ -101,7 +108,7 @@ async def run_tiered_audit(
         finally:
             try:
                 if reservation:
-                    tokens.add(config.profile, -reservation)
+                    tokens.add(reservation_profile, -reservation)
             except Exception:
                 pass  # Metering cleanup must not discard the fail-closed result.
             try:
@@ -109,6 +116,7 @@ async def run_tiered_audit(
                     client.close()
             except Exception:
                 pass  # Cleanup cannot relax or erase an attempted audit.
+        result.profile = config.profile
         if not attempted:
             result.total_tokens = 0
         result.latency_ms = (time.monotonic() - tier_start) * 1000
@@ -116,6 +124,7 @@ async def run_tiered_audit(
         evidence.append(AuditTierEvidence(
             **result.model_dump(exclude={"tiers"}), tier=config.tier,
             attempted=attempted, configured_model=model,
+            resolved_profile=resolved_profile,
             timeout_s=timeout_s,
             max_tokens=config.max_tokens))
         if result.verdict == ReasoningAuditVerdict.NO_CONCERN:

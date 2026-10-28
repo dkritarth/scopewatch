@@ -228,6 +228,7 @@ class AuditTierEvidence(BaseModel):
     tier: str
     attempted: bool
     configured_model: str
+    resolved_profile: Optional[str] = None
     profile: str
     model: str
     verdict: str
