@@ -8,7 +8,7 @@ Scopewatch gives platform and security teams running coding agents a review poin
 
 The gateway combines deterministic policy with an independent reasoning auditor:
 
-1. Policy checks paths, tools, operations, and network scope first. A `DENY` is final.
+1. Policy checks paths, tools, and operations first. Network operations are currently denied, even when the task scope lists destinations. A `DENY` is final.
 2. The auditor can escalate a policy `ALLOW` to `HOLD`. An attempted audit that fails also holds the action. The model cannot grant access.
 3. A held action needs an exact, single-use approval before the controlled executor can run it. Approval cannot override policy `DENY`.
 4. The reviewer dashboard separates observed actions, policy decisions, provider-exposed traces, summaries, approvals, and execution receipts. A capture credential gates verified provenance labels; grounded excerpts quote the submitted evidence, not proven intent.

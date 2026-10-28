@@ -2,7 +2,9 @@
 
 Scopewatch is for platform and security teams running coding agents that need to
 review tool actions before they affect a workspace. A team supplies the task's
-allowed paths, tools, operations, and network scope. The gateway records its
+allowed paths, tools, and operations. The schema also records network destinations,
+but the current policy denies every network operation; listing a destination
+does not enable outbound access. The gateway records its
 decision before dispatching an action and presents held actions to a reviewer.
 This is a student hackathon implementation, with synthetic fixtures and mock
 providers available locally. It has no measured deployment ROI or adoption-time
