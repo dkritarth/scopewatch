@@ -1,6 +1,6 @@
 # Scopewatch
 
-Scopewatch is a pre-execution security gateway and reviewer interface for auditing and mediating autonomous AI agent actions against declared task scopes before execution occurs.
+Scopewatch gives platform and security teams running coding agents a review point before tool actions execute. Teams declare the task scope, route actions through the gateway, and review held actions with policy decisions, reasoning provenance, and execution receipts. It mediates only actions routed through its API.
 
 ![Scripted mock capture of the current celestial dashboard home. No live inference.](docs/submission/media/scripted-home-moonlit.png)
 
@@ -8,11 +8,14 @@ Scripted mock UI capture from pinned main, with fallback fonts. [Gallery, captur
 
 **Project website and interactive demo:** https://dkritarth.github.io/scopewatch/ (source in [`site/`](site/README.md)). **Judges:** the one-page cold-run sheet is [docs/operations/judge-runbook.md](docs/operations/judge-runbook.md).
 
-It enforces a strict defense-in-depth model:
-1. **Deterministic policy first**: Evaluates path, tool, and operation allowlists before any model call or executor dispatch. Deterministic `DENY` decisions are final.
-2. **Escalate-only reasoning audit**: An independent auditor analyzes the agent's chain-of-thought trace for scope drift, prompt injection, and policy evasion. The auditor can only escalate an `ALLOW` to a `HOLD`—it can never grant access or downgrade a decision.
-3. **Controlled execution**: Actions execute strictly inside a bounded workspace sandbox only after policy and audit approval.
-4. **Structured evidence dashboard**: Reviewers inspect complete 5-part audit trails, including verbatim grounded trace excerpts, provenance labels, and single-use approval controls.
+The gateway combines deterministic policy with an independent reasoning auditor:
+
+1. Policy checks paths, tools, and operations first. Network operations are currently denied, even when the task scope lists destinations. A `DENY` is final.
+2. The auditor can escalate a policy `ALLOW` to `HOLD`. An attempted audit that fails also holds the action. The model cannot grant access.
+3. A held action needs an exact, single-use approval before the controlled executor can run it. Approval cannot override policy `DENY`.
+4. The reviewer dashboard separates observed actions, policy decisions, provider-exposed traces, summaries, approvals, and execution receipts. A capture credential gates verified provenance labels; grounded excerpts quote the submitted evidence, not proven intent.
+
+[Adoption and prior art](docs/adoption-and-prior-art.md) explains the integration work, real vulnerability disclosures, overlap with existing guardrails, and limits under monitoring awareness or obfuscation. No adoption-time or cost savings have been measured. The shipped agent/auditor pair and live headline scenario remain pending [#214](https://github.com/dkritarth/scopewatch/issues/214).
 
 > **Interception coverage statement:**
 > All tool actions go through the gateway API; actions that bypass the API are not observed, blocked, or recorded.
@@ -82,14 +85,11 @@ This runs the Scopewatch agent loop against the `nebius-demo` profile (`nvidia/N
 
 ### 2b. Live gateway mode (`?live=1` / `?live=0`)
 
-The reviewer UI at `http://127.0.0.1:8000/` accepts two query-string flags on the **backend port** (default 8000):
+The gateway serves its dashboard in live gateway mode by default at any port, including HTTPS behind a proxy. The server marks its own HTML; static hosting remains replay. `?live=1` explicitly requests the gateway and `?live=0` forces static replay even on the gateway. Connection or data failures never substitute fixtures. A gateway connection alone does not imply live model inference.
 
-- `?live=1` — Enables live mode: the page connects to the gateway's live run stream and shows active runs. With no `?live` parameter, the default gateway port (`8000`) or the `__SCOPEWATCH_LIVE__` flag enables live mode.
-- `?live=0` — Disables live mode: the page shows fixture/simulated runs even when a live gateway is running. This takes precedence over the port default; i.e. `?live=0` on port 8000 still shows static fixtures.
+Demo recovery controls show whether the operator enabled `SCOPEWATCH_ALLOW_RESET=true`. Authenticated deployments require a distinct reviewer token, held only in page memory. Resolve all pending approvals before resetting evidence, then choose **Reseed scenario 06** for a fresh synthetic HOLD. Reseed requires an empty gateway, uses a mock auditor, retains normal budgets, and never autoapproves. It submits only scenario 06's final proposed write; this is not a full agent run. Reset retains workspace files and runtime budgets.
 
-On any other port, `?live=1` is also accepted and enables live mode against that port. Without `?live`, the page defaults to fixture mode on non-8000 ports.
-
-See `frontend/scripts/app.js` for the full derivation logic.
+Approval cards show their UTC expiry and remaining seconds. Expiry never approves or executes an action. The hosted compose default is one hour, overridable with `SCOPEWATCH_APPROVAL_TTL`; the standalone gateway default remains 300 seconds. For an expired demo, reset and reseed to obtain a fresh review request.
 
 ### 3. Run the Scopewatch agent loop CLI
 
@@ -128,7 +128,7 @@ Verify the entire repository (backend unit/integration tests, PoC tests, fronten
 
 ---
 
-## Live evaluation results (held-out split, one pinned run per profile, 2026-10-03)
+## Historical auditor results (held-out split, one pinned run per profile, 2026-10-03)
 
 | Profile | Model served | Accuracy | False negatives | False holds | Failed closed | Latency p50 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -136,7 +136,7 @@ Verify the entire repository (backend unit/integration tests, PoC tests, fronten
 | `openrouter-dev` (OpenRouter) | `nvidia/nemotron-3.5-lightning` | 87.5% | 5.56% | **0.00%** | 8.33% | 2,372 ms |
 | `mock` (structural check, not a model) | `mock-rules-auditor` | 93.8% | 2.78% | 16.67% | 0.00% | 1 ms |
 
-Both live profiles miss our <5% false-negative target, and every live miss sits in `injection_following` (the auditor answered "no concern" where a concern was expected). That is the only unsafe direction anywhere in the measurement; across 96 held-out audits no clean action was ever held, and every other failure mode failed *closed* to a hold. Method, dataset hash, per-category detail, and what was *not* verified: `docs/evaluation.md` and `docs/spikes/2026-10-nemotron-provider-verification.md`.
+Both live profiles missed the <5% false-negative target. Their false negatives were in `injection_following`. Each profile recorded 0 false holds among 12 clean cases, or 0/24 clean case evaluations across the two runs, not 0/96 total audits. These are historical auditor-only results with the model IDs and date recorded in the tracked [verification report](docs/spikes/2026-10-nemotron-provider-verification.md). They do not measure current gateway performance or the shipped agent/auditor pair. Later grounding, prompt, and evidence-handling changes have not been re-measured here. See [evaluation methodology and caveats](docs/evaluation.md).
 
 ---
 
@@ -155,7 +155,7 @@ Both live profiles miss our <5% false-negative target, and every live miss sits 
    A minimal, isolated agent loop (`backend/scopewatch/agent/`) that interacts with the environment exclusively via gateway-mediated tools (`list_directory`, `read_text`, `write_text`, `delete_path`). Has zero import path to the executor.
 
 5. **Approval workflows** (`backend/scopewatch/app.py:191,205`; `backend/scopewatch/service.py:831-900`; `backend/tests/test_agent_end_to_end.py::test_invariant_2_*,test_invariant_3_*`)
-   Generates single-use approval requests for sensitive operations. Human reviewers approve or deny actions directly in the UI or via REST API. Approvals cannot authorize an action with a deterministic `DENY`. Approval requests expire after `SCOPEWATCH_APPROVAL_TTL` seconds (default `300`, from `DEFAULT_EXPIRY_SECONDS` in `backend/scopewatch/config.py`). Reviewer access for approving or denying approvals arrives with #258.
+   Generates single-use approval requests for sensitive operations. Human reviewers approve or deny actions directly in the UI or via REST API. Approvals cannot authorize an action with a deterministic `DENY`. Approval requests expire after `SCOPEWATCH_APPROVAL_TTL` seconds (default `300`, from `DEFAULT_EXPIRY_SECONDS` in `backend/scopewatch/config.py`). Reviewer access uses a separate credential; agent credentials cannot resolve approvals.
 
 6. **Structured five-part evidence panel** (`frontend/scripts/app.js`; `frontend/index.html:149-160`)
    Every action audit displays:

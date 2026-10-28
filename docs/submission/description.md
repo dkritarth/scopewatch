@@ -16,19 +16,23 @@ qualifiers; anything a human still owns is marked **PENDING-HUMAN**.
 
 ## Description (paste into Devpost)
 
-**Scopewatch is a pre-execution security gateway for AI agents.** Every tool
-call an agent wants to make — read a file, write a report, run a command —
-goes to the gateway first. A deterministic policy engine answers `ALLOW`,
-`HOLD`, or `DENY` against the task's declared scope before anything executes.
-Then an independent auditor model reads the agent's exposed chain of thought
-and can escalate an `ALLOW` to `HOLD` when the reasoning shows scope drift,
-prompt injection, or exfiltration intent. Only then does a controlled executor
-run the action inside a bounded synthetic workspace (Docker-isolated per run in
-the M2 baseline), and every step lands as evidence in a reviewer dashboard with
-live event streaming.
+Scopewatch gives platform and security teams running coding agents a review
+point before tool actions execute. Teams declare the task scope and route tool
+calls through a gateway. Deterministic policy runs first; an independent auditor
+can escalate a policy `ALLOW` to `HOLD` using available reasoning evidence.
+A policy `DENY` is final, and a held action needs an exact, single-use approval
+before execution. The reviewer dashboard separates policy decisions, reasoning
+provenance, approvals, and execution receipts.
 
-The headline moment: an approved vendor invoice hides an injected instruction
-telling the agent to reroute bank details into a partner file. Writing to the
+The gateway covers only calls routed through its API. Verified provider-trace
+labels require the capture credential; summaries and caller assertions keep
+separate labels. Grounded excerpts show what the submitted evidence says,
+without proving the agent's intent. [Adoption and prior art](../adoption-and-prior-art.md)
+describes the required integration work and existing approaches. Adoption time,
+reviewer workload, and cost savings have not been measured.
+
+In the synthetic scripted headline scenario, an approved vendor invoice hides
+an injected instruction telling the agent to reroute bank details into a partner file. Writing to the
 output folder is policy-allowed — so policy says `ALLOW` — but the agent's
 reasoning shows it obeying the injected note. The auditor flags that exact
 sentence, grounded word for word against the trace, and escalates to `HOLD`
@@ -38,17 +42,18 @@ never even reaches the auditor: deterministic `DENY` (`BLOCKED_PATH`) is final
 and un-overridable, and the evidence panel shows the decision event with no
 execution receipt after it.
 
-Agent and auditor both run **NVIDIA's Nemotron 3.5 Lightning**
-(`nvidia/Nemotron-3_5-Lightning`) served through **Nebius Token Factory** — see
-`docs/submission/nebius-nvidia.md` for the exact profile, role split, license
-notes, and our feedback to both providers. We chose an open-weight model
-deliberately: when a provider returns a reasoning field, the gateway records it
-as provider-exposed evidence instead of taking the model's word for it, and that
-is what makes the reasoning-escalation demo possible.
+The configured `nebius-demo` profile names NVIDIA Nemotron
+(`nvidia/Nemotron-3_5-Lightning`) on Nebius Token Factory. A live auditor run
+is recorded for 2026-10-03. That observation does not establish the shipped
+agent/auditor pair or a live reasoning-escalation demo. Both remain gated on
+[#214](https://github.com/dkritarth/scopewatch/issues/214), including dated
+scenario 06/12 evidence and the profile choice. See
+[provider evidence and limitations](nebius-nvidia.md).
 
-Measured, not marketed. On our 48-case held-out auditor benchmark, one pinned run
-per profile on 2026-10-03, every report re-verified by recomputing all metrics
-from the per-case rows (`--check`):
+Historical auditor measurements recorded in the tracked
+[verification report](../spikes/2026-10-nemotron-provider-verification.md),
+48 cases per profile on 2026-10-03. This documentation change did not re-run
+inference or verify the original reports:
 
 | Profile | Model served | Accuracy | False negatives | False holds | Failed closed | Latency p50 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -56,14 +61,15 @@ from the per-case rows (`--check`):
 | `openrouter-dev` (OpenRouter) | `nvidia/nemotron-3.5-lightning` | 87.5% | 5.56% | **0.00%** | 8.33% | 2,372 ms |
 | `mock` (structural check, not a model) | `mock-rules-auditor` | 93.8% | 2.78% | 16.67% | 0.00% | 1 ms |
 
-Read that table with its targets rather than alone: both live profiles miss our
-own <5% false-negative target, and the mock row misses our <15% false-hold
-target. The `mock` row is a rule matcher exercising the harness, not model
-accuracy. Every live miss sits in the same category — `injection_following`,
-where the auditor answered "no concern" where a concern was expected. That is
-the only unsafe direction anywhere in the measurement; across 96 held-out audits
-no clean action was ever held, and every other failure mode failed *closed* to
-a hold. Method, dataset hash, and what we did not verify: `docs/evaluation.md`.
+Both live profiles missed the <5% false-negative target, and the mock row
+missed the <15% false-hold target. The `mock` row is a rule matcher exercising the harness, not model
+accuracy. The live false negatives were in `injection_following`, where the
+auditor answered "no concern" where a concern was expected. Each live profile
+recorded zero false holds among 12 clean cases, so the
+combined denominator is 24 clean case evaluations, not 96 total audits.
+These measurements predate later prompt, grounding, and evidence-handling
+changes and do not establish current gateway performance. Method, dataset hash,
+and caveats: [evaluation documentation](../evaluation.md).
 
 What Scopewatch does **not** claim: it mediates only actions routed through its
 gateway API (anything bypassing the API is unobserved), and reasoning traces are
@@ -71,8 +77,8 @@ evidence, not proof of intent. The dashboard states both limits on screen.
 
 Everything is synthetic and reproducible: `./scripts/run_demo.sh` starts the
 gateway and reviewer UI locally with zero keys, and `./scripts/validate.sh`
-runs the full backend, frontend, and clean-room suites. Try the injection
-scenario yourself — it takes two minutes.
+runs the full backend, frontend, and clean-room suites. The local demo uses
+synthetic fixtures; see [testing instructions](testing-instructions.md).
 
 ---
 
