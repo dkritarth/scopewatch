@@ -2,6 +2,52 @@
 
 Prepared by Codex / GPT-6.1 Sol; implementation and review results are attributed below. Refs [#287](https://github.com/dkritarth/scopewatch/issues/287).
 
+## Final handoff preparation, 2026-10-28 06:45 UTC
+
+**17 open drafts, none merged.** No new issue was started after the 06:00 cutoff. Main remains `2bceb3e033c80892778557f0b798a250efcd9c88`. All application heads match the final tested source; no implementation is pending. All listed CI jobs passed at collection. Independent GPT reviews/rechecks report no remaining blockers in the implemented scope. Reviews are COMMENTED, not formal GitHub approvals. #121's full real-peer acceptance remains incomplete as stated below.
+
+This is the final preparation record before the 07:00 UTC hard stop. The cutoff and prep reminders are disabled; the hard-stop reminder remains active. A bounded fresh GPT review of this documentation-only refresh is being requested. No coding or testing may continue past 07:00 UTC. Older checkpoints and findings below remain historical and are superseded by this record and the measured real-peer addendum.
+
+### Exact collected heads
+
+| Draft | Head at 06:45 collection | Base | Checks |
+| --- | --- | --- | --- |
+| [#320](https://github.com/dkritarth/scopewatch/pull/320) | `59988b87324b4d6c008ef7dde453b9fa72e87ad2` | `main` | 6/6 passed |
+| [#324](https://github.com/dkritarth/scopewatch/pull/324) | `0c6d2ff186c13dacaed62e10015bbd40ba8250e0` | `main` | 6/6 passed |
+| [#325](https://github.com/dkritarth/scopewatch/pull/325) | `8674397330ac2d4364a4cb6211bc5c7305fec398` | `main` | 6/6 passed |
+| [#326](https://github.com/dkritarth/scopewatch/pull/326) | `f896bab48f004e373b419cf7d6fdbf9a6976dfa1` | `main` | 6/6 passed |
+| [#327](https://github.com/dkritarth/scopewatch/pull/327) | `535fb4c2f4edef92254edc674c3cbed541b3e752` | `main` | 6/6 passed |
+| [#328](https://github.com/dkritarth/scopewatch/pull/328) | `503969bc23042459ea1a2b0c63dfc76748e48513` | `main` | 6/6 passed |
+| [#329](https://github.com/dkritarth/scopewatch/pull/329) | `6c1214f1050fdac0a1b8d9df88d33525717a2db3` | `main` | 7/7 passed |
+| [#330](https://github.com/dkritarth/scopewatch/pull/330) | `d9b101d7b98e0d8fc5cc032f747c3c91ff04350e` | `main` | 7/7 passed |
+| [#331](https://github.com/dkritarth/scopewatch/pull/331) | `0ffbdb950d6fa9337b8bff84ba7ade553acecfab` | `main` | 6/6 passed |
+| [#332](https://github.com/dkritarth/scopewatch/pull/332) | `d6e6c4b3f8969c4b2a4d232c5d5de2da9844545d` | `main` | 6/6 passed |
+| [#333](https://github.com/dkritarth/scopewatch/pull/333) | `3c63a8c18d606f5505c09b42e47c863cbe8880f9` | `main` | 6/6 passed |
+| [#334](https://github.com/dkritarth/scopewatch/pull/334) | `f59b1eb1edd21b897b230cef2bb1bc56c65c65ff` | `main` | 6/6 passed |
+| [#335](https://github.com/dkritarth/scopewatch/pull/335) | `61b37d29f3b09ab2037967728932710b6d71596a` | `main` | 6/6 passed |
+| [#337](https://github.com/dkritarth/scopewatch/pull/337) | `622d028528ef18d77b710ea21e6d2e7eb519f0db` | `fix/319-filesystem-path-matching` | 6/6 passed |
+| [#338](https://github.com/dkritarth/scopewatch/pull/338) | `91f8e3d2702cb94ce63e864974d49257ff22d317` | `main` | 6/6 passed |
+| [#339](https://github.com/dkritarth/scopewatch/pull/339) | `8df4f70dbad27c3ff01fd10eff76e9efcc69f5d3` | `main` | 6/6 passed |
+| [#340](https://github.com/dkritarth/scopewatch/pull/340) | `636dddace5abe3f092017b3b4bd582b3403e615f` | `t3/acp-relay-bounds` | 6/6 passed |
+
+The #335 row records its head before this log-only refresh; GitHub and the fresh review record identify the resulting documentation head. No application file changes in this refresh. The tested composite contains an earlier audit-log revision; subsequent log updates are validated separately.
+
+### What was completed and verified
+
+The draft wave covers ingress/public errors, conservative two-tier auditing, reproducible evaluation and ablation, hosted review/recovery, filesystem identity/copy-back/retention, bundled fonts, adopter/feedback/media documentation, docs and PoC CI gates, ACP relay bounds, injectable clocks and a bounded ACP v1 client. Exact scopes and independent records remain in the inventory and dated entries below.
+
+Final independent composite `5b7d2980d5ac1424c5a171f139f69a47a987965a` passed full validation: **2,291 backend tests with 25 local Docker-gated skips; reasoning PoC 96 plus 79 subtests; MCP 26; ablation 73; deploy 140; frontend 79; browsers 28; six clean-room scenarios**. All **217 focused ACP cases** passed. Independent localhost effects/refusals, receipt ordering, DNS-free deadlines/cancellation/cleanup, source/schema/lock identity and historical media checks passed. These are actual recorded results, not inferred from green CI. Supplemental security and arithmetic/provenance campaigns are attributed in the earlier checkpoints.
+
+Independent findings were fixed and rechecked: #320 validation-error echo; #324/#330 network claims; #325 sample budgets/profile reservations; #327 timeout/provenance/schema/empty-split gates; #328 stale async state and header layout; #329 artifact comparison and usage validation; #332 stale-claim parsing; #334 deadline phase proof; #339 operator-event labeling; and #340 original receipt binding, opaque IDs and absolute HTTP/DNS lifetime. Other current implementation heads also have independent COMMENT reviews. The real #121 bridge limitation below is an unresolved acceptance gap, not hidden by these passing synthetic tests.
+
+### What remains open
+
+- **Sponsor and delivery:** #214 still needs actual Nebius/Nemotron headline evidence and the selected profile pair. No sponsor inference, fresh detection-quality/cost/latency evaluation or reconstruction of missing historical reports occurred. Track, eligibility/licensing, hosted ownership/billing, video and submission gates remain with #40/#41/#43/#45/#47.
+- **Real Codex mediation:** installed bridge 2.2.2 and Codex 0.164.0 completed one observed synthetic Sol medium turn using supported explicit-title setup and a protective proxy. It made no filesystem callbacks or gateway actions; input stayed unchanged and output absent. Independent source review found no filesystem-to-model-tool translation or compliant configuration-only remedy. #121 remains open. Default tier was requested but observed as null/fast off; preset on-request approval is source-derived. This does not establish stock-client title safety, gateway mediation or native containment. Auth copies/raw private logs were deleted by the verifier; cleanup limits remain explicit in the addendum.
+- **Platforms and deployment:** local native Docker, APFS/NTFS/native Linux casefold, public TLS/proxy/multi-replica behavior and operations outside gateway callbacks remain unverified by this run. Successful hosted CI checks are separately recorded. No deployment, publication or submission occurred.
+- **Later integration:** preserve #331 before stacked #337, and #333 before stacked #340. Suggested docs/runtime order is #324, #328, #338, #330. Keep #329 and #332 validation gates. Deduplicate compatible jsonschema requirements to one `==4.26.0` entry. Reproduce source-bound split audits after #325/#327 integration and regenerate/inspect media after runtime integration; do not relabel historical hashes or scripted captures as fresh evidence. No integration merge was performed here.
+- **Backlog:** no ready issues remain. #293 is needs-human for acceptance of already-merged implementation; #306 is blocked on separately reviewed bounded networking; #175's other-contributor claim was untouched. All draft issues stay open for KD's review. No new work is queued for after the deadline.
+
 ## Post-cutoff acceptance evidence, 2026-10-28 06:14 UTC
 
 The 06:00 UTC new-issue cutoff is in force and its reminder was disabled. Only already-claimed #121 verification and handoff work continued. No new issue, product edit, merge or issue closure occurred. All 17 PRs remain drafts. The latest application source and synthetic composite results below are unchanged.
