@@ -207,3 +207,41 @@ test('reset discards a polling response captured before deletion', { timeout: 30
   assert.deepEqual(await (await fetch(`${origin}/api/v1/runs`)).json(), []);
   assert.equal(await page.locator('#run-buttons button').count(), 0, 'old response must not resurrect deleted runs');
 });
+
+test('reset and reseed discard a delayed denial receipt from the deleted run', { timeout: 30000 }, async t => {
+  const { origin, page } = await gateway(t);
+  await login(page);
+  await reseed(page);
+  await page.locator('.rail-nav [data-view-target="requests"]').click();
+  const oldApproval = (await (await fetch(`${origin}/api/v1/approvals`)).json())[0];
+  let captured;
+  const capturedDenial = new Promise(resolve => { captured = resolve; });
+  let release;
+  const releaseDenial = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  await page.route(`**/api/v1/approvals/${oldApproval.id}/deny`, async route => {
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    captured();
+    await releaseDenial;
+    await route.fulfill({ response });
+  });
+  const card = page.locator('.approval-card');
+  await card.locator('.btn-deny').click();
+  await card.locator('.btn-deny').click();
+  await capturedDenial;
+  page.on('dialog', dialog => dialog.accept());
+  await page.locator('#demo-reset').click();
+  await page.waitForFunction(() => document.querySelector('#demo-controls-status').textContent.includes('evidence reset'));
+  assert.equal(await page.locator('#review-receipt').isHidden(), true);
+  await reseed(page);
+  const newApproval = (await (await fetch(`${origin}/api/v1/approvals`)).json())[0];
+  assert.notEqual(newApproval.id, oldApproval.id);
+  const finished = page.waitForEvent('requestfinished', { predicate: request => request.url().endsWith(`/approvals/${oldApproval.id}/deny`) });
+  release();
+  await finished;
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.locator('#review-receipt').isHidden(), true, 'deleted approval must not regain a receipt beside the new action');
+  const pending = await (await fetch(`${origin}/api/v1/approvals?status=PENDING`)).json();
+  assert.deepEqual(pending.map(approval => approval.id), [newApproval.id]);
+});

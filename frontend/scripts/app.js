@@ -1445,6 +1445,7 @@ export function createApprovalCard(appr) {
   }
 
   async function resolveApproval(fire) {
+    const generation = liveReadGeneration;
     if (formatApprovalCardData(appr).expired) { updateApprovalCard(card, appr); return; }
     card.dataset.resolving = "true";
     confirmState = "pending";
@@ -1458,6 +1459,7 @@ export function createApprovalCard(appr) {
           await approveAction(appr.id, note);
         } else {
           const result = await denyAction(appr.id, note);
+          if (generation !== liveReadGeneration) return;
           const receipt = document.getElementById("review-receipt");
           if (receipt) {
             receipt.hidden = false;
@@ -1465,9 +1467,11 @@ export function createApprovalCard(appr) {
           }
         }
       }
+      if (generation !== liveReadGeneration) return;
       pendingApprovals = pendingApprovals.filter((a) => a.id !== appr.id);
       renderApprovals();
       if (isLiveMode) await refreshApprovals();
+      if (generation !== liveReadGeneration) return;
       const nextCard = elements.approvalsList?.querySelector(".approval-card");
       if (nextCard) {
         const focusTarget = nextCard.querySelector("button, input") || nextCard;
@@ -1480,6 +1484,7 @@ export function createApprovalCard(appr) {
         }
       }
     } catch (err) {
+      if (generation !== liveReadGeneration) return;
       card.dataset.resolving = "false";
       confirmState = "idle";
       approveBtn.disabled = false;
