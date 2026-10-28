@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "captured_at_utc": "2026-10-28T03:23:56.339Z",
+  "captured_at_utc": "2026-10-28T03:29:43.805Z",
   "captured_commit": "2bceb3e033c80892778557f0b798a250efcd9c88",
   "frontend_tree": "2604b667679a2e276681f5b738e077eb5ebf1cbc",
   "capture_script_sha256": "0927d4921035faeb0b6f047ebac433b504299271be69c39a720d8f16e2cf714d",
-  "architecture_source_sha256": "123a301730fe7c5aa5ce60c1b94bf50a687f4033b572ccd471b1ac8e41c042bb",
+  "architecture_source_sha256": "90f26ca841ef39a431e6d707c6a846735cf8cb3a6a4d2af340e2ac5d379cb6ce",
   "mode": "scripted",
   "agent_profile": "mock",
   "auditor_profile": "mock",
@@ -52,7 +52,7 @@
       "alt": "Sunbeam activity timeline with the selected reasoning hold and synthetic fixture evidence.",
       "width": 1440,
       "height": 2695,
-      "sha256": "cbb472a88ece927ebc736997d9dfd1d4c059d4232f621d040866d53ade6881cb"
+      "sha256": "0214f37eb90e9c7793d44eec4c1bd593bcc9657cf1537b3ca13900e19a58ad8d"
     },
     {
       "file": "scripted-request-moonlit.png",
@@ -60,15 +60,15 @@
       "alt": "Moonlit request page with proposed write content and approve and deny controls.",
       "width": 1440,
       "height": 1260,
-      "sha256": "3e6c371e5b3122ff6ea23a2ae15c104290740834c96e5566bfb9b1b459ae0995"
+      "sha256": "5222e889c67e2e416d72f80108cfa2de72b46ffca95371533d092433a5d0b27a"
     },
     {
       "file": "architecture.png",
       "caption": "ARCHITECTURE: authored diagram of gateway-mediated execution. This is a design illustration, not a runtime or sponsor-use capture.",
       "alt": "Policy runs first; final deny stops; allowed actions may be held by audit; approved holds pass an exact single-use gate before execution. Decisions are stored before effects.",
       "width": 1440,
-      "height": 1254,
-      "sha256": "49a5595514689f735552125d8394c69ba2a8fa265628337097f2c50fb3342244"
+      "height": 1281,
+      "sha256": "8ea7b1f04239449d04adbf2a149e5a8ed82d75b294d1197c8670609e2a5658f8"
     }
   ]
 }

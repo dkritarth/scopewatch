@@ -26,7 +26,7 @@ figcaption { font-size: 16px; line-height: 1.5; margin-top: 18px; }
 <div class="flow">
 <div class="step"><strong>1. Agent submits a tool action to the gateway</strong><p>Declared task scope, action arguments, and separately labelled reasoning evidence.</p></div>
 <div class="arrow" aria-hidden="true">↓</div>
-<div class="step"><strong>2. Deterministic policy runs first</strong><p>Checks tools, operations, paths, commands, and network scope before audit or execution.</p></div>
+<div class="step"><strong>2. Deterministic policy runs first</strong><p>Checks tools, operations, paths, and commands before audit or execution. Network requests are denied in the current synthetic baseline, even with listed destinations.</p></div>
 <div class="branches">
 <div class="step stop"><strong>DENY → stop</strong><p>Final. No audit or execution. Human approval cannot override a policy denial.</p></div>
 <div class="step hold"><strong>Policy HOLD → human review</strong><p>Requires approval bound to this exact action. Denied or expired requests do not execute.</p></div>
