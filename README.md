@@ -2,7 +2,9 @@
 
 Scopewatch gives platform and security teams running coding agents a review point before tool actions execute. Teams declare the task scope, route actions through the gateway, and review held actions with policy decisions, reasoning provenance, and execution receipts. It mediates only actions routed through its API.
 
-![Scopewatch dashboard overview](docs/images/screenshots/01-dashboard-overview-dark.png)
+![Scripted mock capture of the current celestial dashboard home. No live inference.](docs/submission/media/scripted-home-moonlit.png)
+
+Scripted mock UI capture from pinned main, with fallback fonts. [Gallery, capture provenance, architecture, and live-capture checklist](docs/submission/media/README.md).
 
 **Project website and interactive demo:** https://dkritarth.github.io/scopewatch/ (source in [`site/`](site/README.md)). **Judges:** the one-page cold-run sheet is [docs/operations/judge-runbook.md](docs/operations/judge-runbook.md).
 
