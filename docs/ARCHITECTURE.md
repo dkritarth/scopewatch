@@ -108,6 +108,51 @@ The reasoning auditor (`backend/scopewatch/reasoning_audit.py`) audits agent rea
 - **Grounded excerpt validation**: Flagged excerpts must be exact verbatim substrings of the trace. If an excerpt is hallucinated or ungrounded, the audit fails closed with `UNGROUNDED_EXCERPT`.
 - **Escalate-only authority**: The auditor can only escalate an `ALLOW` to a `HOLD` (reason codes: `REASONING_SCOPE_CONCERN`, `REASONING_AUDIT_FAILED`). It can never produce `ALLOW` or `DENY`, and never relaxes a policy decision.
 - **Turn caching**: Audits are cached per `(run_id, turn_id, sha256(trace))`. Multiple actions in a single turn share one audit execution.
+
+Optional two-tier routing (`backend/scopewatch/tiered_audit.py`) is enabled with
+`SCOPEWATCH_AUDITOR_ROUTING=two-tier`. The default `single` keeps the existing
+`SCOPEWATCH_AUDITOR_PROFILE` behavior. Two-tier mode requires explicit
+`SCOPEWATCH_AUDITOR_FAST_PROFILE` and `SCOPEWATCH_AUDITOR_STRONG_PROFILE` names
+from `backend/config/providers.toml`. It uses the same hardened prompt, parser,
+grounding checks and asynchronous audit timeout as single-tier mode.
+
+A valid `NO_CONCERN` from the fast screen skips strong review. Every other
+screen result invokes strong review, including concern, malformed or ambiguous
+output, provider failure, timeout, missing profile or credentials, and budget
+refusal. The final audit keeps any failure first, otherwise any concern.
+A later `NO_CONCERN` cannot remove either. Policy `DENY` still skips auditing,
+and auditing cannot relax policy `HOLD`.
+
+Each tier accepts `SCOPEWATCH_AUDITOR_{FAST,STRONG}_TIMEOUT_S` and
+`SCOPEWATCH_AUDITOR_{FAST,STRONG}_MAX_TOKENS`. Defaults are 30 seconds and 256
+completion tokens. Timeouts must be finite, positive and at most 120 seconds;
+completion caps must be integers from 1 to 16384. The effective timeout is the
+smaller of the tier and provider timeouts. Each tier makes at most one request
+with retries disabled and an explicit `max_tokens` cap that replaces profile
+token options. Existing input bounds still apply. Provider enforcement of the
+completion cap has not been verified live. Daily token reservations use the
+actual tier profile, and refusal fails closed before its request. Invalid tier
+configuration or an unknown routing mode fails closed before any request.
+
+Audit records and completion/failure events include additive `tiers` evidence
+and `total_tokens`. Each tier records its name, requested profile, configured
+model, resolved model identity, verdict, grounded excerpts, error, measured
+elapsed latency, timeout, completion cap and whether an audit was attempted.
+Model identity is provider-reported when present with a configured fallback;
+it does not prove model availability or execution. Unknown usage remains null,
+and aggregate usage is null if any attempted tier has unknown usage. A tier
+that never attempted an audit records zero usage. Aggregate model/profile and
+explanation identify the result retained by the conservative merge; aggregate
+latency covers routing and both attempts. Existing rows migrate with empty tier
+evidence and unknown usage. Cached records preserve the original evidence and
+make no new requests. A timed-out worker may finish later; its usage remains
+unknown in the decision evidence. No cancellation of remote inference is claimed.
+
+Tier names express configured roles, not measured speed or quality. Only
+synthetic structured responses have validated this routing. Live availability,
+provider latency, cost and detection quality remain unverified. Public quality
+claims require a new frozen benchmark without tuning on spent held-out cases.
+
 - **Reasoning statement**: raw reasoning is read only from provider fields `message.reasoning_content`, `message.reasoning`, `message.reasoning_details` (in that order; `backend/scopewatch/providers/client.py:50-69`). Visible reasoning can be unfaithful or incomplete, so a clean trace never proves benign intent; closed models expose summaries at best (`AGENT_AUTHORED_SUMMARY`). Reasoning is evidence, not proof of intent.
 - **Model data policy**: only synthetic content is ever sent to providers; free/stealth endpoints may log prompts. Reports pin profile, served model, date, and dataset hash (`docs/evaluation.md`).
 
