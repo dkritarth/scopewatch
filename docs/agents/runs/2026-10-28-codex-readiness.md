@@ -2,6 +2,21 @@
 
 Codex / GPT-6.1-sol, implementation sub-agent. Refs [#287](https://github.com/dkritarth/scopewatch/issues/287).
 
+## Progress refresh, 2026-10-28 04:30 UTC
+
+This update supersedes the current-status statements in the dated snapshots below. The run is ongoing. All 16 published PRs remain drafts, with no merges. The no-new-issue cutoff is 06:00 UTC and the hard stop is 07:00 UTC.
+
+The independent Sol verifier completed a second unpublished composite, `2d249d2f`, at 04:25 UTC. All 16 pinned diffs composed without manual resolutions. Its recorded results are 2,207 backend tests passed with 25 skips, 96 reasoning PoC tests plus 79 subtests, 26 MCP tests, 140 deploy tests, 77 frontend units and 27 browser tests. The complete 73-test monitor-ablation suite, 61 focused evaluation tests, two media regressions, 21 supplemental artifact/evaluation commands, 86 localhost assertions, 16 copy-back cases and five exported evidence-chain checks also passed. Header/font checks passed across 12 viewport/auth combinations. Scratch retention preserved fixtures and evidence. These are local synthetic results, with no external inference.
+
+The composite pins #339 before its new frontend evidence fix and predates the validation-wiring follow-ups to #329 and #330. It is not verification of those later heads. Its fresh media preview is an unpublished local artifact; the committed gallery remains historical and unchanged. Docker runtime, public TLS, native casefold behavior and real providers remain unverified.
+
+- #339 now has head `8df4f70dbad27c3ff01fd10eff76e9efcc69f5d3`. The first Astra review passed 297 backend tests, 59 frontend tests and five scratch/process probes, but found retention events mislabeled as attempted agent actions and policy outcomes. The parent fixed transformation, action reconciliation, filters and the evidence panel. Follow-up validation passed 79 frontend units, all 19 browser tests and 46 backend retention tests. Operator attempts remain unresolved, failed removal may be partial, and policy/approval/execution fields are absent. Independent recheck is running; do not treat the original review as approval of this head.
+- #330 now has head `d9b101d7b98e0d8fc5cc032f747c3c91ff04350e`. A focused Node 22 workflow runs the existing media verifier and its regressions. Both local commands, actionlint and the new hosted media job passed. The workflow needs independent review; assets and historical provenance are unchanged.
+- #329 has a validation-wiring follow-up in progress on its existing draft. Its 73-test offline suite is currently missing from shared validation and CI. The provider adapter and prior usage fixes retain the independent recheck recorded at `6fd8aac` until the new head is reviewed.
+- #335's 04:18 refresh received an independent Luna COMMENT review at `591c8beaac73c147a544df9157630d983836603d`, with no blocking finding. The optional correction about #339's already-passing CI is incorporated below. This newer refresh has not yet been independently reviewed.
+
+The ready queue has no eligible new implementation. #293's implementation is already on main and still needs human/live acceptance; #306 remains blocked in prose on separately reviewed bounded networking. #175 has an existing claim by another contributor. No work was duplicated. The current follow-ups improve validation of existing drafts, with no new issue started.
+
 ## Progress refresh, 2026-10-28 04:18 UTC
 
 The 03:32–03:37 snapshot below is historical. Its unresolved-review and recovery descriptions are superseded by this update. No PR has been merged; all published work remains draft for KD. The overall run continues until 07:00 UTC, with no new issue after 06:00 UTC.
@@ -13,7 +28,7 @@ The 03:32–03:37 snapshot below is historical. Its unresolved-review and recove
 - **#334:** Recovery #159 now has current head `f59b1eb1edd21b897b230cef2bb1bc56c65c65ff`. The post-provider test gap is fixed: no completion attempt or assistant turn is accepted after expiry, and guard-removal/exclusive-boundary mutations fail at the intended assertions. Parent reports 110 focused passes and 20/20 runs of 41 deadline tests. Independent recheck confirmed the fix. All six CI checks pass.
 - **#337:** Current head `622d028528ef18d77b710ea21e6d2e7eb519f0db`, stacked on #331 at `0ffbdb950d6fa9337b8bff84ba7ade553acecfab`. #167 was promoted ready after the original queue was covered. Independent review found no blockers: 360 tests passed, nine Docker skips, and 25 filesystem probes left victim files unchanged. Concurrent host filesystem replacement remains non-atomic. All six CI checks pass.
 - **#338:** Current head `91f8e3d2702cb94ce63e864974d49257ff22d317` fixes newly filed #336, the missing bundled-font mount observed by media verification. Independent review: 70 backend tests, two live Chromium tests and a symlink-containment probe passed. All three fonts decode locally without external requests. All six CI checks pass.
-- **#339:** Current head `e0b8a5b7b2751b4c15eab0200a950ae5769b39a0` implements #166, also promoted ready after the original queue was covered. Seven-day retention is operator-triggered, dry-run by default and requires explicit `--apply`. Implementer reports 46 focused tests, full validation, and scratch-only dry-run/apply verification. Independent review and CI are pending. Existing demo/runtime data was not pruned.
+- **#339:** Current head `e0b8a5b7b2751b4c15eab0200a950ae5769b39a0` implements #166, also promoted ready after the original queue was covered. Seven-day retention is operator-triggered, dry-run by default and requires explicit `--apply`. Implementer reports 46 focused tests, full validation, and scratch-only dry-run/apply verification. CI had passed; independent review was pending at this refresh. Existing demo/runtime data was not pruned.
 
 #320, #324–327, #330 and #331 retain the reviewed heads recorded below. #335's audit-only scope wording was corrected in `4d76aae`; this progress refresh needs its own independent check. The original ready-queue assessment below predates promoting #166/#167 and filing #336. It does not describe the latest assignments.
 
