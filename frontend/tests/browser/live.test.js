@@ -90,8 +90,49 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     browser = await chromium.launch();
     const page = await browser.newPage();
     const origin = `http://127.0.0.1:${port}/?live=1`;
+    const externalRequests = [];
+    await page.route("**/*", (route) => {
+      const url = route.request().url();
+      if (new URL(url).origin !== new URL(origin).origin) {
+        externalRequests.push(url);
+        return route.abort();
+      }
+      return route.continue();
+    });
+    const fontResponses = [];
+    const fontFailures = [];
+    page.on("response", (response) => {
+      if (new URL(response.url()).pathname.startsWith("/fonts/")) {
+        fontResponses.push([new URL(response.url()).pathname, response.status(), response.headers()["content-type"]]);
+      }
+    });
+    page.on("requestfailed", (request) => {
+      if (new URL(request.url()).pathname.startsWith("/fonts/")) fontFailures.push(request.url());
+    });
 
     await page.goto(origin);
+    // Check actual font decoding, not just CSS declarations or fallback availability.
+    const faces = await page.evaluate(async () => {
+      await Promise.all([
+        document.fonts.load('400 16px "DM Sans"'),
+        document.fonts.load('400 16px "Instrument Serif"'),
+        document.fonts.load('italic 400 16px "Instrument Serif"'),
+      ]);
+      await document.fonts.ready;
+      return Array.from(document.fonts, (face) => [face.family, face.style, face.status]);
+    });
+    assert.deepEqual(faces, [
+      ["DM Sans", "normal", "loaded"],
+      ["Instrument Serif", "normal", "loaded"],
+      ["Instrument Serif", "italic", "loaded"],
+    ]);
+    assert.deepEqual(fontResponses.sort(), [
+      ["/fonts/dm-sans.woff2", 200, "font/woff2"],
+      ["/fonts/instrument-serif-italic.woff2", 200, "font/woff2"],
+      ["/fonts/instrument-serif.woff2", 200, "font/woff2"],
+    ]);
+    assert.deepEqual(fontFailures, []);
+    assert.deepEqual(externalRequests, []);
     await page.locator('.rail-nav [data-view-target="activity"]').click();
     await page.locator("#run-buttons button").first().waitFor();
 
