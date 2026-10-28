@@ -58,6 +58,8 @@ from scopewatch.errors import (
     validation_error_handler,
 )
 from scopewatch.events import broadcaster
+from scopewatch.ingress import BodySizeLimitMiddleware
+from scopewatch.config import max_request_body_bytes
 from scopewatch.models import ApprovalStatus
 from scopewatch.provenance import CAPTURE_TOKEN_HEADER
 from scopewatch.reasoning_audit import ReasoningAuditor
@@ -408,6 +410,19 @@ def create_app(
         capture_token=capture_token,
         run_workspaces_root=run_workspaces_root,
     )
+
+    # Issue #304: bound public request bodies BEFORE any other middleware or
+    # route can touch them. add_middleware puts the last-registered layer
+    # outermost, so this must stay the final middleware registration in
+    # create_app: the pure-ASGI size check then runs ahead of the
+    # token/auth/CORS layers (and ahead of PR #258's middleware when that
+    # merges), and unauthenticated callers can never make the gateway
+    # allocate. See scopewatch.ingress for the rules.
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        max_body_bytes=max_request_body_bytes(),
+    )
+
     app.state.service = service
 
     def get_service() -> ScopewatchService:
