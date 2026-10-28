@@ -2,7 +2,9 @@
 
 Scopewatch is a pre-execution security gateway and reviewer interface for auditing and mediating autonomous AI agent actions against declared task scopes before execution occurs.
 
-![Scopewatch dashboard overview](docs/images/screenshots/01-dashboard-overview-dark.png)
+![Scripted mock capture of the current celestial dashboard home. No live inference.](docs/submission/media/scripted-home-moonlit.png)
+
+Scripted mock UI capture from pinned main, with fallback fonts. [Gallery, capture provenance, architecture, and live-capture checklist](docs/submission/media/README.md).
 
 **Project website and interactive demo:** https://dkritarth.github.io/scopewatch/ (source in [`site/`](site/README.md)). **Judges:** the one-page cold-run sheet is [docs/operations/judge-runbook.md](docs/operations/judge-runbook.md).
 

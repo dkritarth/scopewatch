@@ -141,3 +141,9 @@ is spent for this submission and re-measuring to chase a better number is what
 `docs/evaluation.md` forbids. Two things a human still owns and this package
 cannot assert: whether scenario 06 reaches its `HOLD` live (issue #214) and the
 Nemotron license text (issue #41).
+
+## Gallery assets
+
+[Current gallery, provenance, architecture, and live-capture checklist](media/README.md).
+The current UI PNGs are captioned scripted mock captures, not live inference or
+sponsor-use evidence. Live scenario captures and the hero GIF remain pending.
