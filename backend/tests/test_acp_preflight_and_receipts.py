@@ -700,11 +700,56 @@ def test_failed_write_does_not_claim_success_or_bytes(
     )
     assert "result" not in resp
     assert resp["error"]["code"] == -32000
-    assert resp["error"]["data"]["error_code"] == "OVERSIZED_PAYLOAD"
-    assert resp["error"]["data"]["action_id"]
+    # Issue #304: oversized argument strings are now rejected by the Pydantic
+    # schema bound (422) before an action or execution record is created, so
+    # the gateway no longer reaches the executor's OVERSIZED_PAYLOAD path.
+    assert "422" in resp["error"]["message"]
 
     # Nothing was written, and the agent was not told it was.
     assert not (workspace / "outputs" / "too_big.txt").exists()
+
+
+def test_failed_write_oversized_payload_surfaces_receipt_error(
+    client_and_workspace: tuple[TestClient, Path],
+) -> None:
+    """A write under char bound but exceeding byte limit fails with OVERSIZED_PAYLOAD receipt."""
+    client, workspace = client_and_workspace
+    run_id = _create_run(client)
+    adapter = AcpClientAdapter(client, run_id)
+
+    # 40,000 characters is within MAX_ARGUMENT_STRING_CHARS (64 KiB chars),
+    # but 40,000 multibyte UTF-8 chars ("é" is 2 bytes) encode to 80,000 bytes,
+    # which exceeds MAX_WRITE_BYTES (64 KiB). This passes schema validation
+    # but triggers the executor's OVERSIZED_PAYLOAD failure.
+    content = "é" * 40_000
+    resp = adapter.handle_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": "write-fail-oversized-payload",
+            "method": "fs/write_text_file",
+            "params": {
+                "path": "outputs/too_big_utf8.txt",
+                "content": content,
+            },
+        }
+    )
+    assert "result" not in resp
+    assert resp["error"]["code"] == -32000
+    assert "OVERSIZED_PAYLOAD" in resp["error"]["message"]
+    assert resp["error"]["data"]["error_code"] == "OVERSIZED_PAYLOAD"
+    assert resp["error"]["data"]["status"] == "FAILED"
+
+    # Verify that the executor receipt persisted by the gateway reports OVERSIZED_PAYLOAD
+    action_id = resp["error"]["data"]["action_id"]
+    action_resp = client.get(f"/api/v1/runs/{run_id}/actions/{action_id}")
+    assert action_resp.status_code == 200
+    receipt = action_resp.json()["execution_receipt"]
+    assert receipt is not None
+    assert receipt["error_code"] == "OVERSIZED_PAYLOAD"
+    assert receipt["status"] == "FAILED"
+
+    # Nothing was written to disk
+    assert not (workspace / "outputs" / "too_big_utf8.txt").exists()
 
 
 def test_failed_command_surfaces_nonzero_exit_as_tool_error() -> None:

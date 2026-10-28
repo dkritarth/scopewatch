@@ -14,7 +14,7 @@ authentication, SSE, and both themes at 320/390/768/1440px. Backend-wide validat
 has separate platform/image failures documented in the accompanying audit; these
 frontend results do not certify a public deployment or live model inference.
 
-Open the gateway with `?live=1`; use `?live=0` explicitly for static fixtures.
+Open the gateway URL at any port for stored live gateway evidence; use `?live=0` explicitly for static fixtures.
 
 
 A dependency-free vanilla HTML, CSS, and JavaScript dashboard for reviewing
@@ -55,9 +55,7 @@ PYTHONPATH=backend python3 -m uvicorn scopewatch.app:create_app --factory \
 # Or: ./scripts/run_demo.sh   (dashboard and API on http://127.0.0.1:8000)
 ```
 
-Then open `http://127.0.0.1:8000/?live=1`. Without `?live=1` (and when not
-served from port 8000) the dashboard stays in static replay mode; `?live=0`
-(or `false`, `off`, `no`) forces static mode even on port 8000. The header
+Then open `http://127.0.0.1:8000/`. Gateway-served HTML enables live gateway mode at any port or under HTTPS. Static hosting stays in replay mode. `?live=1` explicitly requests the gateway; `?live=0` (or `false`, `off`, `no`) forces replay. Connection/data errors never load fixtures. Opening an empty gateway creates no run. The header
 status pill shows `Live gateway connected`, `Reconnecting live stream…`,
 `Gateway polling fallback`, or `Live stream stale`; reconnecting/stale states
 also raise a text banner (`#sse-banner`) with a `Retry live stream` button.
@@ -180,3 +178,20 @@ npm run test:browser  # 13 Playwright tests (needs: npm ci; npx playwright insta
 From the repository root, `./scripts/validate.sh --quick` runs the full
 non-browser validation (backend untouched by frontend-only changes, but the
 script proves it).
+
+## Demo recovery (#290)
+
+The gateway advertises whether `SCOPEWATCH_ALLOW_RESET=true` enables reset/reseed.
+Use the visible Reviewer access form with the separate reviewer credential.
+Reset refuses while any approval is pending or execution is in flight. Resolve
+pending reviews first, then reset evidence and reseed scenario 06. Reseed requires
+an empty gateway and creates one synthetic mock HOLD for the final invoice-injection
+write. No external model is called and no action is autoapproved. Normal run/action
+limits still apply; reset retains workspace files and budgets. Partial reseed failures
+remain visible as gateway evidence and can be reset, rather than replaced by fixtures.
+
+Approval cards show a full UTC timestamp, remaining seconds and an expired state.
+Expired requests cannot be approved. Hosted compose defaults to a 3600-second TTL;
+standalone defaults to 300 seconds. Both accept `SCOPEWATCH_APPROVAL_TTL`.
+Deny shows a review receipt and records denial without executing the proposed action.
+These controls do not establish live sponsor inference; #214 remains human-owned.

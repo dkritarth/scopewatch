@@ -701,9 +701,12 @@ def test_argv_scope_denial_blocks_case_variant_blocked_argument(
         "allowed_commands": [["cat"]],
     }
     root = config.workspace / "run-305-ws"
+    # #319 probes each parent directory rather than inheriting one root verdict.
+    monkeypatch.setattr(runner_mod, "volume_is_case_insensitive", lambda _: True)
     assert runner_mod._argv_scope_denial(
         ["cat", "outputs/PRIVATE/secret.txt"], root, task_scope, case_insensitive=True
     ) is not None
+    monkeypatch.setattr(runner_mod, "volume_is_case_insensitive", lambda _: False)
     assert runner_mod._argv_scope_denial(
         ["cat", "outputs/PRIVATE/secret.txt"], root, task_scope, case_insensitive=False
     ) is None
