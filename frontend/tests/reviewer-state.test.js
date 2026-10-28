@@ -24,7 +24,9 @@ test("search trims whitespace and ignores case", () => {
 
 test("each status facet filters without changing source order", () => {
   for (const status of STATUS_FACETS) {
-    const events = runs.flatMap((run) => run.events);
+    const events = [...runs.flatMap((run) => run.events),
+      { id: "retention-attempt", status: "retention-attempted" },
+      { id: "retention-result", status: "pruned" }];
     const filtered = filterEvents(events, { status, text: "" });
     assert.ok(filtered.length > 0);
     assert.deepEqual(filtered, events.filter((event) => event.status === status));

@@ -5,6 +5,7 @@
 - [AGENTS.md](../AGENTS.md): how work is done, domain invariants, validation, conventions.
 - [Agent playbook](agents/README.md): how to run role threads (implementer, test-writer, verifier, test-runner, change-monitor, reviewer, researcher, docs-keeper, orchestrator).
 - [Hackathon checklist](hackathon.md): submission requirements and their status.
+- [Workspace retention](operations/workspace-retention.md): operator dry-run and explicit reap for old terminal run workspaces.
 
 ## Architecture and decisions
 

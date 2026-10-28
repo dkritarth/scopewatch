@@ -69,12 +69,15 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import re
 import shutil
+import stat
 import uuid
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 # Marker file written into every initialized run workspace. Its presence is
 # what makes initialization idempotent: a restart must not re-copy the fixture
@@ -180,6 +183,62 @@ def workspace_segment(run_id: str) -> str:
     return run_id
 
 
+@dataclass
+class WorkspacePruneTarget:
+    """An inspected workspace, anchored to open directory descriptors."""
+
+    root_fd: int
+    workspace_fd: int
+    key: str
+    size_bytes: int
+    created_at: str
+
+    def delete(self) -> None:
+        # Refuse a replaced directory. rmtree's fd-based implementation also
+        # refuses symlink substitution during traversal; never use its fallback.
+        current = os.stat(self.key, dir_fd=self.root_fd, follow_symlinks=False)
+        if not os.path.samestat(current, os.fstat(self.workspace_fd)):
+            raise RunWorkspaceError("Workspace identity changed before pruning.")
+        shutil.rmtree(self.key, dir_fd=self.root_fd)
+
+
+def _open_directory_without_links(path: Path) -> int:
+    """Open each absolute component without following symlinks, including parents."""
+    fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in path.parts[1:]:
+            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _retention_tree_bytes(fd: int, device: int) -> int:
+    """Count logical file bytes; refuse links, different devices and special files."""
+    total = 0
+    with os.scandir(fd) as entries:
+        for entry in entries:
+            info = entry.stat(follow_symlinks=False)
+            if info.st_dev != device:
+                raise RunWorkspaceError("Workspace contains a different filesystem.")
+            if stat.S_ISDIR(info.st_mode):
+                child = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                try:
+                    if not os.path.samestat(info, os.fstat(child)):
+                        raise RunWorkspaceError("Workspace changed during inspection.")
+                    total += _retention_tree_bytes(child, device)
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(info.st_mode):
+                total += info.st_size
+            else:
+                raise RunWorkspaceError("Workspace contains a link or special file.")
+    return total
+
+
 class RunWorkspaceManager:
     """Owns the lifecycle of per-run workspace directories.
 
@@ -206,6 +265,53 @@ class RunWorkspaceManager:
     def workspace_key(self, run_id: str) -> str:
         """The directory name, which is also the identity sent to executors."""
         return workspace_segment(run_id)
+
+    @contextmanager
+    def retention_target(
+        self, run_id: str, stored_path: Optional[str]
+    ) -> Iterator[WorkspacePruneTarget]:
+        """Inspect an existing, marked workspace for operator removal. Never initialize.
+
+        Callers hold the database write lock through deletion, excluding normal
+        gateway dispatch. Unknown trees and links fail closed. Open descriptors
+        bound deletion to this managed root, even if its pathname is replaced.
+        """
+        root_fd = workspace_fd = None
+        try:
+            root = self.root.absolute()
+            source = self.source_root.resolve(strict=True)
+            if (root != root.resolve(strict=True) or root == Path(root.anchor)
+                    or source == root or source.is_relative_to(root)):
+                raise RunWorkspaceError("Unsafe run workspace root for retention.")
+            if not stored_path or Path(stored_path).absolute() != root / workspace_segment(run_id):
+                raise RunWorkspaceError("Retention requires a stored managed workspace identity.")
+            if not shutil.rmtree.avoids_symlink_attacks:
+                raise RunWorkspaceError("Safe workspace removal is unavailable on this platform.")
+            # Reuse the manager's canonical containment check, without its lazy
+            # initialization path. Then reject even links that resolve in place.
+            self.resolve(run_id, stored_path=stored_path)
+            root_fd = _open_directory_without_links(root)
+            workspace_fd = os.open(
+                workspace_segment(run_id), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=root_fd,
+            )
+            if os.fstat(root_fd).st_dev != os.fstat(workspace_fd).st_dev:
+                raise RunWorkspaceError("Workspace is on a different filesystem.")
+            size_bytes = _retention_tree_bytes(workspace_fd, os.fstat(workspace_fd).st_dev)
+            marker_fd = os.open(WORKSPACE_MARKER_NAME, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=workspace_fd)
+            with os.fdopen(marker_fd, encoding="utf-8") as marker_file:
+                marker = json.load(marker_file)
+            if (not isinstance(marker, dict) or marker.get("version") != MARKER_VERSION
+                    or marker.get("run_id") != run_id or not isinstance(marker.get("created_at"), str)):
+                raise RunWorkspaceError("Workspace ownership marker is invalid.")
+            yield WorkspacePruneTarget(root_fd, workspace_fd, run_id, size_bytes, marker["created_at"])
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise RunWorkspaceError("Workspace retention inspection or removal failed.") from exc
+        finally:
+            if workspace_fd is not None:
+                os.close(workspace_fd)
+            if root_fd is not None:
+                os.close(root_fd)
 
     # ---------------- Managed root ----------------
 

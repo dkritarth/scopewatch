@@ -479,3 +479,51 @@ uvicorn.run(app, host="127.0.0.1", port=${port}, log_level="warning")
     }
   }
 });
+
+
+test("operator retention evidence stays separate from agent decisions", { timeout: 30000 }, async () => {
+  const server = createStaticServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const events = ["WORKSPACE_PRUNE_ATTEMPTED", "WORKSPACE_PRUNED", "WORKSPACE_PRUNE_FAILED"].map((type, index) => ({
+      id: `retention-${index}`, run_id: "retention-run", sequence: index + 1,
+      event_type: type, timestamp: "2026-10-28T04:00:00Z", actor: "synthetic-retention-operator",
+      summary: `Synthetic retention ${index}`, details: { attempt_id: `attempt-${index}`, bytes: 165,
+        workspace_key: "synthetic-workspace", reason: index === 2 ? "workspace_removal_failed" : undefined,
+        outcome: index === 1 ? "pruned" : index === 2 ? "failed" : undefined },
+    }));
+    await page.route("**/api/**", route => {
+      const path = new URL(route.request().url()).pathname;
+      const body = path.endsWith("/health") ? { status: "ok" }
+        : path.endsWith("/runs") ? [{ id: "retention-run", name: "Synthetic retention", status: "COMPLETED", scope_contract: {} }]
+        : path.endsWith("/events") ? events : [];
+      return route.fulfill({ json: body });
+    });
+    await page.addInitScript(() => { window.__SCOPEWATCH_LIVE__ = true; });
+    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    await page.locator("#run-buttons button").first().waitFor();
+    for (const [index, status] of ["retention-attempted", "pruned", "failed"].entries()) {
+      await page.selectOption("#status-filter", status);
+      const rows = page.locator(".timeline-event");
+      await rows.first().waitFor();
+      assert.equal(await rows.count(), 1);
+      await rows.first().click();
+      const evidence = await page.locator("#event-evidence").innerText();
+      assert.match(evidence, /Operator workspace retention/i);
+      assert.match(evidence, /policy decision, approval, and execution receipt: not applicable/);
+      assert.match(evidence, new RegExp(`attempt-${index}`));
+      assert.doesNotMatch(evidence, /Action observation|Gateway decision|NOT_EXECUTED/);
+      assert.match(evidence, index === 0 ? /unresolved/ : index === 1 ? /completed/ : /partial/);
+    }
+    await page.selectOption("#status-filter", "attempted");
+    assert.equal(await page.locator(".timeline-event").count(), 0);
+  } finally {
+    if (browser) await browser.close();
+    server.close();
+  }
+});

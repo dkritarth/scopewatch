@@ -223,6 +223,12 @@ distinct from a per-run `RUN_WORKSPACE_UNAVAILABLE`, because the two need
 different fixes (a mount versus a lost directory). See `deploy/RUNBOOK.md` §3
 "Per-run workspaces".
 
+Workspace retention is operator-triggered through `scripts/reap_workspaces.py`.
+It defaults to a dry-run and a seven-day window, and preserves runs with pending
+approvals or unfinished executions. It removes workspace files only, keeping
+decisions and append-only attempt/result evidence. See
+[workspace retention](operations/workspace-retention.md) for the policy and limits.
+
 The executor (`backend/scopewatch/executor.py`) operates strictly within the resolved workspace boundary:
 - Supported operations: `list_directory`, `read_text`, `write_text`, `delete_path` (`backend/scopewatch/executor.py:80-232`).
 - `delete_path` is simulated in the M1 baseline: it returns `"simulated": true` and does not unlink the target (`backend/scopewatch/executor.py:214-232`).
