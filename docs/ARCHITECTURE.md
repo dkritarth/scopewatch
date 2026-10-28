@@ -234,3 +234,17 @@ summary, or vice versa. Existing tag escaping, grounded excerpts, separate store
 source fields and provenance remain in force. Oversize holds are a conservative
 availability tradeoff, not a claim of detecting the hidden intent. Historic pinned
 benchmark results remain unchanged and do not measure this revised behavior.
+
+### ACP connection coverage
+
+`scopewatch/acp_adapter.py` retains the legacy synthetic dictionary contract and
+its receipt/HOLD/relay behavior. Its fake-agent tests do not prove ACP wire
+interoperability. `scopewatch/acp_client.py` is a separate bounded ACP v1 stdio
+client for initialize, session/new, and one text session/prompt. It advertises
+filesystem read/write only, maps validated absolute paths to gateway resources,
+cancels all permission requests, and rejects every terminal method. The CLI is
+`scripts/run_acp_client.py`. Real subprocess synthetic-peer and localhost gateway
+tests exist; an actual Codex bridge session remains unverified and issue #121
+stays open. See [the corrected spike](spikes/acp-codex-spike.md) for the pinned
+schema source, limits, runnable command, and coverage statement. Native agent
+filesystem/process/network activity remains outside gateway observation.

@@ -1,123 +1,170 @@
-# ACP Codex Spike: Mediation Feasibility and Bypass Analysis
+# ACP Codex mediation spike and verification status
 
-**Date:** 2026-09-30  
-**Author:** Gemini 3.8 Flash (T3 Code / Antigravity harness)  
-**Status:** Completed finding for Issue #48; guides ACP Client Adapter implementation (#49).
+Original research: Gemini 3.8 Flash, 2026-09-30.
+Protocol correction and client implementation record: GPT-6.1 Sol, 2026-10-28.
+Issue #121 remains open. The manual real Codex acceptance inherited from #49 is pending.
 
----
+## What was verified before #121
 
-## 1. Executive Summary & Recommendation
+`backend/scopewatch/acp_adapter.py` and its `FakeAcpAgent` tests exercised a
+local dictionary dispatcher against the gateway. They verified policy decisions,
+HOLD polling, receipt enforcement, provenance labels, and relay bounds. They did
+not connect an ACP peer, start a stdio transport, or negotiate an ACP session.
 
-**Recommendation:** **Build the ACP client adapter (#49) with an explicit, non-bypassable coverage statement.**
+The old document's Q1-Q5 findings were documentation inferences, not observations
+of Codex. In particular, its date-string protocol version, reversed initialize
+exchange, `terminal/run`, `fs/delete_file`, `fs/list_directory`, and custom
+permission `{operation, path}` / `{decision}` exchange are legacy synthetic
+contracts. They do not establish ACP v1 interoperability. The legacy dispatcher
+remains for existing callers and tests; the new client does not advertise those
+methods. The previous subscription-terms claim had no cited verification and is
+withdrawn. No subscription or bridge terms review was performed for this change.
 
-The Agent Client Protocol (ACP) provides an architectural seam where an editor or host platform serves as the ACP *client*, while the coding agent (such as Codex via `codex-acp`) acts as the ACP *server/agent*. By mediating all capability requests (`fs/*`, `terminal/*`, and `session/request_permission`) through the Scopewatch gateway API (`POST /api/v1/runs/{run_id}/actions`), deterministic policies, reasoning audit flags, and approval holds can be enforced before any file or command is executed.
+## Protocol source and supported subset
 
-However, because native agent runtimes may retain local execution pathways if not constrained by client-capability negotiation, the Scopewatch gateway cannot guarantee the absence of unobserved actions outside the protocol boundary. All runs must carry a mandatory `COVERAGE_STATEMENT` explicitly informing human reviewers that evidence covers only mediated ACP interactions.
+The new `backend/scopewatch/acp_client.py` implements ACP major version **1**.
+Official sources were retrieved on 2026-10-28 from
+[agentclientprotocol/agent-client-protocol revision d6f00fd0ce5323be07f64fca09f59f26a3a5d77a](https://github.com/agentclientprotocol/agent-client-protocol/tree/d6f00fd0ce5323be07f64fca09f59f26a3a5d77a).
+This pins the source snapshot, not a Codex bridge release. The repository also
+contains v2; this client deliberately negotiates only integer `protocolVersion: 1`.
 
----
+The reference is
+[`schema/v1/schema.json`](https://github.com/agentclientprotocol/agent-client-protocol/blob/d6f00fd0ce5323be07f64fca09f59f26a3a5d77a/schema/v1/schema.json).
+The full source artifact SHA-256 is
+`1c57095acf9c0844054dd1fdc3624c121b3fdc24209ecc987fd6748c705fdef5`.
+The offline test fixture copies the definitions used by the exchange and their
+transitive references without modifying them. Tests validate recorded synthetic
+stdio messages against these definitions with pinned `jsonschema==4.26.0`.
 
-## 2. Investigation & Analysis (Questions 1–5)
+Relevant official v1 documentation:
 
-### Q1: Does `codex-acp` route all file reads and writes through client `fs/*` capabilities, or does Codex read and write files directly?
-- **Finding:** In standard ACP client mode, `codex-acp` advertises client-side filesystem capability requirements:
-  - `fs/read_text_file`: requests file contents by path.
-  - `fs/write_text_file`: submits path and updated text.
-  - `fs/delete_file`: requests path removal.
-  - `fs/list_directory`: queries directory entries.
-- **Bypass Risk:** If the agent is granted host-level filesystem access in its local environment or spawns child processes directly, it could bypass the client RPC channel.
-- **Mitigation:** The Scopewatch ACP adapter acts as the client host and only acknowledges virtual/sandboxed paths relative to the declared run workspace. File operations outside the mediated workspace trigger `BLOCKED_PATH` or `PATH_TRAVERSAL` denials.
+- [Initialization](https://agentclientprotocol.com/protocol/v1/initialization): the client sends `initialize`, integer version, `clientCapabilities`, and `clientInfo`. The agent replies with its version and optional capabilities/info. Unsupported version or malformed consumed fields close the connection.
+- [Transports](https://agentclientprotocol.com/protocol/v1/transports): the client launches the agent and exchanges UTF-8 JSON-RPC messages delimited by newlines. Stderr is ignored here, never printed or stored.
+- [Session setup](https://agentclientprotocol.com/protocol/v1/session-setup): `session/new` carries absolute `cwd` and `mcpServers: []`, then the client uses the returned `sessionId`.
+- [Prompt turn](https://agentclientprotocol.com/protocol/v1/prompt-turn): `session/prompt` contains text content blocks. `session/update` is a notification and receives no response. `agent_thought_chunk` text is an `AGENT_AUTHORED_SUMMARY`, never a provider-exposed trace. Missing summaries remain `UNAVAILABLE`.
+- [File system](https://agentclientprotocol.com/protocol/v1/file-system): only `fs/read_text_file` and `fs/write_text_file` are advertised. Requests carry absolute paths and the active session ID. Read line/limit selections are applied to a successful bounded whole-file receipt. Oversized, preview-only, or partial receipts are refused. `line: 0` is rejected
+  because the prose specifies 1-based lines even though the schema allows zero.
+- [Tool calls](https://agentclientprotocol.com/protocol/v1/tool-calls): `session/request_permission` receives `{outcome: {outcome: "cancelled"}}`. No option is selected. Agent tool descriptions/locations are insufficient to bind an exact gateway action, and a deterministic preview cannot replace submit-time auditing or single-use approval. Agents that require a permission grant may therefore stop without performing their task.
+- [Terminals](https://agentclientprotocol.com/protocol/v1/terminals): capability `terminal: false`. All terminal methods, including create/output/wait/kill/release and legacy `terminal/run`, are refused. There is no command support.
+- [Cancellation](https://agentclientprotocol.com/protocol/v1/cancellation): timeout or interruption sends best-effort `session/cancel`, cancels pending permission requests during a brief grace period, then terminates and reaps the process group. Cancellation does not revoke a stored gateway HOLD; a reviewer may still resolve it separately.
 
-### Q2: Does it run commands through client `terminal/*`, or in its own sandbox?
-- **Finding:** Under ACP, terminal actions are mediated via `terminal/run` requests dispatched to the client (`terminal/create` interactive sessions are refused).
-- **Gateway Mapping:** The adapter maps terminal requests directly to `operation: "run_command"` on `tool: "workspace"` with `resource=cwd`.
-- **Policy Enforcement:** Commands are parsed without a shell using `shlex.split`, verified against allowlisted command prefixes, rejected if containing shell metacharacters, and executed only in Docker-isolated containers (`SCOPEWATCH_EXECUTOR=docker`). Disallowed commands return an immediate JSON-RPC tool error without execution.
+No SDK or bridge dependency was installed. This is a bounded hand-written client
+for one text prompt, not an implementation of every optional ACP feature.
+Authentication handshakes, reconnect/load/resume, MCP servers, arbitrary prompt
+content, multiple concurrent sessions, and remote workspace mapping are unsupported.
 
-### Q3: Does `session/request_permission` fire for every sensitive action, and can the client deny it?
-- **Finding:** ACP specifies `session/request_permission` as the protocol mechanism for user consent before executing sensitive tools or actions.
-- **Dry-Run Scope Verification:** To avoid premature action execution or consuming single-use approvals during preflight checks, the adapter evaluates permissions dry-run against the **real deterministic gateway policy** via the side-effect-free seam `POST /api/v1/runs/{id}/actions/preview`. The seam builds the same request submission would send and runs the same `policy.evaluate_policy` against the same run state, workspace root, and `TaskScope`. It writes nothing: no action, decision, approval, or receipt record, no event, no demo-budget spend, and no execution.
-  - `allow`: Operation, path, tool, run state, and command prefix are permitted under active scope without approval required. Flagged `provisional: true` — the deterministic layer allowed it, but the submit-time reasoning audit may still escalate to `HOLD`, and execution may still fail.
-  - `deny`: The deterministic decision is `DENY` (e.g. `PATH_OUTSIDE_WORKSPACE`, `BLOCKED_PATH`, `PATH_TRAVERSAL`, `TOOL_NOT_ALLOWED`, `COMMAND_NOT_ALLOWED`, `OPERATION_NOT_ALLOWED`). Also returned when the seam itself is unreachable or malformed, so preflight fails closed.
-  - `requires_approval`: The deterministic decision is `HOLD` (`APPROVAL_REQUIRED`) and a human reviewer must approve before execution.
-- **Superseded design (#122):** This was originally a separate partial evaluator that read `TaskScope` from `GET /api/v1/runs/{id}` and applied its own path rules. It disagreed with the engine that actually decides — it stripped leading slashes with `lstrip("/")` before its own absolute-path test, so a request the gateway denies was preflighted as an allowed, scope-verified permission, and it checked no run state, tool, command prefix, or approval rule. A dry run that answers a different question from the real decision is worse than no dry run; the seam is now shared with submission by construction.
+## Filesystem and execution boundary
 
-### Q4: What reasoning does Codex expose over ACP?
-- **Finding:** Codex does not expose internal raw Chain-of-Thought (CoT) token streams or hidden model activations across ACP. It emits:
-  - High-level progress explanations.
-  - Agent-authored step summaries.
-  - Contextual messages intended for user feedback.
-- **Invariant Adherence (ADR-0001):** Under Scopewatch's provenance taxonomy, Codex reasoning over ACP must **never** be recorded as `PROVIDER_EXPOSED_TRACE`. It must be recorded strictly as `ReasoningProvenance.AGENT_AUTHORED_SUMMARY` when a summary is provided, or `ReasoningProvenance.UNAVAILABLE` when missing.
+An operator supplies an existing active synthetic run and one absolute local
+session root. The operator must bind that root to the intended gateway run
+workspace. The public API intentionally does not disclose the gateway's host
+workspace path. The client does not discover, create, populate, or read guarded
+files. `Path.resolve()` checks filesystem metadata for confinement; gateway HTTP
+requests are the only file-effect channel.
 
-### Q5: Is using a personal or team Codex subscription this way allowed by its terms?
-- **Finding:** Codex commercial and developer subscription terms permit integration with developer tools and editors implementing standard protocols (LSP, ACP, MCP) for local interactive coding.
-- **Requirements:**
-  1. The integration must not be used to harvest synthetic training data to distill competing foundational models.
-  2. Credentials and session tokens must remain secure and never be logged or transmitted to third parties (Scopewatch redacts all auth headers and provider tokens).
+This driver supports POSIX local paths only. Windows/UNC/device syntax is
+unsupported. Only canonical absolute path syntax below the root is accepted. Relative paths,
+`..`, `.`, doubled separators, backslashes, control characters, root-only paths,
+and symlink escapes fail before submission. Contained symlink aliases retain
+their submitted relative name so the gateway checks both alias and canonical
+target against policy. A gateway-host workspace with different symlink metadata
+is not a supported remote mapping. The gateway independently owns confinement,
+policy, auditing, exact approval, and execution.
 
----
+Receipt/HOLD handling reuses the reviewed legacy adapter through a bounded HTTP
+wrapper. Only `EXECUTED` earns success. Missing, failed, or not-executed receipts
+are tool errors. Error responses expose stable local messages and bounded join
+identifiers/status codes, withholding receipt details and upstream bodies.
 
-## 3. Coverage Statement & Security Boundary
+Limits per session: 256 KiB per stdio frame, 2 MiB combined incoming/outgoing
+stdio bytes, 512 frames, 512 KiB per gateway response, 4,000 summary characters,
+16,000 task characters, and the existing 65,536-character file relay/write bound.
+The session deadline is configurable up to 300 seconds. HTTP calls and HOLD
+polling are bounded by the remaining session time. Callbacks are processed
+serially; a HOLD delays later callbacks and EOF detection until that bounded
+wait ends. There are no unbounded pending callback tasks. Cancellation is
+best effort and does not claim a confirmed peer `cancelled` response. Stderr
+goes to `/dev/null`.
+JSON batches, duplicate keys, invalid UTF-8, non-JSON constants, unsolicited
+responses, effect notifications, and wrong-session requests fail closed.
 
-Every run mediated through the ACP adapter must record the following boundary notice:
+Launching an ACP agent is **not a sandbox**. The child can perform native
+filesystem/process/network operations allowed by its OS account. No claim of
+prevention or observation outside gateway-submitted requests follows from this
+client. It must only be used with synthetic data in an appropriately isolated
+agent environment. Whether a real `codex-acp` honors the advertised capabilities
+is unverified.
 
-```text
-Scopewatch mediates only file, command, and permission operations submitted through
-the Agent Client Protocol (ACP) adapter to the gateway API (POST /api/v1/runs/{run_id}/actions).
-Permission preflight (POST /api/v1/runs/{run_id}/actions/preview) reports the deterministic
-policy decision only: it executes nothing, creates no approval, and a preflight allow is
-provisional because the submit-time reasoning audit may still hold the action.
-If the underlying agent executes actions outside the negotiated ACP capabilities,
-such activity is outside the observation boundary. A missing event never proves
-an action did not occur. Gateway evidence represents a tamper-evident audit of mediated
-operations only.
+## Runnable session
+
+Use an already running loopback gateway with an existing synthetic run. Choose
+an already installed, independently pinned ACP agent executable. This command
+does not install a bridge, start infrastructure, or invoke a provider by itself:
+
+```bash
+python3 scripts/run_acp_client.py \
+  --gateway-url http://127.0.0.1:8000 \
+  --run-id SYNTHETIC_RUN_ID \
+  --workspace /absolute/local/session-root \
+  --synthetic --synthetic-task 'Summarize the synthetic invoice into outputs/summary.txt' \
+  -- /absolute/path/to/pinned-acp-agent
 ```
 
----
+Gateway credentials come only from `SCOPEWATCH_API_KEY` and/or `DEMO_TOKEN`.
+They are not passed to the agent. If the installed agent needs a credential,
+set it outside the command and pass its environment variable **name** with
+`--agent-env-name NAME`. Only PATH/locale/temp variables and explicitly named
+variables reach the child; HOME and credential files are not loaded by this CLI.
+Do not put secrets in command arguments. No reviewer or capture credential is used.
 
-## 4. Architectural Implementation Plan (#49)
+The CLI prints a coverage record before launching the peer, then a bounded
+completion report with run/session IDs, protocol/source revision, stop reason,
+and the coverage statement below. Redirect stdout to a private JSONL artifact
+to persist these records. The existing server run coverage field is not modified;
+there is no coverage update endpoint. It never prints agent
+messages, raw transcripts, provider output, credentials, or stack traces. Existing
+run evidence stores mediated actions and their summary provenance. No new server
+endpoints or coverage mutation API were added.
 
-1. **Module Placement:** `backend/scopewatch/acp_adapter.py`
-2. **Components:**
-   - `AcpClientAdapter`: Handles JSON-RPC dispatch, session capability handshake, dry-run preflight checks, and mapping to gateway operations.
-   - `AcpRpcError`: Conforms to JSON-RPC 2.0 error responses carrying gateway `reason_code` and `explanation`.
-   - `HoldConfig`: Pydantic v2 configuration for bounded async polling for human approvals with deterministic fail-closed timeouts.
-3. **Gateway mapping — authorization is not execution (#123):**
-   - **Preflight (query, no effect):** `session/request_permission` → `POST /api/v1/runs/{run_id}/actions/preview`, returning the deterministic `PolicyDecision` only.
-   - **Submission (effect):** `fs/*` and `terminal/run` → `POST /api/v1/runs/{run_id}/actions`, then approval polling via `GET /api/v1/runs/{run_id}/actions/{action_id}`.
-   - **Result construction:** a success result requires an `EXECUTED` execution receipt. `FAILED`, `NOT_EXECUTED`, and missing receipts become sanitized JSON-RPC errors carrying the real action ID and the gateway's failure code — never empty content, an inferred byte count, or `exit_code: 0`.
-4. **Validation & Testing:**
-   - `backend/tests/test_acp_adapter.py`: Comprehensive test matrix with a fake ACP agent exercising reads, writes, deletions, command filtering, holds, approval single-use, and provenance classification.
-   - `backend/tests/test_issue_122_123_acp_preflight_and_receipts.py`: Preflight-versus-submission agreement (paths, tool, operation, run state, command prefixes, approval requirements), side-effect-free preflight, and execution-receipt enforcement for failed read/write/command.
+## Verification levels and pending acceptance
 
----
+| Level | Evidence | Claim |
+| --- | --- | --- |
+| Legacy fake only | Existing adapter tests | Gateway contract behavior; no ACP connection |
+| Real stdio, synthetic peer | `backend/tests/test_acp_client.py` | A Python subprocess exchanges actual JSON-RPC frames; no LLM or Codex |
+| Actual localhost gateway | Same suite and CLI subprocess test | Synthetic peer + loopback HTTP gateway + isolated SQLite/run workspace; read/write, DENY, HOLD timeout, approved failed receipt, aliases, no unauthorized file effect |
+| Real Codex bridge | **Pending** | No bridge version pinned/installed, no Codex session, no external inference |
 
-## 5. Empirical Observed Evidence (Fake Agent Protocol Traces)
+The synthetic transcript schema test validates initialize/new/prompt/update,
+filesystem requests/responses, and cancelled permission shapes against the
+pinned official v1 definitions. Adverse peers cover malformed/oversized frames,
+aggregate output, timeout, EOF, unsupported methods, wrong sessions, invalid paths,
+and bounded cleanup. Existing legacy tests are retained unchanged.
 
-The following protocol interaction traces were observed using the synthetic `FakeAcpAgent` contract harness against a local in-process gateway with clean-room fixtures. **No real ACP peer (`codex-acp`) and no live Codex session has been connected** — see issue #121, which tracks the remaining protocol-interoperability and real-run verification.
+Validation on 2026-10-28 with Python 3.12.3 and Node 24.19.0:
 
-The first four turns were observed on 2026-09-30. Turns 5 and 6 were re-observed on 2026-10-03 after #122 and #123; the preflight response now carries the deterministic reason code, matched rule, and an explicit `provisional` marker.
+- `PYTHONPATH=backend .venv/bin/python -m pytest backend/tests/test_acp_client.py -q`: 58 passed.
+- `./scripts/validate.sh`: passed. Backend 1,983 passed and 25 existing Docker-gated skips; reasoning-audit PoC 96 passed plus 79 subtests; MCP PoC 26 passed; deploy 140 passed; frontend unit 77 passed; browser 18 passed; six clean-room scenarios passed.
+- The first full attempt stopped at browser tests because Playwright was missing in this checkout. `npm ci --prefix frontend` installed the locked dependencies, and the final full attempt above passed. No browser infrastructure configuration was changed.
+- The backend lockfile passed CI's `uv pip compile` regeneration/comparison command. The 112 vendored schema definitions matched the pinned official source exactly.
+- Docker execution remains unverified on this machine. No real bridge was installed or run, and no external inference occurred.
 
-```json
-[Turn 1: Handshake]
-Request:  {"jsonrpc": "2.0", "id": "fake-agent-1", "method": "initialize", "params": {}}
-Response: {"jsonrpc": "2.0", "id": "fake-agent-1", "result": {"protocolVersion": "2024-11-05", "capabilities": {"fs": {"readTextFile": true, "writeTextFile": true, "deleteFile": true, "listDirectory": true}, "terminal": {"run": true, "create": false}, "session": {"requestPermission": true}}}}
+A future manual acceptance must record a pinned bridge version and Codex version,
+a synthetic task/run, a redacted stdio transcript, joined gateway action/decision/
+approval/receipt evidence, and this coverage statement. It must separately test
+whether the bridge respects `terminal: false` and routes filesystem requests as
+expected. Merely finding a `codex` executable does not satisfy this criterion.
+Issue #121 stays open until that evidence exists. No real bridge compatibility
+or successful Codex task is claimed by this PR.
 
-[Turn 2: Dry-run Preflight Check]
-Request:  {"jsonrpc": "2.0", "id": "fake-agent-2", "method": "session/request_permission", "params": {"operation": "read_text", "path": "invoices/approved/vendor_a.txt"}}
-Response: {"jsonrpc": "2.0", "id": "fake-agent-2", "result": {"decision": "allow", "scope_verified": true, "provisional": true, "reason_code": "ALLOWED_TOOL_AND_RESOURCE", "matched_rule": "RULE_ALLOWED_TOOL_AND_RESOURCE", "explanation": "Operation 'read_text' on 'invoices/approved/vendor_a.txt' is permitted.", "audit_note": "Deterministic policy ALLOW only; submit-time reasoning audit may still escalate to HOLD, and execution may fail."}}
+Persisted in each CLI completion/error report:
 
-[Turn 3: Mediated Read]
-Request:  {"jsonrpc": "2.0", "id": "fake-agent-3", "method": "fs/read_text_file", "params": {"path": "invoices/approved/vendor_a.txt", "reasoning_summary": "Reading vendor invoice", "turn_id": "turn-1"}}
-Response: {"jsonrpc": "2.0", "id": "fake-agent-3", "result": {"path": "invoices/approved/vendor_a.txt", "content": "Invoice: $500", "action_id": "..."}}
-
-[Turn 4: Adversarial Traversal Block]
-Request:  {"jsonrpc": "2.0", "id": "fake-agent-4", "method": "fs/read_text_file", "params": {"path": "../../../etc/shadow", "turn_id": "turn-3"}}
-Response: {"jsonrpc": "2.0", "id": "fake-agent-4", "error": {"code": -32000, "message": "Operation denied by policy: PATH_TRAVERSAL", "data": {"reason_code": "PATH_TRAVERSAL", "explanation": "Directory traversal using '..' is prohibited.", "action_id": "...", "matched_rule": "RULE_PATH_TRAVERSAL_REJECTED"}}}
-
-[Turn 5: Absolute Path Preflight Denies (the #122 lstrip regression)]
-Request:  {"jsonrpc": "2.0", "id": "fake-agent-5", "method": "session/request_permission", "params": {"operation": "read_text", "path": "/outputs/old.txt"}}
-Response: {"jsonrpc": "2.0", "id": "fake-agent-5", "result": {"decision": "deny", "reason": "Absolute paths are prohibited.", "reason_code": "PATH_OUTSIDE_WORKSPACE", "matched_rule": "RULE_ABSOLUTE_PATH_REJECTED", "provisional": false}}
-
-[Turn 6: Allowed But Failed Read Is a Tool Error (#123)]
-Request:  {"jsonrpc": "2.0", "id": "fake-agent-6", "method": "fs/read_text_file", "params": {"path": "outputs/missing.txt"}}
-Response: {"jsonrpc": "2.0", "id": "fake-agent-6", "error": {"code": -32000, "message": "Action did not execute successfully (status=FAILED): EXECUTION_FAILED", "data": {"action_id": "...", "status": "FAILED", "error_code": "EXECUTION_FAILED", "reason_code": "EXECUTION_FAILED", "error": "File not found: outputs/missing.txt"}}}
+```text
+ACP v1 client mediates only advertised fs/read_text_file and fs/write_text_file
+requests through the gateway. Commands, terminal lifecycle, MCP servers, and
+permission grants are unsupported. All permission requests are cancelled.
+Agent thought chunks are agent-authored summaries, never provider-exposed traces.
+Native agent filesystem, process, and network activity is outside this boundary.
+Missing gateway evidence does not prove no action occurred. Synthetic stdio peer
+verification is not real Codex bridge verification; that manual acceptance is pending.
 ```

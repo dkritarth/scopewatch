@@ -1,9 +1,11 @@
 """Agent Client Protocol (ACP) adapter: mediates Codex/ACP agent actions via the gateway.
 
-Implementation for issue #49 (following spike #48). This module acts as the
-host/client side of the Agent Client Protocol (ACP), accepting JSON-RPC 2.0
-requests from an ACP-compliant coding agent (such as Codex via codex-acp) and
-mediating every capability request through the Scopewatch gateway HTTP API.
+Legacy synthetic dictionary dispatcher from issue #49, following spike #48.
+It preserves that local contract for existing callers and tests. Its initialize,
+permission, extra filesystem methods, and terminal/run are NOT an ACP v1 wire
+implementation. The actual stdio client/session launcher is ``acp_client.py``;
+that module advertises only v1 filesystem read/write and no terminal capability.
+Shared receipt, HOLD, and relay handling below is reused by that client.
 
 Design rules (following AGENTS.md and ADR-0001 invariants):
 
