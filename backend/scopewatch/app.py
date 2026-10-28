@@ -897,10 +897,13 @@ def create_app(
     if frontend_dir.exists():
         styles_dir = frontend_dir / "styles"
         scripts_dir = frontend_dir / "scripts"
+        fonts_dir = frontend_dir / "fonts"
         if styles_dir.exists():
             app.mount("/styles", StaticFiles(directory=styles_dir), name="styles")
         if scripts_dir.exists():
             app.mount("/scripts", StaticFiles(directory=scripts_dir), name="scripts")
+        if fonts_dir.exists():
+            app.mount("/fonts", StaticFiles(directory=fonts_dir), name="fonts")
 
         @app.get("/", include_in_schema=False)
         def serve_index() -> HTMLResponse:
