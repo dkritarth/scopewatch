@@ -157,18 +157,27 @@ class TestDeadlineInvariantUnchanged:
         assert loop.wall_clock_timeout_s == 7.5
 
     def test_a_run_past_its_budget_reports_failed(self) -> None:
-        """A live-profile run that exceeds the budget must fail, not complete."""
-        import time
+        """A live-profile run that exceeds the budget must fail, not complete.
 
+        The provider overruns the budget on a scripted clock (#159): no real
+        sleeping, so the outcome cannot depend on how fast this machine is.
+        """
         from scopewatch.agent.loop import AgentLoop
         from scopewatch.models import ReasoningProvenance
         from scopewatch.providers.client import ChatResult
+        from tests.scripted_clock import ScriptedClock
+
+        clock = ScriptedClock()
 
         class SlowProvider:
             """Returns a final response only after the budget has passed."""
 
+            def __init__(self) -> None:
+                self.calls = 0
+
             def complete(self, messages, **kwargs) -> ChatResult:
-                time.sleep(0.08)
+                self.calls += 1
+                clock.advance(0.08)  # the call cost 80 ms, the budget was 20 ms
                 return ChatResult(
                     content="done",
                     tool_calls=[],
@@ -179,21 +188,49 @@ class TestDeadlineInvariantUnchanged:
                 )
 
         class _NoopDispatcher:
+            def __init__(self):
+                self.completions = 0
+
+            def complete_run(self, run_id, **kwargs):
+                self.completions += 1
+
             def fail_run(self, run_id, reason=""):
                 return None
 
             def record_prompt_version(self, run_id, version):
                 return None
 
+        provider = SlowProvider()
+        dispatcher = _NoopDispatcher()
         loop = AgentLoop(
             run_id="r",
             task_description="t",
-            provider_client=SlowProvider(),
-            dispatcher=_NoopDispatcher(),
+            provider_client=provider,
+            dispatcher=dispatcher,
             wall_clock_timeout_s=0.02,
+            time_fn=clock,
+            sleep_fn=clock.sleep,
         )
         result = loop.run()
 
         assert result.status == "FAILED"
         assert "Wall clock timeout reached" in (result.error or "")
         assert result.status != "COMPLETED"
+        # Phase: the provider ran exactly once and the overrun was caught
+        # after that call, before any completion could be reported.
+        assert provider.calls == 1
+        assert result.final_response is None
+        assert dispatcher.completions == 0
+        assert [message["role"] for message in result.messages] == ["system", "user"]
+
+    def test_the_injected_clock_defaults_to_the_real_monotonic_clock(self) -> None:
+        """Default clock and sleep remain the real functions, without a timing race."""
+        import time
+        from scopewatch.agent.loop import AgentLoop
+
+        loop = AgentLoop(run_id="r", task_description="t")
+        assert loop.time_fn is time.monotonic
+        assert loop.sleep_fn is time.sleep
+        assert loop.dispatcher.time_fn is time.monotonic
+        assert loop.dispatcher.sleep_fn is time.sleep
+        loop.dispatcher.close()

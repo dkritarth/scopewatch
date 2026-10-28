@@ -14,7 +14,7 @@ demo/SCENARIOS.md for the scripted vs mock-agent (replay) vs live distinction.
 import json
 import os
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 import httpx
 
 from scopewatch.models import ReasoningProvenance
@@ -258,7 +258,11 @@ class GatewayDispatcher:
         capture_token: Optional[str] = None,
         demo_token: Optional[str] = None,
         api_key: Optional[str] = None,
+        time_fn: Callable[[], float] = time.monotonic,
+        sleep_fn: Callable[[float], None] = time.sleep,
     ) -> None:
+        self.time_fn = time_fn
+        self.sleep_fn = sleep_fn
         self.base_url = base_url.rstrip("/")
         self.capture_token = (
             capture_token if capture_token is not None else configured_capture_token()
@@ -380,13 +384,13 @@ class GatewayDispatcher:
         switch to failure, which still waits for receipt persistence.
         """
         while True:
-            if deadline is not None and time.monotonic() >= deadline:
+            if deadline is not None and self.time_fn() >= deadline:
                 raise TimeoutError("Wall clock timeout reached while completing run.")
             request_kwargs = dict(kwargs)
             if deadline is not None:
                 base_params = kwargs.get("params")
                 params = dict(base_params) if isinstance(base_params, dict) else {}
-                params["deadline_budget"] = max(0.0, deadline - time.monotonic())
+                params["deadline_budget"] = max(0.0, deadline - self.time_fn())
                 request_kwargs["params"] = params or None
             resp = self._client.post(url, headers=self._mutating_headers(), **request_kwargs)
             if resp.status_code != 409:
@@ -397,7 +401,7 @@ class GatewayDispatcher:
                 return resp
             if error != "APPROVED_ACTION_IN_FLIGHT":
                 return resp
-            time.sleep(0.05)
+            self.sleep_fn(0.05)
 
     def record_prompt_version(self, run_id: str, prompt_version: str) -> Optional[Run]:
         """Record the prompt version for the run via PATCH /api/v1/runs/{run_id}."""

@@ -218,7 +218,10 @@ class ScopewatchService:
         guards: Optional[DemoGuardPolicy] = None,
 capture_token: Optional[str] = None,
         run_workspaces_root: Optional[Path | str] = None,
+        time_fn: Callable[[], float] = time.monotonic,
     ) -> None:
+        # Completion budgets include time spent waiting for the SQLite lock.
+        self.time_fn = time_fn
         self.db_path = Path(db_path)
         # Issue #117: workspace_root is the read-only synthetic scenario
         # fixture. Runs never execute against it; each run executes against its
@@ -716,7 +719,7 @@ capture_token: Optional[str] = None,
         so closing the run now would record the execution after the run's
         terminal event; refuse instead.
         """
-        started_at = time.monotonic()
+        started_at = self.time_fn()
         conn = self._get_conn()
         try:
             if not ScopewatchRepository.get_run(conn, run_id):
@@ -731,7 +734,7 @@ capture_token: Optional[str] = None,
                 # overtaken by a concurrent resolve or close.
                 if (
                     deadline_budget is not None
-                    and (time.monotonic() - started_at) >= deadline_budget
+                    and (self.time_fn() - started_at) >= deadline_budget
                 ):
                     raise ScopewatchAPIError(
                         code="COMPLETION_DEADLINE_EXCEEDED",
