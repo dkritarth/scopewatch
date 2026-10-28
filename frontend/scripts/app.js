@@ -489,6 +489,8 @@ let activeRuns = typeof window !== "undefined" && isLiveRequested(window.locatio
 const timestampOffsetBaseline = new Map();
 let liveStreamHandle = null;
 let isLiveMode = false;
+// Every bootstrap invalidates reads and stream callbacks from the prior view.
+let liveReadGeneration = 0;
 let pendingApprovals = [];
 
 export function getPendingApprovals() {
@@ -1564,6 +1566,7 @@ export function renderApprovals() {
 
 export async function refreshApprovals() {
   if (!isLiveMode) return;
+  const generation = liveReadGeneration;
   const run = getSelectedRun();
   // With a fixture run selected, never show live approvals (#208)
   if (!run?.isLive) {
@@ -1580,11 +1583,12 @@ export async function refreshApprovals() {
   if (elements.approvalsRetry) elements.approvalsRetry.hidden = true;
   try {
     const fetched = await withRetry(() => getApprovals("PENDING", run.id), { retries: 2, baseDelayMs: 300 });
+    if (generation !== liveReadGeneration) return;
     if (Array.isArray(fetched)) {
       const enriched = await Promise.all(fetched.map(async approval => {
         try {
           const detail = await getAction(run.id, approval.action_request_id);
-          if (getSelectedRun()?.id === run.id) {
+          if (generation === liveReadGeneration && getSelectedRun()?.id === run.id) {
             for (const rawEvent of detail.events || []) {
               const transformed = transformApiEvent(rawEvent, { runId: run.id, actionRequest: detail.action_request, reasoningAudit: detail.reasoning_audit });
               const existing = run.events.find(event => event.id === transformed.id);
@@ -1597,7 +1601,7 @@ export async function refreshApprovals() {
           return { ...approval, detailsError: true };
         }
       }));
-      if (getSelectedRun()?.id !== run.id) return;
+      if (generation !== liveReadGeneration || getSelectedRun()?.id !== run.id) return;
       pendingApprovals = enriched;
       renderApprovals();
       renderTimeline();
@@ -1613,6 +1617,7 @@ export async function refreshApprovals() {
       );
     }
   } catch (err) {
+    if (generation !== liveReadGeneration) return;
     if (elements.approvalsStatus) {
       renderPanelStatus(
         elements.approvalsStatus,
@@ -2249,6 +2254,7 @@ export function reconcileRunActionStates(events) {
 }
 
 function subscribeToRun(runId) {
+  const generation = liveReadGeneration;
   if (liveStreamHandle) {
     liveStreamHandle.close();
     liveStreamHandle = null;
@@ -2260,6 +2266,7 @@ function subscribeToRun(runId) {
   liveStreamHandle = connectLiveEvents(runId, {
     initialSequence: maxSeq,
     onEvent: (apiEvent) => {
+      if (generation !== liveReadGeneration) return;
       const targetRun = activeRuns.find((r) => r.id === runId);
       if (!targetRun) return;
 
@@ -2285,6 +2292,7 @@ function subscribeToRun(runId) {
       refreshApprovals();
     },
     onStatusChange: ({ status, detail }) => {
+      if (generation !== liveReadGeneration) return;
       if (status === "connected") {
         updateGatewayStatus("Live gateway connected", "connected");
       } else if (status === "polling" || status === "polling_error") {
@@ -2712,8 +2720,10 @@ function gatewayLiveFlag() {
 
 export async function refreshRuns() {
   if (!isLiveMode) return;
+  const generation = liveReadGeneration;
   try {
     const backendRuns = await getRuns();
+    if (generation !== liveReadGeneration) return;
     if (!backendRuns || !Array.isArray(backendRuns)) return;
     let runsChanged = false;
     for (const bRun of backendRuns) {
@@ -2725,6 +2735,7 @@ export async function refreshRuns() {
         } catch {
           events = [];
         }
+        if (generation !== liveReadGeneration) return;
         const formatted = formatLiveRun(bRun, events);
         activeRuns.push(formatted);
         runsChanged = true;
@@ -2747,6 +2758,7 @@ export async function refreshRuns() {
 
 async function bootstrap() {
   if (typeof window === "undefined") return;
+  const generation = ++liveReadGeneration;
   const liveRequested = isLiveRequested(
     window.location.search,
     window.location.port,
@@ -2772,6 +2784,7 @@ async function bootstrap() {
   render();
   updateGatewayStatus("Connecting gateway...", "");
   const health = await checkHealth();
+  if (generation !== liveReadGeneration) return;
 
   if (health && health.status === "ok") {
     isLiveMode = true;
@@ -2795,7 +2808,9 @@ async function bootstrap() {
       }
       try {
         backendRuns = await withRetry(() => getRuns(), { retries: 2, baseDelayMs: 300 });
+        if (generation !== liveReadGeneration) return;
       } catch (err) {
+        if (generation !== liveReadGeneration) return;
         if (elements.runsStatus) {
           renderPanelStatus(
             elements.runsStatus,
@@ -2818,6 +2833,7 @@ async function bootstrap() {
         } catch {
           eventsByRun[run.id] = [];
         }
+        if (generation !== liveReadGeneration) return;
       }
       const formattedLiveRuns = buildLiveRuns(backendRuns, eventsByRun);
 
@@ -2847,6 +2863,7 @@ async function bootstrap() {
       renderEvidence();
       if (preferredLiveRun) subscribeToRun(preferredLiveRun.id);
       await refreshApprovals();
+      if (generation !== liveReadGeneration) return;
 
       if (typeof window !== "undefined") {
         if (window.__runRefreshInterval) {
@@ -2855,6 +2872,7 @@ async function bootstrap() {
         window.__runRefreshInterval = setInterval(refreshRuns, 3000);
       }
     } catch (err) {
+      if (generation !== liveReadGeneration) return;
       updateGatewayStatus("Gateway data unavailable", "disconnected");
       // Preserve gateway mode on failure; retry never switches to fixtures.
       const hint = authFailureHint(err);

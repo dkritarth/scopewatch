@@ -1,4 +1,6 @@
 """Synthetic judge recovery through the public gateway boundary (#290)."""
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from scopewatch.app import create_app
@@ -10,7 +12,7 @@ def gateway(tmp_path, monkeypatch):
     monkeypatch.setenv('SCOPEWATCH_REVIEWER_TOKEN', 'synthetic-reviewer-only')
     monkeypatch.setenv('SCOPEWATCH_API_KEY', 'synthetic-agent-only')
     monkeypatch.setenv('SCOPEWATCH_AUDITOR_PROFILE', 'mock')
-    monkeypatch.setenv('SCOPEWATCH_RUN_WORKSPACES_ROOT', str(tmp_path / 'runs'))
+    monkeypatch.setenv('SCOPEWATCH_RUN_WORKSPACES_DIR', str(tmp_path / 'runs'))
     db = tmp_path / 'demo.db'
     init_db(db)
     workspace = tmp_path / 'workspace'
@@ -32,6 +34,10 @@ def test_stranger_reseed_deny_reset_and_explicit_gateway_marker(tmp_path, monkey
     seeded = client.post('/api/v1/demo/reseed', headers=REVIEWER)
     assert seeded.status_code == 200, seeded.text
     run_id = seeded.json()['run_id']
+    run_workspace = Path(client.app.state.service.get_run(run_id).workspace_path)
+    assert run_workspace == (tmp_path / 'runs' / run_id).resolve()
+    assert run_workspace.is_dir()
+    before = {str(p.relative_to(run_workspace)): p.read_bytes() for p in run_workspace.rglob('*') if p.is_file()}
     approvals = client.get('/api/v1/approvals').json()
     assert len(approvals) == 1
     approval = approvals[0]
@@ -41,9 +47,15 @@ def test_stranger_reseed_deny_reset_and_explicit_gateway_marker(tmp_path, monkey
     assert client.post('/api/v1/demo/reseed', headers=REVIEWER).status_code == 409
     denied = client.post(f"/api/v1/approvals/{approval['id']}/deny", headers=REVIEWER, json={'resolution_reason': 'Reject injected invoice instruction'})
     assert denied.status_code == 200, denied.text
+    receipt = denied.json()['execution_receipt']
+    assert receipt['status'] == 'NOT_EXECUTED'
+    assert receipt['action_request_id'] == approval['action_request_id']
+    assert receipt['error_code'] == 'APPROVAL_DENIED'
+    assert before == {str(p.relative_to(run_workspace)): p.read_bytes() for p in run_workspace.rglob('*') if p.is_file()}
     events = client.get(f'/api/v1/runs/{run_id}/events').json()
     assert any(e['event_type'] == 'APPROVAL_DENIED' for e in events)
     assert not any(e['event_type'].startswith('EXECUTION_') for e in events)
+    assert (tmp_path / 'runs').is_dir()
     assert not list((tmp_path / 'runs').rglob('partner-payment-details.txt'))
     assert client.post('/api/v1/demo/reset', headers=REVIEWER).status_code == 200
     assert client.get('/api/v1/runs').json() == []
@@ -106,4 +118,5 @@ def test_reset_reconciles_expiry_without_a_previous_approval_read(tmp_path, monk
     assert client.post('/api/v1/demo/reseed', headers=REVIEWER).status_code == 200
     assert client.post('/api/v1/demo/reset', headers=REVIEWER).status_code == 200
     assert client.get('/api/v1/runs').json() == []
+    assert (tmp_path / 'runs').is_dir()
     assert not list((tmp_path / 'runs').rglob('partner-payment-details.txt'))

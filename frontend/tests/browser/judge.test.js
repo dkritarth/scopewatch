@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,7 +35,7 @@ uvicorn.run(create_app(db_path=p / 'test.db', workspace_root=p / 'workspace'), h
     SCOPEWATCH_API_KEY: '', SCOPEWATCH_REVIEWER_TOKEN: reviewer,
     SCOPEWATCH_ALLOW_RESET: 'true', SCOPEWATCH_AUDITOR_PROFILE: 'mock',
     SCOPEWATCH_REASONING_AUDIT: 'true', SCOPEWATCH_APPROVAL_TTL: String(ttl),
-    SCOPEWATCH_RUN_WORKSPACES_ROOT: join(dir, 'runs'),
+    SCOPEWATCH_RUN_WORKSPACES_DIR: join(dir, 'runs'),
   } });
   let output = '';
   proc.stderr.on('data', chunk => { output += chunk; });
@@ -58,7 +59,16 @@ uvicorn.run(create_app(db_path=p / 'test.db', workspace_root=p / 'workspace'), h
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(origin);
   await page.locator('#demo-reseed').waitFor({ state: 'visible' });
-  return { origin, page, errors };
+  return { origin, page, errors, dir };
+}
+
+function workspaceFiles(root) {
+  assert.ok(existsSync(root), 'inspect the actual existing run workspace');
+  return Object.fromEntries(readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter(entry => entry.isFile()).map(entry => {
+      const path = join(entry.parentPath, entry.name);
+      return [path.slice(root.length + 1), createHash('sha256').update(readFileSync(path)).digest('hex')];
+    }));
 }
 
 async function login(page, token = reviewer) {
@@ -72,7 +82,7 @@ async function reseed(page) {
 }
 
 test('stranger on arbitrary gateway port authenticates, reviews 06, denies and recovers safely', { timeout: 30000 }, async t => {
-  const { origin, page, errors } = await gateway(t);
+  const { origin, page, errors, dir } = await gateway(t);
   assert.match(await page.locator('#gateway-status').innerText(), /Live gateway connected/);
   assert.equal(await page.locator('#run-buttons button').count(), 0, 'opening empty gateway never creates a run');
   await page.locator('#demo-reseed').click();
@@ -98,8 +108,18 @@ test('stranger on arbitrary gateway port authenticates, reviews 06, denies and r
   await page.locator('#demo-reset').click();
   await page.waitForFunction(() => document.querySelector('#demo-controls-status').textContent.includes('Resolve pending'));
   assert.equal(await card.count(), 1);
+  const storedRuns = await (await fetch(`${origin}/api/v1/runs`)).json();
+  const runWorkspace = join(dir, 'runs', storedRuns[0].id);
+  const before = workspaceFiles(runWorkspace);
+  const storedApprovals = await (await fetch(`${origin}/api/v1/approvals`)).json();
   await card.locator('.btn-deny').click();
+  const denialResponse = page.waitForResponse(response => response.url().endsWith(`/approvals/${storedApprovals[0].id}/deny`));
   await card.locator('.btn-deny').click();
+  const denied = await (await denialResponse).json();
+  assert.equal(denied.execution_receipt.status, 'NOT_EXECUTED');
+  assert.equal(denied.execution_receipt.action_request_id, storedApprovals[0].action_request_id);
+  assert.equal(denied.execution_receipt.error_code, 'APPROVAL_DENIED');
+  assert.deepEqual(workspaceFiles(runWorkspace), before);
   await page.locator('#review-receipt').waitFor({ state: 'visible' });
   assert.match(await page.locator('#review-receipt').innerText(), /DENIED.*not executed/);
   const runs = await (await fetch(`${origin}/api/v1/runs`)).json();
@@ -148,4 +168,42 @@ test('gateway connection and run failures never substitute replay fixtures', { t
   await page.locator('#connection-error').waitFor({ state: 'visible' });
   assert.match(await page.locator('#gateway-status').innerText(), /Gateway unavailable/);
   assert.equal(await page.locator('#run-buttons button').count(), 0);
+});
+
+test('reset discards a polling response captured before deletion', { timeout: 30000 }, async t => {
+  const { origin, page } = await gateway(t);
+  await login(page);
+  await reseed(page);
+  const approvals = await (await fetch(`${origin}/api/v1/approvals`)).json();
+  const denied = await fetch(`${origin}/api/v1/approvals/${approvals[0].id}/deny`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Reviewer-Token': reviewer },
+    body: '{}',
+  });
+  assert.equal(denied.status, 200);
+  let captured;
+  const capturedRead = new Promise(resolve => { captured = resolve; });
+  let release;
+  const releaseRead = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  let first = true;
+  await page.route('**/api/v1/runs', async route => {
+    if (!first) return route.continue();
+    first = false;
+    const response = await route.fetch();
+    captured();
+    await releaseRead;
+    await route.fulfill({ response });
+  });
+  await page.evaluate(() => {
+    window.__scopewatch.refreshRuns().finally(() => { window.__oldPollFinished = true; });
+  });
+  await capturedRead;
+  page.on('dialog', dialog => dialog.accept());
+  await page.locator('#demo-reset').click();
+  await page.waitForFunction(() => document.querySelector('#demo-controls-status').textContent.includes('evidence reset'));
+  assert.equal(await page.locator('#run-buttons button').count(), 0);
+  release();
+  await page.waitForFunction(() => window.__oldPollFinished);
+  assert.deepEqual(await (await fetch(`${origin}/api/v1/runs`)).json(), []);
+  assert.equal(await page.locator('#run-buttons button').count(), 0, 'old response must not resurrect deleted runs');
 });
