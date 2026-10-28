@@ -2,6 +2,18 @@
 
 Prepared by Codex / GPT-6.1 Sol; implementation and review results are attributed below. Refs [#287](https://github.com/dkritarth/scopewatch/issues/287).
 
+## Post-cutoff acceptance evidence, 2026-10-28 06:14 UTC
+
+The 06:00 UTC new-issue cutoff is in force and its reminder was disabled. Only already-claimed #121 verification and handoff work continued. No new issue, product edit, merge or issue closure occurred. All 17 PRs remain drafts. The latest application source and synthetic composite results below are unchanged.
+
+Installed `codex-acp` 2.2.2 and standalone `codex-cli` 0.164.0 completed real initialization/session creation, then one synthetic `gpt-6.1-sol` medium turn. A verification-only supported explicit-title extension suppressed the bridge's hard-coded auxiliary title model; a protective app-server proxy observed one Sol turn and no auxiliary turn before shutdown. This setup does not establish stock-client automatic-title behavior. Default service tier was requested, while returned and outgoing `serviceTier` were null and fast was off. Read-only mode was observed. Installed-source review shows that this preset selects `on-request` approval behavior despite startup requesting `never`; this is source-derived, not independently observed in the retained wire projection. No permission request occurred, and the product client still cancels permissions.
+
+The model reported unavailable client filesystem tools. This is agent-authored output. Direct observations were zero filesystem callbacks, zero gateway actions/decisions/approvals/receipts, an unchanged nonce file and no output copy. Independent Astra review traced the installed initialization, session, prompt and callback paths and found no ACP filesystem-to-model-tool translation or compliant configuration-only remedy. It verified all 40 supplied artifact hashes and an offline extracted-method probe. Relaxing native sandbox/tool restrictions would not establish gateway mediation. **#121 remains open: real gateway filesystem mediation and native containment are not demonstrated.**
+
+The real run and private cleanup finished by 06:03:13 UTC. The verifier deleted copied authentication and raw private logs, reaped the bridge, joined the gateway thread and closed its socket. Retained cleanup observations do not prove immediate process-group disappearance or complete historical descendant containment. The private filtered syscall evidence is also incomplete; missing gateway events never prove absence of outside activity. Public summaries retain no credentials or account identity.
+
+This addendum supersedes blanket no-external-inference statements in earlier dated snapshots: one real synthetic Codex turn ran, while the application agent/auditor used mock profiles. No Nebius/Nemotron inference, sponsor qualification, fresh quality/cost/latency evaluation, native Docker execution or public deployment ran. The independently reviewed 05:42 inventory remains the application handoff baseline; this later evidence needs its own documentation review. Hard stop remains 07:00 UTC.
+
 ## Current handoff checkpoint, 2026-10-28 05:42 UTC
 
 The run is ongoing until 07:00 UTC. No new issue starts after 06:00 UTC. All 17 PRs remain open drafts; nothing has been merged or closed. This checkpoint supersedes current-status claims in the dated progress records below. Those records preserve earlier heads, findings and test results as history.
