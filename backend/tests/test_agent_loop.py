@@ -965,7 +965,8 @@ def test_limits_wall_clock_timeout(test_env: dict[str, Any]) -> None:
                 profile="mock",
             )
 
-    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client,
+                                  time_fn=clock, sleep_fn=clock.sleep)
     loop = AgentLoop(
         run_id=run_id,
         provider_client=SlowMockProvider(),
@@ -979,6 +980,7 @@ def test_limits_wall_clock_timeout(test_env: dict[str, Any]) -> None:
 
     assert result.status == "FAILED"
     assert "Wall clock timeout reached" in (result.error or "")
+    assert [message["role"] for message in result.messages] == ["system", "user"]
 
 
 def test_cli_scenario_01_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1192,7 +1194,8 @@ def test_final_response_after_deadline_marks_run_failed(test_env: dict[str, Any]
                 profile="mock",
             )
 
-    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client,
+                                  time_fn=clock, sleep_fn=clock.sleep)
     loop = AgentLoop(
         run_id=run_id,
         provider_client=OvertimeFinalResponseProvider(),
@@ -1206,6 +1209,7 @@ def test_final_response_after_deadline_marks_run_failed(test_env: dict[str, Any]
 
     assert result.status == "FAILED"
     assert "Wall clock timeout reached" in (result.error or "")
+    assert [message["role"] for message in result.messages] == ["system", "user"]
     assert result.final_response is None
 
     # Verify run state in gateway database is FAILED, not COMPLETED

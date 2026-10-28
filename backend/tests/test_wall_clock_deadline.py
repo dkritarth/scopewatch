@@ -54,7 +54,8 @@ def test_final_response_without_tools_after_deadline_fails(test_env: dict[str, A
             )
 
     provider = ExpiredFinalResponseProvider()
-    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    dispatcher = HookedDispatcher(base_url="http://testserver", http_client=client,
+                                  time_fn=clock, sleep_fn=clock.sleep)
     loop = AgentLoop(
         run_id=run_id,
         provider_client=provider,
@@ -73,6 +74,8 @@ def test_final_response_without_tools_after_deadline_fails(test_env: dict[str, A
     # that call, before completion could be reported.
     assert provider.calls == 1
     assert result.final_response is None
+    assert dispatcher.completions == 0
+    assert [message["role"] for message in result.messages] == ["system", "user"]
 
     # Invariant: Gateway run status must be FAILED, not COMPLETED or ACTIVE
     run_resp = client.get(f"/api/v1/runs/{run_id}")
@@ -107,7 +110,8 @@ def test_tool_call_after_deadline_fails_before_dispatch(test_env: dict[str, Any]
                 profile="mock",
             )
 
-    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    dispatcher = HookedDispatcher(base_url="http://testserver", http_client=client,
+                                  time_fn=clock, sleep_fn=clock.sleep)
     loop = AgentLoop(
         run_id=run_id,
         provider_client=ExpiredToolCallProvider(),
@@ -125,6 +129,11 @@ def test_tool_call_after_deadline_fails_before_dispatch(test_env: dict[str, Any]
     assert len(result.actions) == 0
     # The provider returned after expiry; the post-provider check blocks dispatch.
     assert result.total_tool_calls == 0
+    # Post-provider expiry rejects the response before an assistant turn exists.
+    # The later pre-dispatch guard runs after that turn is appended.
+    assert [message["role"] for message in result.messages] == ["system", "user"]
+    assert dispatcher.submits == 0
+    assert dispatcher.completions == 0
 
     run_resp = client.get(f"/api/v1/runs/{run_id}")
     assert run_resp.status_code == 200
@@ -145,6 +154,11 @@ class HookedDispatcher(GatewayDispatcher):
         self._on_record = on_record
         self._on_submit = on_submit
         self.submits = 0
+        self.completions = 0
+
+    def complete_run(self, run_id: str, **kwargs: Any) -> Any:
+        self.completions += 1
+        return super().complete_run(run_id, **kwargs)
 
     def record_prompt_version(self, run_id: str, prompt_version: str) -> Any:
         if self._on_record is not None:
@@ -188,6 +202,7 @@ def test_deadline_already_passed_never_reaches_the_first_provider_call(
     dispatcher = HookedDispatcher(
         base_url="http://testserver",
         http_client=client,
+        time_fn=clock, sleep_fn=clock.sleep,
         on_record=lambda: clock.advance(0.02),  # exactly the budget, spent
     )
     loop = AgentLoop(
@@ -234,7 +249,8 @@ def test_exactly_at_the_deadline_is_expired_never_completed(test_env: dict[str, 
                 profile="mock",
             )
 
-    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    dispatcher = HookedDispatcher(base_url="http://testserver", http_client=client,
+                                  time_fn=clock, sleep_fn=clock.sleep)
     loop = AgentLoop(
         run_id=run_id,
         provider_client=ExactlyOnBudgetProvider(),
@@ -249,6 +265,8 @@ def test_exactly_at_the_deadline_is_expired_never_completed(test_env: dict[str, 
     assert result.status == "FAILED"
     assert "Wall clock timeout reached" in (result.error or "")
     assert result.final_response is None
+    assert dispatcher.completions == 0
+    assert [message["role"] for message in result.messages] == ["system", "user"]
 
     run_resp = client.get(f"/api/v1/runs/{run_id}")
     assert run_resp.status_code == 200
@@ -432,6 +450,7 @@ def test_approval_polling_terminates_on_wall_clock_deadline(
     dispatcher = HookedDispatcher(
         base_url="http://testserver",
         http_client=client,
+        time_fn=clock, sleep_fn=clock.sleep,
         on_submit=lambda n: clock.advance(1.0) if expiry_phase == "dispatch" else None,
     )
     loop = AgentLoop(
@@ -494,3 +513,37 @@ def test_scripted_clock_can_complete_with_remaining_budget(test_env: dict[str, A
     result = loop.run()
     assert result.status == "COMPLETED", result.error
     assert client.get(f"/api/v1/runs/{run_id}").json()["status"] == "COMPLETED"
+
+
+@pytest.mark.parametrize("mutation", ["removed", "exclusive"])
+def test_post_provider_guard_mutations_are_detected(mutation: str) -> None:
+    """A later dispatcher or pre-dispatch timeout cannot mask this guard."""
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    expression = "if (self.time_fn() - start_time) >= self.wall_clock_timeout_s:"
+    replacement = "if False:" if mutation == "removed" else expression.replace(">=", ">")
+    selected = [
+        "backend/tests/test_wall_clock_deadline.py::test_exactly_at_the_deadline_is_expired_never_completed",
+        "backend/tests/test_wall_clock_deadline.py::test_final_response_without_tools_after_deadline_fails",
+        "backend/tests/test_wall_clock_deadline.py::test_tool_call_after_deadline_fails_before_dispatch",
+    ]
+    script = f'''
+import inspect, textwrap, pytest
+import scopewatch.agent.loop as module
+source = textwrap.dedent(inspect.getsource(module.AgentLoop.run))
+assert {expression!r} in source
+source = source.replace({expression!r}, {replacement!r}, 1)
+namespace = {{}}
+exec(compile(source, inspect.getsourcefile(module.AgentLoop.run), "exec"), module.__dict__, namespace)
+module.AgentLoop.run = namespace["run"]
+raise SystemExit(pytest.main({selected!r} + ["-q"]))
+'''
+    result = subprocess.run([sys.executable, "-c", script], cwd=root,
+                            env={**os.environ, "PYTHONPATH": str(root / "backend")},
+                            text=True, capture_output=True, timeout=30)
+    assert result.returncode == 1, "Guard mutation escaped phase tests:\n" + result.stdout + result.stderr
+    assert "FAILED backend/tests/test_wall_clock_deadline.py::test_exactly_at_the_deadline" in result.stdout
