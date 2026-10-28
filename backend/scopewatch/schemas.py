@@ -237,6 +237,27 @@ class EvidenceEvent(BaseModel):
     synthetic: bool = True
 
 
+class AuditTierEvidence(BaseModel):
+    """One tier's result. Model is reported or configured, not proof of availability."""
+    model_config = ConfigDict(extra="forbid")
+
+    tier: str
+    attempted: bool
+    configured_model: str
+    resolved_profile: Optional[str] = None
+    profile: str
+    model: str
+    verdict: str
+    concern_type: Optional[str] = None
+    flagged_excerpts: list[str] = Field(default_factory=list)
+    explanation: str
+    latency_ms: float
+    total_tokens: Optional[int] = None
+    error_code: Optional[str] = None
+    timeout_s: float
+    max_tokens: int
+
+
 class ReasoningAuditRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -253,6 +274,8 @@ class ReasoningAuditRecord(BaseModel):
     latency_ms: float = 0.0
     error_code: Optional[str] = None
     audited_at: str
+    total_tokens: Optional[int] = None
+    tiers: list[AuditTierEvidence] = Field(default_factory=list)
 
 
 class CreateRunRequest(BaseModel):
