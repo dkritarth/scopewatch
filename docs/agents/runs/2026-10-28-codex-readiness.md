@@ -1,0 +1,272 @@
+# Scopewatch readiness audit, 2026-10-28
+
+Prepared by Codex / GPT-6.1 Sol; implementation and review results are attributed below. Refs [#287](https://github.com/dkritarth/scopewatch/issues/287).
+
+## Final handoff preparation, 2026-10-28 06:45 UTC
+
+**17 open drafts, none merged.** No new issue was started after the 06:00 cutoff. Main remains `2bceb3e033c80892778557f0b798a250efcd9c88`. All application heads match the final tested source; no implementation is pending. All listed CI jobs passed at collection. Independent GPT reviews/rechecks report no remaining blockers in the implemented scope. Reviews are COMMENTED, not formal GitHub approvals. #121's full real-peer acceptance remains incomplete as stated below.
+
+This is the final preparation record before the 07:00 UTC hard stop. The cutoff and prep reminders are disabled; the hard-stop reminder remains active. A bounded fresh GPT review of this documentation-only refresh is being requested. No coding or testing may continue past 07:00 UTC. Older checkpoints and findings below remain historical and are superseded by this record and the measured real-peer addendum.
+
+### Exact collected heads
+
+| Draft | Head at 06:45 collection | Base | Checks |
+| --- | --- | --- | --- |
+| [#320](https://github.com/dkritarth/scopewatch/pull/320) | `59988b87324b4d6c008ef7dde453b9fa72e87ad2` | `main` | 6/6 passed |
+| [#324](https://github.com/dkritarth/scopewatch/pull/324) | `0c6d2ff186c13dacaed62e10015bbd40ba8250e0` | `main` | 6/6 passed |
+| [#325](https://github.com/dkritarth/scopewatch/pull/325) | `8674397330ac2d4364a4cb6211bc5c7305fec398` | `main` | 6/6 passed |
+| [#326](https://github.com/dkritarth/scopewatch/pull/326) | `f896bab48f004e373b419cf7d6fdbf9a6976dfa1` | `main` | 6/6 passed |
+| [#327](https://github.com/dkritarth/scopewatch/pull/327) | `535fb4c2f4edef92254edc674c3cbed541b3e752` | `main` | 6/6 passed |
+| [#328](https://github.com/dkritarth/scopewatch/pull/328) | `503969bc23042459ea1a2b0c63dfc76748e48513` | `main` | 6/6 passed |
+| [#329](https://github.com/dkritarth/scopewatch/pull/329) | `6c1214f1050fdac0a1b8d9df88d33525717a2db3` | `main` | 7/7 passed |
+| [#330](https://github.com/dkritarth/scopewatch/pull/330) | `d9b101d7b98e0d8fc5cc032f747c3c91ff04350e` | `main` | 7/7 passed |
+| [#331](https://github.com/dkritarth/scopewatch/pull/331) | `0ffbdb950d6fa9337b8bff84ba7ade553acecfab` | `main` | 6/6 passed |
+| [#332](https://github.com/dkritarth/scopewatch/pull/332) | `d6e6c4b3f8969c4b2a4d232c5d5de2da9844545d` | `main` | 6/6 passed |
+| [#333](https://github.com/dkritarth/scopewatch/pull/333) | `3c63a8c18d606f5505c09b42e47c863cbe8880f9` | `main` | 6/6 passed |
+| [#334](https://github.com/dkritarth/scopewatch/pull/334) | `f59b1eb1edd21b897b230cef2bb1bc56c65c65ff` | `main` | 6/6 passed |
+| [#335](https://github.com/dkritarth/scopewatch/pull/335) | `61b37d29f3b09ab2037967728932710b6d71596a` | `main` | 6/6 passed |
+| [#337](https://github.com/dkritarth/scopewatch/pull/337) | `622d028528ef18d77b710ea21e6d2e7eb519f0db` | `fix/319-filesystem-path-matching` | 6/6 passed |
+| [#338](https://github.com/dkritarth/scopewatch/pull/338) | `91f8e3d2702cb94ce63e864974d49257ff22d317` | `main` | 6/6 passed |
+| [#339](https://github.com/dkritarth/scopewatch/pull/339) | `8df4f70dbad27c3ff01fd10eff76e9efcc69f5d3` | `main` | 6/6 passed |
+| [#340](https://github.com/dkritarth/scopewatch/pull/340) | `636dddace5abe3f092017b3b4bd582b3403e615f` | `t3/acp-relay-bounds` | 6/6 passed |
+
+The #335 row records its head before this log-only refresh; GitHub and the fresh review record identify the resulting documentation head. No application file changes in this refresh. The tested composite contains an earlier audit-log revision; subsequent log updates are validated separately.
+
+### What was completed and verified
+
+The draft wave covers ingress/public errors, conservative two-tier auditing, reproducible evaluation and ablation, hosted review/recovery, filesystem identity/copy-back/retention, bundled fonts, adopter/feedback/media documentation, docs and PoC CI gates, ACP relay bounds, injectable clocks and a bounded ACP v1 client. Exact scopes and independent records remain in the inventory and dated entries below.
+
+Final independent composite `5b7d2980d5ac1424c5a171f139f69a47a987965a` passed full validation: **2,291 backend tests with 25 local Docker-gated skips; reasoning PoC 96 plus 79 subtests; MCP 26; ablation 73; deploy 140; frontend 79; browsers 28; six clean-room scenarios**. All **217 focused ACP cases** passed. Independent localhost effects/refusals, receipt ordering, DNS-free deadlines/cancellation/cleanup, source/schema/lock identity and historical media checks passed. These are actual recorded results, not inferred from green CI. Supplemental security and arithmetic/provenance campaigns are attributed in the earlier checkpoints.
+
+Independent findings were fixed and rechecked: #320 validation-error echo; #324/#330 network claims; #325 sample budgets/profile reservations; #327 timeout/provenance/schema/empty-split gates; #328 stale async state and header layout; #329 artifact comparison and usage validation; #332 stale-claim parsing; #334 deadline phase proof; #339 operator-event labeling; and #340 original receipt binding, opaque IDs and absolute HTTP/DNS lifetime. Other current implementation heads also have independent COMMENT reviews. The real #121 bridge limitation below is an unresolved acceptance gap, not hidden by these passing synthetic tests.
+
+### What remains open
+
+- **Sponsor and delivery:** #214 still needs actual Nebius/Nemotron headline evidence and the selected profile pair. No sponsor inference, fresh detection-quality/cost/latency evaluation or reconstruction of missing historical reports occurred. Track, eligibility/licensing, hosted ownership/billing, video and submission gates remain with #40/#41/#43/#45/#47.
+- **Real Codex mediation:** installed bridge 2.2.2 and Codex 0.164.0 completed one observed synthetic Sol medium turn using supported explicit-title setup and a protective proxy. It made no filesystem callbacks or gateway actions; input stayed unchanged and output absent. Independent source review found no filesystem-to-model-tool translation or compliant configuration-only remedy. #121 remains open. Default tier was requested but observed as null/fast off; preset on-request approval is source-derived. This does not establish stock-client title safety, gateway mediation or native containment. Auth copies/raw private logs were deleted by the verifier; cleanup limits remain explicit in the addendum.
+- **Platforms and deployment:** local native Docker, APFS/NTFS/native Linux casefold, public TLS/proxy/multi-replica behavior and operations outside gateway callbacks remain unverified by this run. Successful hosted CI checks are separately recorded. No deployment, publication or submission occurred.
+- **Later integration:** preserve #331 before stacked #337, and #333 before stacked #340. Suggested docs/runtime order is #324, #328, #338, #330. Keep #329 and #332 validation gates. Deduplicate compatible jsonschema requirements to one `==4.26.0` entry. Reproduce source-bound split audits after #325/#327 integration and regenerate/inspect media after runtime integration; do not relabel historical hashes or scripted captures as fresh evidence. No integration merge was performed here.
+- **Backlog:** no ready issues remain. #293 is needs-human for acceptance of already-merged implementation; #306 is blocked on separately reviewed bounded networking; #175's other-contributor claim was untouched. All draft issues stay open for KD's review. No new work is queued for after the deadline.
+
+## Post-cutoff acceptance evidence, 2026-10-28 06:14 UTC
+
+The 06:00 UTC new-issue cutoff is in force and its reminder was disabled. Only already-claimed #121 verification and handoff work continued. No new issue, product edit, merge or issue closure occurred. All 17 PRs remain drafts. The latest application source and synthetic composite results below are unchanged.
+
+Installed `codex-acp` 2.2.2 and standalone `codex-cli` 0.164.0 completed real initialization/session creation, then one synthetic `gpt-6.1-sol` medium turn. A verification-only supported explicit-title extension suppressed the bridge's hard-coded auxiliary title model; a protective app-server proxy observed one Sol turn and no auxiliary turn before shutdown. This setup does not establish stock-client automatic-title behavior. Default service tier was requested, while returned and outgoing `serviceTier` were null and fast was off. Read-only mode was observed. Installed-source review shows that this preset selects `on-request` approval behavior despite startup requesting `never`; this is source-derived, not independently observed in the retained wire projection. No permission request occurred, and the product client still cancels permissions.
+
+The model reported unavailable client filesystem tools. This is agent-authored output. Direct observations were zero filesystem callbacks, zero gateway actions/decisions/approvals/receipts, an unchanged nonce file and no output copy. Independent Astra review traced the installed initialization, session, prompt and callback paths and found no ACP filesystem-to-model-tool translation or compliant configuration-only remedy. It verified all 40 supplied artifact hashes and an offline extracted-method probe. Relaxing native sandbox/tool restrictions would not establish gateway mediation. **#121 remains open: real gateway filesystem mediation and native containment are not demonstrated.**
+
+The real run and private cleanup finished by 06:03:13 UTC. The verifier deleted copied authentication and raw private logs, reaped the bridge, joined the gateway thread and closed its socket. Retained cleanup observations do not prove immediate process-group disappearance or complete historical descendant containment. The private filtered syscall evidence is also incomplete; missing gateway events never prove absence of outside activity. Public summaries retain no credentials or account identity.
+
+This addendum supersedes blanket no-external-inference statements in earlier dated snapshots: one real synthetic Codex turn ran, while the application agent/auditor used mock profiles. No Nebius/Nemotron inference, sponsor qualification, fresh quality/cost/latency evaluation, native Docker execution or public deployment ran. The independently reviewed 05:42 inventory remains the application handoff baseline; this later evidence needs its own documentation review. Hard stop remains 07:00 UTC.
+
+## Current handoff checkpoint, 2026-10-28 05:42 UTC
+
+The run is ongoing until 07:00 UTC. No new issue starts after 06:00 UTC. All 17 PRs remain open drafts; nothing has been merged or closed. This checkpoint supersedes current-status claims in the dated progress records below. Those records preserve earlier heads, findings and test results as history.
+
+All current application heads have independent GPT COMMENT reviews or exact-head rechecks with no remaining blockers. These are not formal GitHub approvals because the reviewer shares the author account. In particular, #340 at `636dddace5abe3f092017b3b4bd582b3403e615f` is now independently cleared: original held-action/argument binding, opaque session IDs, slow HTTP and resolver-lifetime findings are resolved. The final monitor pass found no new actionable drift, invariant break, test weakening or secret. Every listed CI check was successful at its snapshot, including the new media and ablation jobs. This document-only checkpoint still needs its own independent review.
+
+### Draft inventory
+
+| Draft | Work | Application/source head |
+| --- | --- | --- |
+| [#320](https://github.com/dkritarth/scopewatch/pull/320) | Ingress and public-error bounds | `59988b87324b4d6c008ef7dde453b9fa72e87ad2` |
+| [#324](https://github.com/dkritarth/scopewatch/pull/324) | Adopter and prior-art documentation | `0c6d2ff186c13dacaed62e10015bbd40ba8250e0` |
+| [#325](https://github.com/dkritarth/scopewatch/pull/325) | Conservative two-tier audit | `8674397330ac2d4364a4cb6211bc5c7305fec398` |
+| [#326](https://github.com/dkritarth/scopewatch/pull/326) | Sanitized provider-feedback draft | `f896bab48f004e373b419cf7d6fdbf9a6976dfa1` |
+| [#327](https://github.com/dkritarth/scopewatch/pull/327) | Reproducible evaluation evidence | `535fb4c2f4edef92254edc674c3cbed541b3e752` |
+| [#328](https://github.com/dkritarth/scopewatch/pull/328) | Judge review, expiry and recovery | `503969bc23042459ea1a2b0c63dfc76748e48513` |
+| [#329](https://github.com/dkritarth/scopewatch/pull/329) | Ablation, opt-in adapter and CI | `6c1214f1050fdac0a1b8d9df88d33525717a2db3` |
+| [#330](https://github.com/dkritarth/scopewatch/pull/330) | Scripted media and CI | `d9b101d7b98e0d8fc5cc032f747c3c91ff04350e` |
+| [#331](https://github.com/dkritarth/scopewatch/pull/331) | Filesystem identity and case semantics | `0ffbdb950d6fa9337b8bff84ba7ade553acecfab` |
+| [#332](https://github.com/dkritarth/scopewatch/pull/332) | Current documentation validation gate | `d6e6c4b3f8969c4b2a4d232c5d5de2da9844545d` |
+| [#333](https://github.com/dkritarth/scopewatch/pull/333) | Residual ACP relay bounds | `3c63a8c18d606f5505c09b42e47c863cbe8880f9` |
+| [#334](https://github.com/dkritarth/scopewatch/pull/334) | Injectable deadline clocks | `f59b1eb1edd21b897b230cef2bb1bc56c65c65ff` |
+| [#335](https://github.com/dkritarth/scopewatch/pull/335) | Readiness and handoff log | This log; latest checkpoint review pending |
+| [#337](https://github.com/dkritarth/scopewatch/pull/337) | Copy-back destination containment | `622d028528ef18d77b710ea21e6d2e7eb519f0db` |
+| [#338](https://github.com/dkritarth/scopewatch/pull/338) | Bundled gateway fonts | `91f8e3d2702cb94ce63e864974d49257ff22d317` |
+| [#339](https://github.com/dkritarth/scopewatch/pull/339) | Terminal workspace retention | `8df4f70dbad27c3ff01fd10eff76e9efcc69f5d3` |
+| [#340](https://github.com/dkritarth/scopewatch/pull/340) | Bounded ACP v1 stdio client | `636dddace5abe3f092017b3b4bd582b3403e615f` |
+
+### Executed verification
+
+Independent Sol verification used unpublished snapshot `5b7d2980d5ac1424c5a171f139f69a47a987965a`, containing all seventeen draft inputs and #340's exact final source delta. Full validation passed: **2,291 backend tests, 25 Docker-gated skips; 96 reasoning PoC tests plus 79 subtests; 26 MCP; 73 ablation; 140 deploy; 79 frontend units; 28 browsers; six clean-room scenarios**, with compilation, build-context and docs checks also passing. All **217 focused ACP cases** passed. Independent actual localhost CLI effects/refusals, exact receipt ordering, coverage output and cleanup passed. Default-transport deadline probes observed zero DNS calls and bounded cancellation. Schema definitions, lock regeneration, dependency compatibility and historical gallery checks passed. No external inference ran.
+
+This application snapshot excludes later log-only refreshes. Exact construction, source equality, commands, outputs and limitations are retained in ignored verification artifacts. The only manual composition resolution across the full chain deduplicated compatible jsonschema requirements to one `==4.26.0` entry; the lock already held matching versions/hashes. Subsequent source deltas applied without resolution or functional fixes. Passing this bounded composite is not deployment or full protocol acceptance.
+
+### Integration and remaining work
+
+For later human integration, preserve the actual stacks **#331 before #337** and **#333 before #340**. Recommended documentation/runtime order is **#324, #328, #338, #330**. Keep #329's ablation gate and #332's docs gate together. Regenerate and inspect #330 media on the integrated runtime; the committed gallery remains accurately labeled historical scripted evidence. Reproduce #327's split audits after #325 integration: its recorded auditor implementation hash belongs to its owning head, while combined tier metadata changes that file hash without changing reproduced audit counts. Do not relabel the old hashes as new combined evidence.
+
+- #214 remains the live sponsor/profile and headline evidence gate. Historical reports are still missing; no fresh provider quality, caps, cost or latency qualification is claimed.
+- #121 remains open for a pinned real Codex bridge/session. The new client supports filesystem callbacks, cancels permissions and advertises terminal false. It does not sandbox the peer; timeout does not revoke gateway approvals or undo effects.
+- Local native Docker, native casefold/APFS/NTFS, public TLS/proxy/multi-replica deployment and operations outside gateway callbacks remain unverified by this run. Hosted CI checks are separately recorded.
+- Human track/eligibility/licensing, deployment ownership/billing, video and submission gates remain open in #40/#41/#43/#45/#47. No publication or submission occurred.
+- The queue now reports **no ready issues**. #293's already-merged implementation is marked needs-human for acceptance tied to #214. #306 is marked blocked on separately reviewed bounded networking. #175 retains another contributor's claim and was not taken over. Draft issues remain open while KD reviews the work.
+
+## Progress refresh, 2026-10-28 05:24 UTC
+
+Independent Sol verification now includes #340's exact fixed head `b57168010c8dd5bc9a4ca6c3e4e7313c164149ec` in unpublished seventeen-draft snapshot `8b23806dbd1760933785759654473113d2e16b7d`. The follow-up delta applied without resolution or functional changes. Full validation passed 2,276 backend tests with 25 Docker-gated skips, reasoning PoC 96 plus 79 subtests, MCP 26, ablation 73, deploy 140, frontend 79, browser 28 and six clean-room scenarios. All 202 focused ACP cases passed. Independent actual CLI effects/refusals, slow header/body deadlines, observed cancellation and descendant cleanup also passed. Exact source/schema, lock regeneration, dependency compatibility and historical media checks passed. These results supersede the earlier combined snapshot for the tested source state.
+
+All six #340 CI jobs pass at that head. Its independent Astra code recheck remains pending; passing validation does not resolve review findings by itself. All 17 published PRs remain open drafts. No merge or issue closure, external inference, real Codex bridge run, native Docker run, public deployment or native casefold qualification occurred. The ready code queue is covered; remaining account/provider/deployment/submission gates stay human-owned. The new-issue cutoff remains 06:00 UTC, with the hard stop at 07:00 UTC.
+
+## Progress refresh, 2026-10-28 05:18 UTC
+
+There are now 17 open draft PRs. #121's bounded ACP client is draft [#340](https://github.com/dkritarth/scopewatch/pull/340), stacked on reviewed #333. The initial head `4c84315e9ccfda5c8e0e535a5d90e2fd0f2b0db1` had 58 new tests and full owning-branch validation. Independent Sol verification composed it into unpublished `d60c594`, with one disclosed manual dependency resolution: keep one `jsonschema==4.26.0` entry. The lock already matched. Full combined validation passed 2,265 backend tests with 25 skips, 73 ablation, 79 frontend units and 28 browsers, plus the other existing gates. All 191 focused ACP cases passed, as did separate actual CLI/stdio/localhost effect, refusal, receipt-ordering, coverage and cleanup checks. This result applies to the initial ACP head, not later fixes.
+
+The independent Astra review then found three blocking P2s on that initial head: stale HOLD polling could report another action's receipt as success, continuing HTTP drip exceeded the claimed overall deadline, and valid opaque ACP session IDs were rejected. All 58 tests had passed, so the review findings supersede a blanket readiness conclusion from that earlier validation. The parent fixed these in current head `b57168010c8dd5bc9a4ca6c3e4e7313c164149ec`: preserve held action identity and exact arguments, use cancellable async HTTP behind the synchronous `GatewayClient`, and compare bounded opaque session strings exactly. Unknown extension notifications are also ignored without replies; effect notifications remain refused.
+
+Follow-up verification reports 69 focused ACP cases passed, including real two-write stale-response cases, slow header/body drips, cancellation and child reaping, and pinned-schema session IDs. Four isolated guard-removal mutations were detected by the intended regressions. Owning-branch full validation passed 1,994 backend tests with 25 skips, reasoning PoC 96 plus 79 subtests, MCP 26, deploy 140, frontend 77, browser 18 and six clean-room scenarios. The stronger final fixture/cancellation assertions then passed in a separate 69-case run. Exact-head independent recheck and updated combined verification are being arranged; the prior composite does not verify this follow-up.
+
+#340 advertises filesystem read/write only, cancels permission requests and declares terminal capability false. It is a subprocess client, not a peer sandbox. Real Codex bridge/version/session behavior, operations outside callbacks, native Docker and remote deployment remain unverified. #121 stays open. Nothing has been merged or closed; all published work remains draft. The prior #335 update was independently reviewed at `b713772` with no findings. This newer progress record still needs final review at handoff.
+
+## Progress refresh, 2026-10-28 04:43 UTC
+
+The latest unpublished combined snapshot `488c3d7` includes #329's CI/shared-validation gate at `6c1214f1050fdac0a1b8d9df88d33525717a2db3`, #330's media workflow at `d9b101d7b98e0d8fc5cc032f747c3c91ff04350e`, and #339's operator evidence fix at `8df4f70dbad27c3ff01fd10eff76e9efcc69f5d3`, on the earlier sixteen-draft composition. Every follow-up applied cleanly with no manual resolution. Parent full validation passed: 2,207 backend tests, 25 skips; reasoning PoC 96 plus 79 subtests; MCP 26; newly gated ablation 73; deploy 140; frontend 79; browser 28; compilation, Docker context, docs and six clean-room scenarios all passed. This is local synthetic validation, not a merge or deployment.
+
+Independent Luna review of #329's gate found no workflow findings and verified hosted logs for all 73 tests plus offline artifact generation/check. All seven checks passed at that head. The reviewer disclosed that its supplied checkout lacked the PoC, so it could not repeat pytest locally; actionlint was unavailable. The owning implementer ran local tests and both validation modes, and the parent full combined gate includes the actual 73-test run. #330 and #339 retain their independent exact-head rechecks from the preceding update.
+
+Two bounded independent Astra campaigns found no new blockers on `f1c6380`. The filesystem/retention pass reports 102 repository tests and 29 adversarial cases covering protected bytes, copied markers, SQLite locks, stale approvals, rejected paths, dispatch and evidence ordering. The metrics/provenance pass reports 2,063 Wilson-bound checks, 81 mixed populations, nine campaigns with 792 task/arm replays, 25 rejected mutations and 36 CLI invocations. Neither campaign made source edits or external inference calls.
+
+Integration caveat: #327's committed split-audit source hashes match that PR's exact source. Additive #325 tier metadata changes the combined auditor implementation file hash. The independent campaign reproduced all audit counts unchanged, but the committed audits are not byte-identical to regeneration on the combined checkout. Regenerate and inspect source-bound audit artifacts after integration; do not relabel the owning-PR hashes as combined-source evidence.
+
+At 04:42 UTC, the parent promoted existing unclaimed #121 to ready and claimed it after assessing its concrete ACP v1 acceptance as unblocked. A Sol implementer is building a bounded client/session transport, stacked on reviewed #333, with terminal capability explicitly disabled. No PR or acceptance result exists yet. Real Codex bridge evidence remains pending unless actually obtained, and this work is excluded from the combined snapshot above. This later pickup supersedes the prior statement that no eligible new implementation was assigned; the 06:00 UTC cutoff and 07:00 UTC stop remain in force.
+
+All 16 currently published PRs remain drafts. Nothing was merged or closed. Native Docker/casefold platforms, public TLS/deployment, real provider behavior and human submission gates remain open. The final handoff refresh is still required.
+
+## Progress refresh, 2026-10-28 04:34 UTC
+
+The #339 fix at `8df4f70dbad27c3ff01fd10eff76e9efcc69f5d3` now has an independent Astra recheck. The prior evidence-labeling P2 is resolved, with no new blockers. The recheck reports 46 focused tests, 19 browser tests, actual Chromium/backend flows and remaining validation stages passed. All six CI checks pass. Its COMMENT review is not a formal GitHub approval.
+
+The parent applied only the #339 evidence fix and #330 media-workflow delta to the previously verified composite. Both applied cleanly, with no manual conflict resolution, producing unpublished local commit `f1c6380`. All 79 frontend units and all 28 browser tests passed on that combined runtime. This focused delta run does not claim a new full backend run or verification of #329's pending gate change. The earlier full validation remains tied to `2d249d2f`.
+
+Independent Luna review cleared #330's workflow at `d9b101d7b98e0d8fc5cc032f747c3c91ff04350e`. Both media commands passed from a clean archive, and the hosted job log confirms Node 22 ran both commands. The change-monitor pass found no new actionable collisions; all six standard checks were green on each of the 16 drafts at its snapshot, with #330's media check also green. #329's validation wiring is still in progress. A separate adversarial pass is inspecting the combined filesystem/retention boundary. No new issue, external inference, merge or issue closure occurred.
+
+## Progress refresh, 2026-10-28 04:30 UTC
+
+This update supersedes the current-status statements in the dated snapshots below. The run is ongoing. All 16 published PRs remain drafts, with no merges. The no-new-issue cutoff is 06:00 UTC and the hard stop is 07:00 UTC.
+
+The independent Sol verifier completed a second unpublished composite, `2d249d2f`, at 04:25 UTC. All 16 pinned diffs composed without manual resolutions. Its recorded results are 2,207 backend tests passed with 25 skips, 96 reasoning PoC tests plus 79 subtests, 26 MCP tests, 140 deploy tests, 77 frontend units and 27 browser tests. The complete 73-test monitor-ablation suite, 61 focused evaluation tests, two media regressions, 21 supplemental artifact/evaluation commands, 86 localhost assertions, 16 copy-back cases and five exported evidence-chain checks also passed. Header/font checks passed across 12 viewport/auth combinations. Scratch retention preserved fixtures and evidence. These are local synthetic results, with no external inference.
+
+The composite pins #339 before its new frontend evidence fix and predates the validation-wiring follow-ups to #329 and #330. It is not verification of those later heads. Its fresh media preview is an unpublished local artifact; the committed gallery remains historical and unchanged. Docker runtime, public TLS, native casefold behavior and real providers remain unverified.
+
+- #339 now has head `8df4f70dbad27c3ff01fd10eff76e9efcc69f5d3`. The first Astra review passed 297 backend tests, 59 frontend tests and five scratch/process probes, but found retention events mislabeled as attempted agent actions and policy outcomes. The parent fixed transformation, action reconciliation, filters and the evidence panel. Follow-up validation passed 79 frontend units, all 19 browser tests and 46 backend retention tests. Operator attempts remain unresolved, failed removal may be partial, and policy/approval/execution fields are absent. Independent recheck is running; do not treat the original review as approval of this head.
+- #330 now has head `d9b101d7b98e0d8fc5cc032f747c3c91ff04350e`. A focused Node 22 workflow runs the existing media verifier and its regressions. Both local commands, actionlint and the new hosted media job passed. The workflow needs independent review; assets and historical provenance are unchanged.
+- #329 has a validation-wiring follow-up in progress on its existing draft. Its 73-test offline suite is currently missing from shared validation and CI. The provider adapter and prior usage fixes retain the independent recheck recorded at `6fd8aac` until the new head is reviewed.
+- #335's 04:18 refresh received an independent Luna COMMENT review at `591c8beaac73c147a544df9157630d983836603d`, with no blocking finding. The optional correction about #339's already-passing CI is incorporated below. This newer refresh has not yet been independently reviewed.
+
+The ready queue has no eligible new implementation. #293's implementation is already on main and still needs human/live acceptance; #306 remains blocked in prose on separately reviewed bounded networking. #175 has an existing claim by another contributor. No work was duplicated. The current follow-ups improve validation of existing drafts, with no new issue started.
+
+## Progress refresh, 2026-10-28 04:18 UTC
+
+The 03:32–03:37 snapshot below is historical. Its unresolved-review and recovery descriptions are superseded by this update. No PR has been merged; all published work remains draft for KD. The overall run continues until 07:00 UTC, with no new issue after 06:00 UTC.
+
+- **#328:** Current head `503969bc23042459ea1a2b0c63dfc76748e48513`. Independent GPT reviews cleared stale polling, approval and simulator continuations, actual-workspace assertions, and desktop recovery layout. Parent reports 77 frontend units and 27 browser tests passed; final layout reviewer reports nine judge browser tests and inspected desktop/mobile screenshots. All six CI checks pass.
+- **#329:** Current head `6fd8aac056ffbde9bf2325433b0e87aac3e99b1d`. The opt-in capped provider adapter is implemented. Exact-path artifact comparison and malformed/impossible usage checks are fixed. Independent recheck: all 73 PoC tests and usage/artifact probes passed. No external inference occurred; scripted permission proxies remain distinct from executed attack success. All six CI checks pass.
+- **#332:** Current head `d6e6c4b3f8969c4b2a4d232c5d5de2da9844545d`. Same-line history words no longer excuse current HTTP 401 claims. Parent reports 26 checker regressions and the current-doc checker passed; independent recheck found no blockers. All six CI checks pass.
+- **#333:** Current head `3c63a8c18d606f5505c09b42e47c863cbe8880f9`. Independent review cleared ACP bounds after 132 tests, 75 synthetic probes, 20 mutations and local HTTP ACP verification. All six CI checks pass.
+- **#334:** Recovery #159 now has current head `f59b1eb1edd21b897b230cef2bb1bc56c65c65ff`. The post-provider test gap is fixed: no completion attempt or assistant turn is accepted after expiry, and guard-removal/exclusive-boundary mutations fail at the intended assertions. Parent reports 110 focused passes and 20/20 runs of 41 deadline tests. Independent recheck confirmed the fix. All six CI checks pass.
+- **#337:** Current head `622d028528ef18d77b710ea21e6d2e7eb519f0db`, stacked on #331 at `0ffbdb950d6fa9337b8bff84ba7ade553acecfab`. #167 was promoted ready after the original queue was covered. Independent review found no blockers: 360 tests passed, nine Docker skips, and 25 filesystem probes left victim files unchanged. Concurrent host filesystem replacement remains non-atomic. All six CI checks pass.
+- **#338:** Current head `91f8e3d2702cb94ce63e864974d49257ff22d317` fixes newly filed #336, the missing bundled-font mount observed by media verification. Independent review: 70 backend tests, two live Chromium tests and a symlink-containment probe passed. All three fonts decode locally without external requests. All six CI checks pass.
+- **#339:** Current head `e0b8a5b7b2751b4c15eab0200a950ae5769b39a0` implements #166, also promoted ready after the original queue was covered. Seven-day retention is operator-triggered, dry-run by default and requires explicit `--apply`. Implementer reports 46 focused tests, full validation, and scratch-only dry-run/apply verification. CI had passed; independent review was pending at this refresh. Existing demo/runtime data was not pruned.
+
+#320, #324–327, #330 and #331 retain the reviewed heads recorded below. #335's audit-only scope wording was corrected in `4d76aae`; this progress refresh needs its own independent check. The original ready-queue assessment below predates promoting #166/#167 and filing #336. It does not describe the latest assignments.
+
+The first disposable combined snapshot `41f00ae9d56ddc73494ede9423ae230fb37cdc2f` composed twelve pinned diffs without manual resolutions or PR merges. Its verifier reports full validation with 2,082 backend passes/25 skips, 77 frontend units, 25 browser tests, all PoC/deploy suites, plus 20 offline ablation tests, 61 evaluation tests and two media regressions. Local judge flows and 52 synthetic two-tier assertions passed. That snapshot used #329 at `75d2510` and predates the latest font, layout, retention and phase-test changes. Its header finding was fixed in #328. A fresh combined pass is being arranged; do not treat the old pass as verification of every current head.
+
+All application results in this update are attributed to implementation/review records. This audit update ran no application suite. Docker runtime, public TLS/proxy deployment, native casefold filesystems, real provider behavior, human sponsor/submission gates, and the final combined state remain unverified as stated in the individual records. A final handoff refresh is still required before 07:00 UTC.
+
+## Historical snapshot
+
+Snapshot collected **2026-10-28 03:32–03:37 UTC**. Current fetched `origin/main` is `2bceb3e033c80892778557f0b798a250efcd9c88`. GitHub reviews, heads, checks and recovery work are moving. **This needs a final handoff update**, including exact heads, outstanding findings, CI and recovery PRs. This report is not a launch approval or a substitute for reviewing combined changes.
+
+The October 25 tracker is a historical snapshot. Its implementation-stop instruction and merge workflow are superseded by the current orchestration run, which includes implementation and review. This audit child had a documentation-only assignment: claim #287, publish this log and a draft PR, never merge or close issues. Historical tracker text and evaluation records remain intact. No additional issue was claimed or created, no feature was implemented, and no provider was called.
+
+## Historical PR index reconciled
+
+Of the tracker's 15 indexed PRs, 14 are now merged on main: #258, #269, #277, #282, #284, #285, #286, and #308–314. Their historical draft labels do not describe current state. #252 is closed **without merge**, as is competing #253. #217 remains open. #269's commit message mentions checker wiring, but pinned main's validation script and workflows contain no `check_docs_links` invocation. Its focused final delta dropped the checker step; the recovery must add the actual gate while preserving the merged command-policy fix.
+
+Other completed work must not be duplicated: #315 delivered #293's scenarios, #316 delivered #305's initial path fix, #318 delivered #300's cold-run documentation, and #322 delivered #302's image/preflight tooling. #317 was closed without merge because #293's implementation already exists. A merged offline implementation does not establish hosted execution, sponsor inference or human acceptance.
+
+## Current drafts and independent review evidence
+
+The nine assigned drafts below were OPEN and DRAFT at collection. Two recovery drafts appeared during the refresh below. Exact heads are recorded to avoid treating review of an older head as current acceptance. Every recorded review is COMMENTED, not a formal GitHub APPROVED review, because the reviewer uses the author's account. The records identify independent GPT review except #326's review body, which identifies independence but does not name its model. No review or test execution in this table was performed by this audit agent.
+
+| Draft / issue | Exact head | Independent review, findings and resolution | Recorded validation and limits |
+| --- | --- | --- | --- |
+| [#320](https://github.com/dkritarth/scopewatch/pull/320) / #304 | `59988b87324b4d6c008ef7dde453b9fa72e87ad2` | GPT recheck at 03:00 found no blockers. Prior unknown-field-key echo through validation errors is resolved by fixed public errors and HTTP regressions. Earlier SSE exemption, ACP coverage and argument-recursion findings also have recorded fixes. | Reviewer: 98 focused passes; backend 1,900 passed, 25 skipped; real loopback HTTP rejection/no-effect probes passed. Earlier full run stopped at missing Playwright. Browser passes reported by parent are separate evidence. Six CI checks successful. |
+| [#324](https://github.com/dkritarth/scopewatch/pull/324) / #294 | `0c6d2ff186c13dacaed62e10015bbd40ba8250e0` | GPT recheck at 03:10 found no findings. Prior implication of destination-level network enforcement is corrected to unconditional network denial. | Reviewer: changed-document/link/claim checks and diff check passed; external links returned 200. No app suites or inference. Historical clean-case denominator checked, no evaluation rerun. Six CI checks successful. |
+| [#325](https://github.com/dkritarth/scopewatch/pull/325) / #292 | `8674397330ac2d4364a4cb6211bc5c7305fec398` | GPT recheck at 03:18 resolved both blockers: completion multiplicity bypass and reservation/refund profile identity mismatch. Requested/resolved identity is preserved. Unknown usage remains null and budgets depend on provider-reported usage. | Reviewer: 178 focused passes and synthetic gateway/MockTransport probes passed. Live cap compliance, cancellation, availability, cost and quality unverified. Six CI checks successful. |
+| [#326](https://github.com/dkritarth/scopewatch/pull/326) / #307 | `f896bab48f004e373b419cf7d6fdbf9a6976dfa1` | Independent review at 03:12 found no actionable findings; model attribution is not explicit in the posted review. Historical provider observations, missing captures and unverified strict schema behavior remain distinct. | Reviewer: diff, targeted links/section checks and sensitive-data scan passed. No app suites or provider requests. Six CI checks successful. |
+| [#327](https://github.com/dkritarth/scopewatch/pull/327) / #299 | `535fb4c2f4edef92254edc674c3cbed541b3e752` | GPT re-review resolved all four blockers: successful verdicts with error codes, observed execution without event reference, standalone schema provenance gaps, and empty splits passing clean checks. Event references validate consistency, not authenticity. | Reviewer: clean hashed-lock install and 94 focused passes; mock export/check, capture, schema and split probes passed. Initial environment lacked jsonschema, resolved by locked installation. Historical v1 preserved. Generalization, tuning history and observed long traces unverified. Six CI checks successful. |
+| [#328](https://github.com/dkritarth/scopewatch/pull/328) / #290 | `567143de0b4c0e054c572a0c88397f468af16724` | GPT recheck at 03:35 on this exact head confirms delayed denial callbacks are fixed, after earlier read-callback and workspace-test fixes. A new blocking P2 remains: delayed simulator submit responses restore deleted action evidence/status after reset/reseed. Needs correction and recheck. | Current-head reviewer: 77 unit and three focused reset browser passes; prior denial probe passed; independent delayed simulator-submission probe failed. Six CI checks successful. Hosted TLS/proxy, multiple replicas and sponsor inference unverified. |
+| [#329](https://github.com/dkritarth/scopewatch/pull/329) / #298 | `75d2510d55d76a7eef3bc583b687737ab3f3fc0b` | GPT review at 03:30 on previous `aadfca7c74792b8de9fd0b30148388dd4b82e39c` found a P2: recursive exclusions let rehashed reserved-key changes inside actions pass artifact checks. Also an acceptance gap: bounded opt-in provider adapter is absent, separately from deferring live runs. The updated head needs independent recheck of the artifact fix. Keep issue open for the offline subset. | Reviewer: 12 focused passes, 15 CLI generation/check pairs and policy-before-monitor instrumentation passed; two forged-action mutations incorrectly passed. Permission proxies are not executed attack success. Six CI checks successful, but those checks do not run this new focused suite. |
+| [#330](https://github.com/dkritarth/scopewatch/pull/330) / #297 | `0cb94d3852f8f49d16b6c1436fb79a87441ecdd5` | Independent recheck at 03:31 found no findings. Prior architecture network-scope overclaim is corrected in HTML and regenerated PNG. Captures remain scripted mock evidence. | Reviewer: manifest verification, two regression tests and source/PNG hashes passed; PNG inspected. Earlier review independently regenerated captures. No sponsor evidence. Six CI checks successful. |
+| [#331](https://github.com/dkritarth/scopewatch/pull/331) / #319 | `0ffbdb950d6fa9337b8bff84ba7ade553acecfab` | GPT review at 03:29 found no blockers in synthetic acceptance. Identity checks, per-directory semantics, staging and copy-back share matching; unknown semantics never widen allowed paths. | Reviewer: 471 focused passes, 14 Docker-dependent skips; native hard-link/symlink probes and synthetic casefold probes passed. Native APFS, ext4/f2fs casefold and real containers unverified. Six CI checks successful. |
+
+README/submission overlap is recorded on #324, #328 and #330. Recommended integration order is #324, then #328, then #330, preserving positioning, recovery behavior and scripted-evidence caveats. #330 captures pre-#328 main; regenerate and inspect after runtime integration. #217's checker recovery needs combined-document validation. This audit performs no integration or merge.
+
+## All 20 headline bugs
+
+Merged means present in the pinned main history, not independently retested in this audit. OPEN issue status and partial acceptance remain visible.
+
+| Bug | Current implementation / remaining status |
+| --- | --- |
+| 01 Seed cap crash | #289 closed; #314 merged. Hosted operator verification remains with #43. |
+| 02 Seed autoapproval | #314 merged; synthetic HOLD is preserved. Human approval is still required. |
+| 03 Bare URL static | #308 merged frontend baseline; #290 OPEN with draft #328 for bare arbitrary-port gateway behavior. Current-head review pending as above. |
+| 04 Old gate SSE buffer | #155/#274 merged; old gate removed. Deployed end-to-end latency unverified here. |
+| 05 HOLD expiry | #290 OPEN, draft #328 adds visible expiry and guarded reset/reseed; hosted recovery unverified. |
+| 06 Ingress/resources | #195/#286 output bounds merged; #304 draft #320 reviewed at exact head. #166 workspace retention remains OPEN without a candidate in the current PR inventory. |
+| 07 Approval/terminal races | #281/#282 and #283/#284 merged; #273 also records lifecycle ordering. #328's dashboard callback race is a separate remaining review item. |
+| 08 Landing subscription | #288/#308 merged. Judge-path changes continue in draft #328. |
+| 09 Approval content | #308 merged exact-action display/fail-closed loading baseline. #328's exact denial receipt and real workspace assertions were reviewed; its simulator callback still has a blocking finding. |
+| 10 Misleading decisions/states | #206/#255 and #288/#308 merged. Preserve explicit policy/audit/execution labels during integration. |
+| 11 Nebius attribution | #215/#230/#280 merged historical corrections. #214 OPEN and human-owned; selected pair and headline outcome remain unverified. |
+| 12 Live command mock auditor | #300 closed; #318 merged explicit role-profile documentation. Actual sponsor run remains #214. |
+| 13 CLI cold run | #198/#231 and #300/#318 merged. No live CLI sponsor run performed here. |
+| 14 Missing/untrusted reasoning | #186/#259 escaping and #295/#310 required reasoning plus #296/#312 evidence bounds merged. Do not relabel summaries as provider traces. |
+| 15 Split leakage | #299 OPEN, draft #327 has exact-head GPT re-review. Historical v1 remains preserved and contaminated under the new audit; fresh v2 checks do not prove semantic independence. |
+| 16 Case-insensitive paths | #305 closed, #316 merged. Follow-up #319 OPEN with reviewed draft #331; native filesystem limits remain explicit. |
+| 17 Reviewer auth/CORS | #185/#258 merged. Keep reviewer/agent credential separation in #328 integration; deployment credentials are human-owned. |
+| 18 Network destination condition | #301 closed, #309 merged metadata/workspace fix. Every `network_request` still DENY/NETWORK_DISABLED. No bounded network executor was delivered. |
+| 19 Docker writes/read truncation | #197/#237 read bound, #195/#286 output bounds, #302/#322 image/preflight merged. #167 copy-back destination-symlink issue remains OPEN; no claim that #331's matching work closes its general containment acceptance. Real Docker verification absent here. |
+| 20 Docs checker/setup drift | #300/#318 merged; #269 merged command-policy changes, but actual checker wiring is absent on pinned main. #252 closed unmerged. #217 OPEN recovery is claimed; historical checker/deploy text and combined docs need final reconciliation. |
+
+## Tier0 and sponsor gates
+
+| Gate | Current evidence and human work still open |
+| --- | --- |
+| Track, #40 OPEN | Human records track and rationale against current rules; coding tooling is on main, actual configured Docker/sponsor proof is separate. |
+| Eligibility, representative, licenses, #41 OPEN | Team eligibility, representative, current rules and the actual served Nemotron/dependency/image licenses need human confirmation. |
+| Sponsor/profile story | #216/#243 and #215/#230/#280 merged copy corrections. #214 OPEN requires dated scenarios 06/12, per-action provenance and selected agent/auditor pair. #324 only drafts improved positioning. No new provider evidence in this audit. |
+| Public HTTPS, availability, billing, #43 OPEN | Deployment artifacts exist, including #79 and later hardening. External HTTPS, hosted scenarios, operator credentials, billing alert/budget and owner through December 15 remain unverified here. #320/#328 are drafts, not deployed fixes. |
+| Devpost dry run, #47 OPEN | Human checks form, membership, tags, testing access and actual URLs; artifacts do not establish a successful dry run. |
+| Video, #45 OPEN | Script #225 exists; #330 assets are scripted. Human records/publishes the actual under-three-minute video with per-beat evidence labels after resolving #214. |
+| Submission, #47 OPEN | Human representative submits and retains the private receipt. Deadline remains October 30, 10:00 a.m. Pacific. No submission claimed. |
+
+Remaining tier work is also visible: two-tier #292/#325, positioning #294/#324, assets #297/#330, ablation #298/#329, reproducible evaluation #299/#327, and feedback #307/#326 are drafts. #291/#313's merged permission hook is preflight-only, not proof of a real mediated agent session; ACP #121 remains OPEN. LoRA #303 is deferred and needs human/account/license/training inputs. No weights or improved scores are claimed.
+
+## Recoveries, ready claims and remaining work
+
+At 03:26–03:33, issue comments show fresh Codex/GPT claims for #159, #179 and #217, taking over October claims older than 24 hours. The initial inventory had no recovery drafts; the 03:36 refresh found #332 and #333. #159 still had no draft in that inventory. Local commit identifiers below are claimant-reported candidates, not merged work or results verified by this auditor.
+
+- #159 reuses `8ba6f04` against current main and #284 completion checks. Acceptance still needs injected clock/sleep, explicit expiry-phase and exact-boundary assertions, and 20 consecutive scripted-clock runs. Validation in progress.
+- #179 now has draft [#333](https://github.com/dkritarth/scopewatch/pull/333), head `3c63a8c18d606f5505c09b42e47c863cbe8880f9`, adapted from `97c5bf639478529960204f184a198ff19d9d6a5a`. Implementer reports 132 focused passes including 20 mutation checks, full validation with 1,905 backend passes/25 skips and 18 browser passes, plus mock loopback ACP verification. No independent review yet; three CI checks successful and three running. Remote Docker/external ACP process unverified.
+- #217 now has draft [#332](https://github.com/dkritarth/scopewatch/pull/332), head `8b7b8a41441c816dcbab0f3c570a2679f1232cb3`, reusing remaining portions of `4a58ba0`. Implementer reports 21 checker regressions passed, current-doc checker passed and quick validation passed with 1,889 backend passes/25 skips; full run still reported running. No independent review yet; six CI checks successful. Comments identify out-of-scope dated drift in BUILDING.md, docs/hackathon.md and docs/operations/judge-runbook.md. This audit leaves those files intact.
+
+`python3 scripts/agents/next_issues.py` returned only #293 and #306. Both native blocked-by API lists are empty, which is insufficient evidence of actual readiness:
+
+- **#293 is stale completed implementation, not new coding work.** Main contains `demo/scenarios/15_auth_tampering.json`, `16_auth_safe_control.json` and `backend/tests/test_auth_tampering_scenario.py` through #315. Its October 26 maintainer comment explicitly leaves the issue open for human acceptance confirmation. Live evidence remains unverified pending #214. No duplicate PR is needed.
+- **#306 is unclaimed but has an unmet written prerequisite.** #309 fixed network metadata for workspace actions, not a separately reviewed bounded network operation. #306 requires that operation before opt-in Tavily, plus explicit destinations, bounded queries/results, timeout/budget, environment credentials and runtime receipt/provenance with an injection HOLD. No current PR supplies that prerequisite. Do not treat the empty native dependency list as permission to enable arbitrary networking or claim the bonus.
+
+Other agent-ready issues are already claimed: #290, #292, #294, #297–299, #304, #307, #319 and this tracker, plus the three recoveries above. No remaining unclaimed, immediately implementable **agent-ready** issue is established by this snapshot. Outside that label, #166 has concrete retention/reap/pending-approval/evidence tests to implement, and #167 has destination-symlink refusal/shared-containment regression criteria. Neither has a current candidate or claim in the collected inventory. These are reportable follow-ups, not extra assignments. Deferred #50/#51/#52, ACP #121, historical provider refresh #175 and planning tracker #220 also remain OPEN; their open status alone does not authorize duplicate or expanded work.
+
+## Validation performed by this audit
+
+- `git fetch origin main`, `git rev-parse origin/main`, main-history inspection and `git show` of #293 fixtures/tests confirmed the pinned baseline and existing implementation. The supplied branch held historical commit `06f0873`; fast-forwarding failed without changing files. The audit branch starts at fetched main in the same supplied worktree; the old branch remains preserved.
+- `gh issue view 287 --json ...` read the full tracker and comments. Issue/PR JSON queries read current open inventory, historical PR states, complete draft bodies/reviews/comments/checks, human gates, recovery claims and #306 prerequisites. Native dependency queries for #293/#306 returned empty arrays.
+- `python3 scripts/agents/next_issues.py` completed successfully and returned #293/#306. This lists label/dependency readiness, not acceptance completeness.
+- `python3 scripts/check_docs_links.py --skip-deploy` passed with existing informational forward-pointer messages. Targeted new-log link, URL, banned-claim and secret checks passed. Structural assertions passed for 20 unique headline rows, all 11 collected draft heads, required gate/recovery/dependency references and absence of private home paths or credential-shaped keys. `git diff --check` passed. The repository checker has a fixed document list, so this new log also needs targeted validation.
+
+No backend, frontend, browser, Docker, benchmark or full validation suite was run by this audit agent. No live local app verification was needed for this documentation-only change. All application results above are attributed to PR/reviewer records, not local reruns. Public deployment, provider inference, human confirmations and combined-draft behavior remain unverified. Final handoff must refresh this snapshot after moving review heads and recovery PRs settle.
