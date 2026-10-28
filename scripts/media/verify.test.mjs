@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { cp, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -31,4 +32,14 @@ test('committed captures verify; altered image, source, provenance, and unsafe f
     await writeFile(join(scratch, manifest.assets[0].file), 'not a PNG');
     await assert.rejects(verify(scratch));
   } finally { await rm(scratch, { recursive: true, force: true }); }
+});
+
+test('invalid capture ref refuses before writing artifacts and emits no stack or host path', async () => {
+  const before = await readFile(join(source, 'manifest.json'), 'utf8');
+  const capture = fileURLToPath(new URL('./capture.mjs', import.meta.url));
+  const result = spawnSync(process.execPath, [capture, '--ref', '0000000000000000000000000000000000000000'], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Capture failed during runtime provenance/);
+  assert.doesNotMatch(result.stderr, /\/home\/|\/Users\/|at file:/);
+  assert.equal(await readFile(join(source, 'manifest.json'), 'utf8'), before);
 });

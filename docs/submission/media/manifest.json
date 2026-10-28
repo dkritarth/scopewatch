@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "captured_at_utc": "2026-10-28T03:18:10.985Z",
+  "captured_at_utc": "2026-10-28T03:19:25.599Z",
   "captured_commit": "2bceb3e033c80892778557f0b798a250efcd9c88",
   "frontend_tree": "2604b667679a2e276681f5b738e077eb5ebf1cbc",
-  "capture_script_sha256": "c479e09f56c5a690b426e26430a5e567d71a67ae8a7792d02ce4cc10576d4af9",
+  "capture_script_sha256": "4afa77992903b341cfe8d89dbc5977311aff7a9c3d319a52014f7a2f4149d68a",
   "architecture_source_sha256": "123a301730fe7c5aa5ce60c1b94bf50a687f4033b572ccd471b1ac8e41c042bb",
   "mode": "scripted",
   "agent_profile": "mock",
@@ -51,7 +51,7 @@
       "alt": "Sunbeam activity timeline with the selected reasoning hold and synthetic fixture evidence.",
       "width": 1440,
       "height": 2695,
-      "sha256": "6b804f4f7682993e3a6a4f8e7817b4f2865262b99359d46af8f50ee4dc59bda7"
+      "sha256": "28778fb19b9edcebf6ee26cb355aecbc902dc7e6d6d4cd9858fbf5766621c278"
     },
     {
       "file": "scripted-request-moonlit.png",
@@ -59,7 +59,7 @@
       "alt": "Moonlit request page with proposed write content and approve and deny controls.",
       "width": 1440,
       "height": 1260,
-      "sha256": "0e99d31e78431b3605367392fc8b856fcbdfec19268b8cf5bb4f079a85084e3b"
+      "sha256": "810a65da7037edd28bb49662bf88f31c74801c1b2460ae882b0b1fffa587456b"
     },
     {
       "file": "architecture.png",

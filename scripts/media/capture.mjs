@@ -165,6 +165,7 @@ async function main() {
     };
     stage = 'publish verified files';
     for (const asset of assets) await copyFile(join(scratch, asset.file), join(output, asset.file));
+    await writeFile(join(output, 'architecture.html'), architecture);
     await writeFile(join(output, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
     console.log(`Captured ${assets.length} PNGs from ${commit}; scripted/mock only. Manifest: ${relative(root, join(output, 'manifest.json'))}`);
   } finally {
