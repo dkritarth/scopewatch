@@ -113,6 +113,8 @@ The policy engine (`backend/scopewatch/policy.py`) evaluates candidate actions a
 
 For `run_command` the engine additionally enforces, before any path check: a shell-metacharacter screen on the raw submission, an argv prefix match against the scope's `allowed_commands`, and a default-deny flag allowlist (`RUN_COMMAND_ALLOWED_FLAGS` in `backend/scopewatch/models.py`): a post-prefix option that is not declared for the matched command prefix denies with `COMMAND_NOT_ALLOWED` (`RULE_RUN_COMMAND_FLAG_NOT_ALLOWED`), so behavioural flags with no path signal (`--maxfail`, `-x`, `-q`, `--tb`, `-p`, `-k`, `--deselect`, …) cannot ride through to execution. Allowed options (pytest's path-bearing `--rootdir`/`--junitxml`/`--confcutdir`/`--basetemp`/`-o`, bare python's `-c`/`-m`) still have their values checked by the path rules, and Docker dispatch revalidates prefix, flags, and paths against the staged workspace copy.
 
+Allowed and blocked paths are compared on both the requested name and the resolved target, so an allowed alias cannot authorize a blocked file. When the workspace volume folds case (probed per directory, including Linux per-directory casefold), comparison folds case and Unicode NFC first, so `Private/` matches a blocked `private/`. Folding changes only the comparison, never the path executed (`backend/scopewatch/scope_paths.py`, `backend/scopewatch/path_access.py`; issues #305, #319). Only the Linux ext4 case was exercised in the last run; native macOS and Windows volumes are untested.
+
 Deterministic policy `DENY` is final. It bypasses the reasoning auditor and cannot be overridden by human approval.
 
 Every decision records the policy identity that produced it, as `policy_version` on the `policy_decisions` row and in the `details` of its `POLICY_*` event (issue #119, [ADR-0003](adr/0003-policy-identity-in-evidence.md)). The value is `"<revision label>+<rule-set fingerprint>"` — for example `2026-10-17.1+0c74fc627e49` — and is independent of the `schema_version` ("1") that describes the stored data shape. `evaluate_policy` stamps it at the single public entry point of the engine, while `PolicyDecision.policy_version` defaults to `None` so a read of a pre-version row stays visibly `unknown (legacy)` rather than being assigned the revision running today. Nothing backfills old rows, and no environment variable can override the identity. `ApprovalRequest.policy_version` is derived from the bound decision on read rather than stored twice, so the two cannot disagree. When an approval is resolved after the policy has moved on, it is honoured on the decision the reviewer saw and the drift is recorded explicitly on the event as `policy_version_current` / `policy_version_changed`.
@@ -229,6 +231,10 @@ approvals or unfinished executions. It removes workspace files only, keeping
 decisions and append-only attempt/result evidence. See
 [workspace retention](operations/workspace-retention.md) for the policy and limits.
 
+Docker copy-back refuses a destination that is not a real directory, including the workspace root and its ancestors, and any directory link, before creating anything (`resolve_workspace_target` with `directory_without_links` in `backend/scopewatch/docker_job.py`; issue #167). It does not make concurrent replacement of host directories atomic.
+
+The agent loop and tool dispatcher take an injectable `time_fn` (default `time.monotonic`) so wall-clock budgets are testable without sleeping (`backend/scopewatch/agent/loop.py`, `tools.py`; issue #159).
+
 The executor (`backend/scopewatch/executor.py`) operates strictly within the resolved workspace boundary:
 - Supported operations: `list_directory`, `read_text`, `write_text`, `delete_path` (`backend/scopewatch/executor.py:80-232`).
 - `delete_path` is simulated in the M1 baseline: it returns `"simulated": true` and does not unlink the target (`backend/scopewatch/executor.py:214-232`).
@@ -244,6 +250,8 @@ The frontend (`frontend/`) is a vanilla HTML/CSS/JS dashboard displaying:
   3. Reasoning provenance and audit card (verdict, concern type, model, profile, highlighted trace excerpts, and permanent disclaimer: *"Reasoning is evidence, not proof of intent."*). Provenance badges distinguish verified provider traces from agent-authored summaries, synthetic fixtures, and unverified caller assertions (`CALLER_ASSERTED_*`).
   4. Human approval card with single-use action tokens.
   5. Execution receipt with sanitized outputs.
+- Fonts (DM Sans, Instrument Serif) ship in `frontend/fonts/` and the gateway serves them at `/fonts`, so the CSP `font-src 'self'` holds and no font request leaves the page (`backend/scopewatch/app.py`; issue #336).
+- Hosted review controls: approval cards show UTC expiry, and an operator who sets `SCOPEWATCH_ALLOW_RESET=true` gets reset and reseed of scenario 06 (see the [judge runbook](operations/judge-runbook.md)). Expiry never approves or executes.
 - Visually and textually distinct badges: `HOLD (policy)`, `HOLD (reasoning concern)`, `HOLD (audit failed)`.
 
 ### Mediation boundary

@@ -1,6 +1,6 @@
 # Judge runbook — cold run in ~5 minutes (no keys)
 
-For issue #46. One page a judge follows with zero repo knowledge. All fixtures are synthetic (invented vendors, invoices, bank details). No Docker, no keys, no network. Verified 2026-10-15 on `origin/main` at `e392087` (`./scripts/validate.sh --quick` green, `python3 scripts/check_docs_links.py` PASS).
+For issue #46. One page a judge follows with zero repo knowledge. All fixtures are synthetic (invented vendors, invoices, bank details). No Docker, no keys, no network. Last full run of these steps: 2026-10-15 on `origin/main` at `e392087` (`./scripts/validate.sh --quick` green). The tree has changed since; the 2026-10-28 merged tree has not had a full cold run.
 
 ## 0. Prerequisites (1 min)
 
@@ -32,7 +32,7 @@ Pinned/reproducible variant (same bytes every machine): `pip install --require-h
 
 Open `http://127.0.0.1:8000/` → pick run `Reasoning-Injection Escalation` → policy `ALLOW`, audit `HOLD (reasoning concern)` with highlighted excerpt → **Deny** → denial recorded. Then open `Blocked Confidential Directory Access` → `DENY (BLOCKED_PATH)` with no execution receipt after the decision. Variants: `--agent` (offline mock), `--coding` (M2 scenarios 10–13), `PORT=8001 ./scripts/run_demo.sh` (override).
 
-Approvals are single-use and expire after `SCOPEWATCH_APPROVAL_TTL` seconds (default `300`, from `DEFAULT_EXPIRY_SECONDS` in `backend/scopewatch/config.py`). Reviewer access for approving or denying approvals arrives with #258.
+Approvals are single-use and expire after `SCOPEWATCH_APPROVAL_TTL` seconds (default `300`, from `DEFAULT_EXPIRY_SECONDS` in `backend/scopewatch/config.py`). A separate reviewer credential resolves approvals when auth is enabled (below).
 
 *Authentication Note (issue #185):* Local demo requires zero keys or tokens. If testing against a deployed gateway with auth enabled (`REVIEWER_TOKEN`), paste the reviewer token into the dashboard Reviewer Access panel (top right) to resolve holds. Agent credentials cannot approve holds.
 

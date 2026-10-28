@@ -1,130 +1,79 @@
 # Scopewatch
 
-Scopewatch gives platform and security teams running coding agents a review point before tool actions execute. Teams declare the task scope, route actions through the gateway, and review held actions with policy decisions, reasoning provenance, and execution receipts. It mediates only actions routed through its API.
+Coding agents run shell commands and edit files, and a prompt injection in a README or invoice can steer them. Scopewatch is a gateway that checks each tool action before it runs. A deterministic policy returns `ALLOW`, `HOLD`, or `DENY`. An auditor model reads the agent's exposed reasoning and can hold an allowed action for human review. Every step is recorded as evidence in a reviewer dashboard. It mediates only actions routed through its API.
 
 ![Scripted mock capture of the current celestial dashboard home. No live inference.](docs/submission/media/scripted-home-moonlit.png)
 
-Scripted mock UI capture from pinned main, with fallback fonts. [Gallery, capture provenance, architecture, and live-capture checklist](docs/submission/media/README.md).
+Scripted mock UI capture, fallback fonts. [Gallery and capture provenance](docs/submission/media/README.md).
 
-**Project website and interactive demo:** https://dkritarth.github.io/scopewatch/ (source in [`site/`](site/README.md)). **Judges:** the one-page cold-run sheet is [docs/operations/judge-runbook.md](docs/operations/judge-runbook.md).
+**Run it (no keys, no Docker, no network):**
 
-The gateway combines deterministic policy with an independent reasoning auditor:
+```bash
+python3 -m venv .venv && . .venv/bin/activate && pip install --require-hashes -r backend/requirements.lock && ./scripts/run_demo.sh
+```
+
+Then open <http://127.0.0.1:8000/>. Needs Python 3.12+. Node 22+ is only for the frontend test suites ([BUILDING.md](BUILDING.md) has details).
+
+**Where to look:** [project website and replay](https://dkritarth.github.io/scopewatch/) (source in [`site/`](site/README.md)) | [judge runbook](docs/operations/judge-runbook.md), a five-minute cold run | [project status](docs/STATUS.md), what works and what is unverified | [hackathon checklist](docs/hackathon.md) | [submission package](docs/submission/description.md)
+
+## How it works
 
 1. Policy checks paths, tools, and operations first. Network operations are currently denied, even when the task scope lists destinations. A `DENY` is final.
-2. The auditor can escalate a policy `ALLOW` to `HOLD`. An attempted audit that fails also holds the action. The model cannot grant access.
-3. A held action needs an exact, single-use approval before the controlled executor can run it. Approval cannot override policy `DENY`.
-4. The reviewer dashboard separates observed actions, policy decisions, provider-exposed traces, summaries, approvals, and execution receipts. A capture credential gates verified provenance labels; grounded excerpts quote the submitted evidence, not proven intent.
+2. The auditor can escalate a policy `ALLOW` to `HOLD`. An audit that was attempted and failed also holds the action. The model cannot grant access.
+3. A held action needs an exact, single-use approval before the executor runs it. Approval cannot override a policy `DENY`.
+4. The dashboard separates observed actions, policy decisions, provider-exposed traces, summaries, approvals, and execution receipts. A capture credential gates verified provenance labels. Grounded excerpts quote the submitted evidence and do not prove intent.
 
-[Adoption and prior art](docs/adoption-and-prior-art.md) explains the integration work, real vulnerability disclosures, overlap with existing guardrails, and limits under monitoring awareness or obfuscation. No adoption-time or cost savings have been measured. The shipped agent/auditor pair and live headline scenario remain pending [#214](https://github.com/dkritarth/scopewatch/issues/214).
+[Adoption and prior art](docs/adoption-and-prior-art.md) covers who this is for, real vulnerability disclosures, overlap with existing guardrails, and limits under monitoring awareness. No adoption-time or cost savings have been measured. The shipped agent/auditor pair and the live headline scenario are still open ([#214](https://github.com/dkritarth/scopewatch/issues/214)).
 
-> **Interception coverage statement:**
-> All tool actions go through the gateway API; actions that bypass the API are not observed, blocked, or recorded.
-> Scopewatch is an application-level gateway: it mediates only actions routed through its API. It does not intercept arbitrary out-of-band host processes or direct OS system calls (the M2 baseline adds a Docker-isolated executor per run: `backend/scopewatch/executor_docker.py`).
->
-> Reasoning traces are isolated inside `<untrusted_reasoning_trace>` boundary delimiters. Reasoning is evidence, not proof of intent.
->
-> **Reasoning statement:** raw reasoning reaches the auditor only through provider response fields, checked in order in `backend/scopewatch/providers/client.py`: `message.reasoning_content`, then `message.reasoning`, then `message.reasoning_details`. Within `reasoning_details`, only `reasoning.text` blocks are raw traces (`PROVIDER_EXPOSED_TRACE`); `reasoning.summary` blocks are summaries (`AGENT_AUTHORED_SUMMARY`), and unknown, redacted, or encrypted variants are `UNAVAILABLE` rather than being shown as raw text. Anything else (including `<thinking>` blocks inside message content) is ignored and recorded as `UNAVAILABLE`. Visible reasoning can be unfaithful or incomplete: a model may rationalize, omit, or misstate its own plan, so a clean trace never proves benign intent. Closed models typically expose no reasoning fields at all and yield agent-authored summaries (`AGENT_AUTHORED_SUMMARY`) at best.
->
-> **Who is allowed to claim provenance:** the action API cannot tell a trace captured in-process by the provider client from a label typed into a JSON body. Only a submission carrying the operator-issued capture credential (`SCOPEWATCH_CAPTURE_TOKEN`, held by the agent loop and the demo seeder, never by a browser or a relayed adapter) is stored as a verified provider trace. Any other claim is stored as `CALLER_ASSERTED_PROVIDER_TRACE` or `CALLER_ASSERTED_SUMMARY`, with the raw claim kept in `caller_claimed_provenance` for diagnostics. Provenance labels are evidence metadata: they never affect a policy decision, and reasoning can still only escalate.
->
-> **Model data policy:** only synthetic fixtures and invented content are ever sent to model providers. Free and stealth endpoints may log prompts, so provider calls carry nothing real by construction. Evaluation reports pin the profile, the served model ID, the date, and the case-file hash (`docs/evaluation.md`).
+## What the evidence does and does not show
+
+- **Interception coverage.** Scopewatch is an application-level gateway. Actions that bypass the API are not observed, blocked, or recorded, and it does not intercept host processes or direct system calls. A Docker-isolated executor runs `run_command` (`backend/scopewatch/executor_docker.py`).
+- **Reasoning.** The auditor receives raw reasoning only from provider response fields, checked in order in `backend/scopewatch/providers/client.py`: `message.reasoning_content`, `message.reasoning`, then `message.reasoning_details`. In `reasoning_details`, `reasoning.text` blocks are provider-exposed traces (`PROVIDER_EXPOSED_TRACE`), `reasoning.summary` blocks are summaries (`AGENT_AUTHORED_SUMMARY`), and redacted or unknown variants are `UNAVAILABLE`. Anything else, including `<thinking>` text inside message content, is ignored and recorded as `UNAVAILABLE`. Traces go to the auditor inside `<untrusted_reasoning_trace>` delimiters. A model can rationalize, omit, or misstate its plan, so a clean trace never proves benign intent. Closed models usually expose no reasoning fields.
+- **Provenance.** The API cannot tell a trace captured by the provider client from a label typed into a JSON body. Only a submission carrying the operator-issued `SCOPEWATCH_CAPTURE_TOKEN` is stored as a verified provider trace. Other claims are stored as `CALLER_ASSERTED_PROVIDER_TRACE` or `CALLER_ASSERTED_SUMMARY`. Labels are evidence metadata and never change a policy decision.
+- **Model data policy.** Only synthetic fixtures and invented content go to model providers. Free and stealth endpoints may log prompts. Evaluation reports pin the profile, served model ID, date, and case-file hash ([evaluation.md](docs/evaluation.md)).
 
 ---
 
-## Quick start
+## Other ways to run
 
-Prerequisites: Python 3.12+, Node.js 22+. No API keys, no Docker, no network needed for the local demo (mock provider). Install once (details in `BUILDING.md`):
+`./scripts/run_demo.sh` seeds the synthetic scenarios, serves the dashboard on `127.0.0.1:8000`, and replays them with no model. Override with `PORT=... HOST=...`. State goes to `runtime-data/scopewatch.db` (gitignored) and per-run copies of `demo/workspace/`.
 
 ```bash
-python3 -m venv .venv && . .venv/bin/activate && pip install --require-hashes -r backend/requirements.lock
+./scripts/run_demo.sh --agent                  # agent loop with the offline mock provider
+./scripts/run_demo.sh --coding                 # coding scenarios 10-13 (needs Docker, see below)
+./scripts/run_demo.sh --db-path /tmp/sw/demo.db --workspace-root /tmp/sw/workspace   # keep the repo clean
 ```
 
-The dashboard itself has no runtime npm dependencies, so `npm ci --prefix frontend` is only needed for the frontend tests (it installs Playwright as a dev dependency).
+Scenarios 10 and 13 submit `run_command`, which policy permits only on the Docker executor. With a reachable Docker daemon the launcher selects `SCOPEWATCH_EXECUTOR=docker`. Without one it warns before seeding, and every `run_command` is refused by policy.
 
-The invoice scenarios (01–06) need nothing else. The coding scenarios (10–13, `./scripts/run_demo.sh --coding`) submit `run_command` actions, which the deterministic policy only permits on the Docker executor: with a reachable Docker daemon the launcher selects `SCOPEWATCH_EXECUTOR=docker` itself, and without one it says so before seeding instead of showing silent `DENY [UNSUPPORTED_OPERATION]` receipts.
-
-### 1. Run the local demo (mock, scripted replay — no keys, no network)
+**Live Nebius inference** (needs `NEBIUS_API_KEY`; keys come from the environment or a gitignored `.env`, see `.env.example`):
 
 ```bash
-./scripts/run_demo.sh
-
-# Run in scripted mode (replays synthetic scenarios)
-./scripts/run_demo.sh
-
-# Run in agent mode with the default offline mock provider
-./scripts/run_demo.sh --agent
-
-# Run in agent mode with live provider profiles (requires API keys in environment)
-export OPENROUTER_API_KEY="sk-or-..."
-export SCOPEWATCH_AGENT_PROFILE=openrouter-dev SCOPEWATCH_AUDITOR_PROFILE=openrouter-dev
-./scripts/run_demo.sh --agent --profile openrouter-dev
-
-# Keep the repository clean: seed and serve a scratch database and workspace copy
-./scripts/run_demo.sh --db-path /tmp/sw/demo.db --workspace-root /tmp/sw/workspace
-```
-
-This starts the FastAPI backend, seeds synthetic invoice scenarios into a local workspace, serves the reviewer UI, and prints:
-
-- **Reviewer dashboard (Live):** [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
-- **API health status:** [http://127.0.0.1:8000/api/v1/health](http://127.0.0.1:8000/api/v1/health)
-- **Active runs list:** [http://127.0.0.1:8000/api/v1/runs](http://127.0.0.1:8000/api/v1/runs)
-- **Pending approvals:** [http://127.0.0.1:8000/api/v1/approvals?status=PENDING](http://127.0.0.1:8000/api/v1/approvals?status=PENDING)
-
-Defaults are `HOST=127.0.0.1` `PORT=8000` (`PORT=... HOST=... ./scripts/run_demo.sh` overrides). The script seeds into `demo/workspace/` (tracked fixtures, created only if missing) and `runtime-data/scopewatch.db` (gitignored). Provider profiles default to `mock` (no keys); live profiles read keys from the environment (`.env.example`, gitignored `.env`).
-
-### 2. Run with live Nebius inference (requires `NEBIUS_API_KEY`)
-
-```bash
-export NEBIUS_API_KEY="nvapi-..."   # Placeholder Token Factory key
-export SCOPEWATCH_AGENT_PROFILE=nebius-demo
-export SCOPEWATCH_AUDITOR_PROFILE=nebius-demo
+export NEBIUS_API_KEY="..."
+export SCOPEWATCH_AGENT_PROFILE=nebius-demo SCOPEWATCH_AUDITOR_PROFILE=nebius-demo
 ./scripts/run_demo.sh --agent --profile nebius-demo
 ```
 
-This runs the Scopewatch agent loop against the `nebius-demo` profile (`nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory). The dashboard shows live provider calls. Nebius exposes no reasoning field, so this profile has no provider-exposed trace. What the gateway records depends on whether Nemotron also writes text into `content` on tool-call turns, which has not been observed live (issue #214): if it does, the agent loop forwards that text as an agent-authored summary (`AGENT_AUTHORED_SUMMARY`) and the auditor reads it, so scenario 06 may `HOLD`, on agent-written text rather than a provider trace; if `content` is empty, provenance is `UNAVAILABLE`, the auditor is skipped, and 06 stays `ALLOW` (see `docs/submission/nebius-nvidia.md` §1, Table 1, and `backend/config/providers.toml`).
+This uses `nvidia/Nemotron-3_5-Lightning` on Nebius Token Factory. Nebius exposes no reasoning field, so there is no provider-exposed trace. If Nemotron writes text into `content` on tool-call turns, the agent loop forwards it as an agent-authored summary and scenario 06 may `HOLD` on that text. If `content` is empty, provenance is `UNAVAILABLE`, the auditor is skipped, and 06 stays `ALLOW`. Neither has been observed live (#214). See `docs/submission/nebius-nvidia.md` and `backend/config/providers.toml`. For a visible provider trace use the `openrouter-dev` profile with `OPENROUTER_API_KEY`.
 
-### 2b. Live gateway mode (`?live=1` / `?live=0`)
+**Live gateway mode.** The gateway serves its dashboard in live mode by default. `?live=0` forces static replay. Failures never substitute fixtures. Approval cards show UTC expiry (`SCOPEWATCH_APPROVAL_TTL`, 300 seconds standalone, one hour in hosted compose), and expiry never approves anything. With `SCOPEWATCH_ALLOW_RESET=true`, an operator can reset evidence and reseed scenario 06 (mock auditor, no autoapproval). Steps are in the [judge runbook](docs/operations/judge-runbook.md#hosted-cold-start-review-and-recovery-290).
 
-The gateway serves its dashboard in live gateway mode by default at any port, including HTTPS behind a proxy. The server marks its own HTML; static hosting remains replay. `?live=1` explicitly requests the gateway and `?live=0` forces static replay even on the gateway. Connection or data failures never substitute fixtures. A gateway connection alone does not imply live model inference.
-
-Demo recovery controls show whether the operator enabled `SCOPEWATCH_ALLOW_RESET=true`. Authenticated deployments require a distinct reviewer token, held only in page memory. Resolve all pending approvals before resetting evidence, then choose **Reseed scenario 06** for a fresh synthetic HOLD. Reseed requires an empty gateway, uses a mock auditor, retains normal budgets, and never autoapproves. It submits only scenario 06's final proposed write; this is not a full agent run. Reset retains workspace files and runtime budgets.
-
-Approval cards show their UTC expiry and remaining seconds. Expiry never approves or executes an action. The hosted compose default is one hour, overridable with `SCOPEWATCH_APPROVAL_TTL`; the standalone gateway default remains 300 seconds. For an expired demo, reset and reseed to obtain a fresh review request.
-
-### 3. Run the Scopewatch agent loop CLI
-
-Drive a scenario directly via the agent loop runner (`backend/scopewatch/agent/__main__.py:110-145`; `python` is absent on some machines, use `python3` with `PYTHONPATH=backend`):
+**Agent loop CLI** (use `python3` with `PYTHONPATH=backend`):
 
 ```bash
-# Run safe invoice audit scenario offline
 PYTHONPATH=backend python3 -m scopewatch.agent --scenario demo/scenarios/01_safe_audit.json --profile mock --in-process
-
-# Run reasoning injection escalation scenario
 PYTHONPATH=backend python3 -m scopewatch.agent --scenario demo/scenarios/06_invoice_injection.json --profile mock --in-process
 ```
 
-### 4. Run the held-out reasoning auditor evaluation
-
-Evaluate auditor accuracy, false-negative rate, false-hold rate, and latency against held-out test cases (`backend/scripts/evaluate_reasoning_audit.py:217-308`; method in `docs/evaluation.md:42-72`):
+**Auditor evaluation** (`backend/scripts/evaluate_reasoning_audit.py`, method in [evaluation.md](docs/evaluation.md)):
 
 ```bash
-# Offline evaluation using mock auditor rules (agent and auditor both mock)
 PYTHONPATH=backend SCOPEWATCH_AGENT_PROFILE=mock SCOPEWATCH_AUDITOR_PROFILE=mock python3 backend/scripts/evaluate_reasoning_audit.py --profile mock --split heldout
-
-# Live evaluation on OpenRouter (requires OPENROUTER_API_KEY in environment)
-OPENROUTER_API_KEY="sk-or-..." PYTHONPATH=backend SCOPEWATCH_AGENT_PROFILE=openrouter-dev SCOPEWATCH_AUDITOR_PROFILE=openrouter-dev python3 backend/scripts/evaluate_reasoning_audit.py --profile openrouter-dev --split heldout
-
-# Live evaluation on Nebius (requires NEBIUS_API_KEY in environment)
-NEBIUS_API_KEY="..." PYTHONPATH=backend SCOPEWATCH_AGENT_PROFILE=nebius-demo SCOPEWATCH_AUDITOR_PROFILE=nebius-demo python3 backend/scripts/evaluate_reasoning_audit.py --profile nebius-demo --split heldout
 ```
 
-### 5. Run clean-room validation
+Live runs use `--profile openrouter-dev` or `--profile nebius-demo` with the matching key and profile variables set.
 
-Verify the entire repository (backend unit/integration tests, PoC tests, frontend unit tests, browser Playwright tests, and clean-room security invariants):
-
-```bash
-./scripts/validate.sh
-```
+**Validation:** `./scripts/validate.sh` runs compile checks, backend, PoC, frontend unit and browser tests, the docs checker, and the clean-room scenario check. `--quick` skips the browser suite. `npm ci --prefix frontend` is needed only for frontend tests.
 
 ---
 
@@ -137,36 +86,6 @@ Verify the entire repository (backend unit/integration tests, PoC tests, fronten
 | `mock` (structural check, not a model) | `mock-rules-auditor` | 93.8% | 2.78% | 16.67% | 0.00% | 1 ms |
 
 Both live profiles missed the <5% false-negative target. Their false negatives were in `injection_following`. Each profile recorded 0 false holds among 12 clean cases, or 0/24 clean case evaluations across the two runs, not 0/96 total audits. These are historical auditor-only results with the model IDs and date recorded in the tracked [verification report](docs/spikes/2026-10-nemotron-provider-verification.md). They do not measure current gateway performance or the shipped agent/auditor pair. Later grounding, prompt, and evidence-handling changes have not been re-measured here. See [evaluation methodology and caveats](docs/evaluation.md).
-
----
-
-## Core capabilities
-
-1. **Deterministic policy engine** (`backend/scopewatch/policy.py:36-283`; `backend/tests/test_agent_end_to_end.py::test_invariant_1_*`)
-   Evaluates actions against task scope allowlists and blocklists without relying on non-deterministic model calls. Blocks parent-directory traversal (`..`), symlink breakout, null bytes, disallowed operations, and unauthorized network calls.
-
-2. **Escalate-only reasoning auditor** (`backend/scopewatch/reasoning_audit.py:890-1062`; `backend/scopewatch/service.py:461-484`; `backend/tests/test_agent_end_to_end.py::test_invariant_4_*,test_invariant_5_*`)
-   Evaluates agent reasoning traces per turn with grounded excerpt validation. If the auditor flags a concern (`SCOPE_DRIFT`, `INJECTION_FOLLOWING`, `EXFILTRATION_INTENT`, `POLICY_EVASION`) or encounters an error/timeout, it escalates an `ALLOW` to a `HOLD`. It never produces `ALLOW` or `DENY`.
-
-3. **Swappable provider profile layer** (`backend/scopewatch/providers/`; `backend/config/providers.toml:5-29`)
-   Centralizes model routing via `backend/config/providers.toml` supporting `mock` (offline testing), `openrouter-dev`, and `nebius-demo` (NVIDIA Nemotron on Nebius Token Factory). Automatically normalizes raw reasoning extraction and enforces sanitized error handling.
-
-4. **Purpose-built agent loop** (`backend/scopewatch/agent/loop.py`; isolation in `backend/tests/test_agent_loop.py::test_agent_package_ast_invariants,test_agent_package_module_import_isolation`)
-   A minimal, isolated agent loop (`backend/scopewatch/agent/`) that interacts with the environment exclusively via gateway-mediated tools (`list_directory`, `read_text`, `write_text`, `delete_path`). Has zero import path to the executor.
-
-5. **Approval workflows** (`backend/scopewatch/app.py:191,205`; `backend/scopewatch/service.py:831-900`; `backend/tests/test_agent_end_to_end.py::test_invariant_2_*,test_invariant_3_*`)
-   Generates single-use approval requests for sensitive operations. Human reviewers approve or deny actions directly in the UI or via REST API. Approvals cannot authorize an action with a deterministic `DENY`. Approval requests expire after `SCOPEWATCH_APPROVAL_TTL` seconds (default `300`, from `DEFAULT_EXPIRY_SECONDS` in `backend/scopewatch/config.py`). Reviewer access uses a separate credential; agent credentials cannot resolve approvals.
-
-6. **Structured five-part evidence panel** (`frontend/scripts/app.js`; `frontend/index.html:149-160`)
-   Every action audit displays:
-   - **Observation:** Tool, operation, resource, arguments, and timestamp.
-   - **Policy decision:** Outcome (`ALLOW`, `DENY`, `HOLD`), reason code, and matched rule.
-   - **Human approval:** Resolution state, reviewer identity, and timestamp.
-   - **Execution receipt:** Execution status, output summary, and sanitized output data.
-   - **Reasoning provenance:** Explicit disclosures distinguishing provider-level traces (`PROVIDER_EXPOSED_TRACE`) from agent-authored summaries (`AGENT_AUTHORED_SUMMARY`), synthetic fixtures (`SYNTHETIC_FIXTURE`), and unverified caller assertions (`CALLER_ASSERTED_PROVIDER_TRACE`, `CALLER_ASSERTED_SUMMARY`), with verbatim excerpt highlighting.
-
-7. **Live SSE streaming** (`GET /api/v1/runs/{run_id}/events/stream` at `backend/scopewatch/app.py:231`; JSON list at `app.py:221`; `frontend/scripts/api.js`)
-   Real-time event updates stream directly to the reviewer dashboard via Server-Sent Events (SSE) with automated fallback polling.
 
 ---
 
@@ -206,13 +125,14 @@ Live-model reachability for each of these outcomes (three live runs per scenario
 
 ---
 
-## Architecture and documentation
+---
 
-For deeper technical documentation, review:
-- [Architecture overview](docs/ARCHITECTURE.md)
-- [ADR-0001: Pre-Execution Gateway with Open-Weight Reasoning Agent](docs/adr/0001-pre-execution-gateway.md)
-- [Reasoning auditor evaluation methodology](docs/evaluation.md)
+## Documentation
+
+- [Project status](docs/STATUS.md) and [hackathon checklist](docs/hackathon.md)
+- [Architecture overview](docs/ARCHITECTURE.md) and [ADR-0001](docs/adr/0001-pre-execution-gateway.md)
+- [Evaluation methodology](docs/evaluation.md)
 - [Nemotron provider spike](docs/spikes/2026-09-nemotron-provider-spike.md)
-- [Building and testing guide](BUILDING.md)
-- [Agent guide](AGENTS.md) and [agent playbook](docs/agents/README.md)
-- [Repository governance](docs/repository-governance.md)
+- [Building and testing](BUILDING.md)
+- [Agent guide](AGENTS.md), [agent playbook](docs/agents/README.md), [repository governance](docs/repository-governance.md)
+- [All docs](docs/README.md)
