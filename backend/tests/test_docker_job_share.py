@@ -613,3 +613,73 @@ def test_staging_leaves_no_residue_on_failure(tmp_path: Path) -> None:
     with pytest.raises(OSError):
         docker_job.stage_workspace_copy(src / "missing")
     assert set(tmp_path.iterdir()) == before
+
+
+@pytest.mark.parametrize("runner_side", [False, True], ids=["gateway", "runner"])
+@pytest.mark.parametrize("foreign_run", [False, True], ids=["inside-link", "other-run-link"])
+def test_copyback_refuses_destination_directory_alias_on_both_backends(
+    monkeypatch, tmp_path: Path, runner_side: bool, foreign_run: bool
+) -> None:
+    """Exercise real staging/copy-back; only the Docker process is synthetic."""
+    ws = tmp_path / "volume" / "run-a"
+    ws.mkdir(parents=True)
+    other = ws.parent / "run-b" if foreign_run else ws / "other"
+    other.mkdir()
+    (other / "victim.txt").write_text("original")
+    (ws / "outputs").symlink_to(other, target_is_directory=True)
+    (ws / "safe.txt").write_text("before")
+    seen = []
+
+    def container_write(copy: Path) -> None:
+        seen.append(copy)
+        (copy / "outputs").unlink()
+        (copy / "outputs").mkdir()
+        (copy / "outputs" / "victim.txt").write_text("overwritten")
+        (copy / "outputs" / "new.txt").write_text("planted")
+        (copy / "safe.txt").write_text("after")
+
+    if not runner_side:
+        import scopewatch.executor_docker as gateway_mod
+
+        _mock_docker_run(monkeypatch, gateway_mod, container_write)
+        monkeypatch.setattr(gateway_mod, "is_docker_available", lambda: True)
+        receipt = DockerExecutor().execute(
+            _action("write_text", "safe.txt", arguments={"content": "after"}),
+            ws,
+            policy_decision=_allow(),
+        )
+        assert receipt.status == ExecutionStatus.EXECUTED, receipt.sanitized_result
+        result = receipt.sanitized_result
+    else:
+        import time
+        from scopewatch.executor_remote import sign_dispatch_payload
+
+        _mock_docker_run(monkeypatch, runner_mod, container_write)
+        config = runner_mod.RunnerConfig()
+        config.token = "synthetic"
+        config.signing_key = "synthetic-independent-signing-key"
+        config.workspace = ws.parent
+        action = {
+            "id": "action-1", "run_id": "run-1", "operation": "write_text",
+            "resource": "safe.txt", "arguments": {"content": "after"},
+        }
+        decision = {"id": "d1", "action_request_id": "action-1", "outcome": "ALLOW"}
+        body = {
+            "issued_at": time.time(), "dispatch_token": "copyback-167",
+            "run_workspace": "run-a",
+            "action_digest": runner_mod.canonical_action_digest(action, decision, "run-a"),
+            "action": action, "policy_decision": decision, "approval": None,
+        }
+        body["dispatch_signature"] = sign_dispatch_payload(body, config.signing_key)
+        status, payload = runner_mod.handle_execute(body, config, runner_mod.DispatchTokenStore())
+        assert status == 200, payload
+        assert payload["status"] == "EXECUTED", payload
+        result = payload["result"]
+
+    assert result["copy_back_refused"] == ["outputs"]
+    assert (other / "victim.txt").read_text() == "original"
+    assert sorted(p.name for p in other.iterdir()) == ["victim.txt"]
+    assert (ws / "outputs").is_symlink()
+    assert (ws / "safe.txt").read_text() == "after"
+    assert len(seen) == 1
+    assert not seen[0].exists()  # caller still cleans up its staging directory

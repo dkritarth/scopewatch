@@ -9,7 +9,8 @@ exported evidence events still has the same order and content it had when it
 was recorded, and checks recorded lifecycle rules (``evidence before effect``,
 ``no decision, no execution``). Event types must match the gateway's catalog
 exactly. ``RUN_COMPLETED`` and ``SYSTEM_ERROR`` close the run; only repeated
-close/fail events and expiry of already-pending approvals may follow them.
+close/fail events, expiry of already-pending approvals, and operator workspace
+retention records may follow them. Retention records cannot carry action IDs.
 Per action the verifier checks that:
 
 - execution is authorised: a prior ``POLICY_ALLOWED``, or a prior
@@ -103,11 +104,15 @@ APPROVAL_CLOSED_EVENT_TYPES = frozenset(
 # Kept local so the offline verifier remains stdlib-only. A regression test
 # compares this catalog with models.EventType to catch drift.
 RUN_TERMINAL_EVENT_TYPES = frozenset({"RUN_COMPLETED", "SYSTEM_ERROR"})
+WORKSPACE_RETENTION_EVENT_TYPES = frozenset({
+    "WORKSPACE_PRUNE_ATTEMPTED", "WORKSPACE_PRUNED", "WORKSPACE_PRUNE_FAILED",
+})
 KNOWN_EVENT_TYPES = (
     DECISION_EVENT_TYPES
     | EXECUTION_EVENT_TYPES
     | APPROVAL_CLOSED_EVENT_TYPES
     | RUN_TERMINAL_EVENT_TYPES
+    | WORKSPACE_RETENTION_EVENT_TYPES
     | frozenset({
         "RUN_CREATED", "ACTION_REQUESTED", "APPROVAL_REQUESTED", "APPROVAL_GRANTED",
         "REASONING_AUDIT_COMPLETED", "REASONING_AUDIT_FAILED",
@@ -475,8 +480,12 @@ def verify_records(
             )
 
         # 7. terminal runs accept only repeated close/fail records and expiry
-        # of approvals already pending at closure (the reconciler can do this).
+        # of approvals already pending at closure, plus actionless operator
+        # retention evidence. Retention cannot reopen the action lifecycle.
         violation = None
+        retention_event = rec.event_type in WORKSPACE_RETENTION_EVENT_TYPES
+        if retention_event and (run_terminal is None or rec.action_id is not None):
+            violation = "workspace retention requires a terminal run and no action ID"
         if run_terminal is not None and rec.event_type not in RUN_TERMINAL_EVENT_TYPES:
             state = actions.get(rec.action_id) if rec.action_id is not None else None
             pending_expiry = (
@@ -486,7 +495,7 @@ def verify_records(
                 and state.approval_requested
                 and state.approval is None
             )
-            if not pending_expiry:
+            if not pending_expiry and not (retention_event and rec.action_id is None):
                 violation = f"{rec.event_type} after terminal run event {run_terminal}"
 
         # 8. per-action lifecycle

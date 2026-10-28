@@ -31,6 +31,10 @@ jobs:
       # excludes a COPY source breaks every image build.
       - name: Check .dockerignore excludes secrets and keeps every COPY source
         run: python scripts/check_dockerignore.py
+      - name: Test documentation checker regressions
+        run: python -m pytest backend/tests/test_check_docs_links.py -q
+      - name: Check current documentation and deployment files
+        run: python scripts/check_docs_links.py
       - name: Build executor image with test runner
         run: docker build -f backend/executor/Dockerfile -t scopewatch-executor:ci .
       - run: python -m pytest backend/tests -v

@@ -136,6 +136,10 @@ export async function checkHealth() {
   }
 }
 
+export async function reseedDemo() {
+  return fetchJson("/api/v1/demo/reseed", { method: "POST" });
+}
+
 export async function resetDemo() {
   return fetchJson("/api/v1/demo/reset", { method: "POST" });
 }
@@ -303,6 +307,9 @@ export const LIVE_EVENT_TYPES = [
   "EXECUTION_FAILED",
   "RUN_COMPLETED",
   "SYSTEM_ERROR",
+  "WORKSPACE_PRUNE_ATTEMPTED",
+  "WORKSPACE_PRUNED",
+  "WORKSPACE_PRUNE_FAILED",
   "REASONING_AUDIT_COMPLETED",
   "REASONING_AUDIT_FAILED",
 ];

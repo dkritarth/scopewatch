@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 import uuid
 import httpx
 from pydantic import BaseModel, Field
@@ -92,7 +92,11 @@ class AgentRunResult(BaseModel):
 
 
 class AgentLoop:
-    """Model-driven agent loop mediated strictly by the Scopewatch gateway."""
+    """Model-driven agent loop mediated strictly by the Scopewatch gateway.
+
+    An explicitly supplied dispatcher must use the same monotonic clock as
+    this loop, because completion receives an absolute deadline.
+    """
 
     def __init__(
         self,
@@ -110,6 +114,8 @@ class AgentLoop:
         poll_interval_s: float = 0.5,
         requested_by: str = "scopewatch-agent",
         prompt_version: str = PROMPT_VERSION,
+        time_fn: Callable[[], float] = time.monotonic,
+        sleep_fn: Callable[[float], None] = time.sleep,
     ) -> None:
         self.run_id = run_id
         self.max_turns = max_turns
@@ -118,6 +124,9 @@ class AgentLoop:
         self.poll_interval_s = poll_interval_s
         self.requested_by = requested_by
         self.prompt_version = prompt_version
+        # Inject time for deterministic deadline tests. Budgets are unchanged.
+        self.time_fn = time_fn
+        self.sleep_fn = sleep_fn
 
         if dispatcher is not None:
             self.dispatcher = dispatcher
@@ -126,6 +135,8 @@ class AgentLoop:
                 base_url=base_url,
                 http_client=http_client,
                 transport=transport,
+                time_fn=time_fn,
+                sleep_fn=sleep_fn,
             )
 
         if task_description:
@@ -214,7 +225,7 @@ class AgentLoop:
 
     def run(self) -> AgentRunResult:
         """Run the model-driven agent loop to completion or failure."""
-        start_time = time.monotonic()
+        start_time = self.time_fn()
         turns = 0
         total_tool_calls = 0
         recorded_actions: list[ActionResponse] = []
@@ -267,7 +278,7 @@ class AgentLoop:
                     )
 
                 # Check wall clock timeout before provider call (#125)
-                elapsed = time.monotonic() - start_time
+                elapsed = self.time_fn() - start_time
                 if elapsed >= self.wall_clock_timeout_s:
                     err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s)."
                     self.dispatcher.fail_run(self.run_id, reason=err)
@@ -306,7 +317,7 @@ class AgentLoop:
                 turns += 1
 
                 # Check wall clock timeout immediately after provider call (#125)
-                if (time.monotonic() - start_time) >= self.wall_clock_timeout_s:
+                if (self.time_fn() - start_time) >= self.wall_clock_timeout_s:
                     err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s)."
                     self.dispatcher.fail_run(self.run_id, reason=err)
                     return AgentRunResult(
@@ -403,7 +414,7 @@ class AgentLoop:
                         )
 
                     # Check wall clock timeout before tool dispatch (#125)
-                    if (time.monotonic() - start_time) >= self.wall_clock_timeout_s:
+                    if (self.time_fn() - start_time) >= self.wall_clock_timeout_s:
                         err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s)."
                         self.dispatcher.fail_run(self.run_id, reason=err)
                         return AgentRunResult(
@@ -482,14 +493,14 @@ class AgentLoop:
                     elif decision_str == PolicyOutcome.HOLD.value:
                         approval_req = action_resp.approval_request
                         approval_id = approval_req.id if approval_req else None
-                        poll_start = time.monotonic()
+                        poll_start = self.time_fn()
                         execution_in_flight = False
                         tool_content = ""
 
                         # The review deadline stops applying once dispatch starts.
                         # Execution must settle before feedback or a terminal event.
                         while True:
-                            if (time.monotonic() - start_time) >= self.wall_clock_timeout_s:
+                            if (self.time_fn() - start_time) >= self.wall_clock_timeout_s:
                                 err = f"Wall clock timeout reached ({self.wall_clock_timeout_s}s) while awaiting approval."
                                 if approval_id is not None:
                                     try:
@@ -512,7 +523,7 @@ class AgentLoop:
                             matching = None
                             review_timed_out = (
                                 not execution_in_flight
-                                and (time.monotonic() - poll_start) >= self.approval_timeout_s
+                                and (self.time_fn() - poll_start) >= self.approval_timeout_s
                             )
                             if review_timed_out:
                                 if approval_id is None:
@@ -569,7 +580,7 @@ class AgentLoop:
                                         })
                                     break
 
-                            time.sleep(self.poll_interval_s)
+                            self.sleep_fn(self.poll_interval_s)
 
                         messages.append({
                             "role": "tool",

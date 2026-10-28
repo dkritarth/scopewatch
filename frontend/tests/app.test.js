@@ -500,7 +500,7 @@ test("groupEventsByTurn handles empty and snake_case turn ids", () => {
 
 test("isLiveRequested: explicit live=0 means static even on the gateway port (#132)", () => {
   assert.equal(isLiveRequested("?live=0", "8000"), false);
-  assert.equal(isLiveRequested("?live=0", "8765"), false);
+  assert.equal(isLiveRequested("?live=0", "8765", true), false);
   assert.equal(isLiveRequested("?live=false"), false);
   assert.equal(isLiveRequested("?live=OFF"), false);
   assert.equal(isLiveRequested("?live=no"), false);
@@ -512,8 +512,8 @@ test("isLiveRequested: live=1 or a bare live parameter means live on any port", 
   assert.equal(isLiveRequested("?live=true", ""), true);
 });
 
-test("isLiveRequested: without a live parameter, the default port or flag decides", () => {
-  assert.equal(isLiveRequested("", "8000"), true);
+test("isLiveRequested: without a live parameter, only the server marker or explicit flag decides", () => {
+  assert.equal(isLiveRequested("", "8000"), false);
   assert.equal(isLiveRequested("", "8765"), false);
   assert.equal(isLiveRequested("", "8765", true), true);
   assert.equal(isLiveRequested("?other=live", "8765"), false);
@@ -1091,12 +1091,15 @@ test("formatApprovalCardData displays reason, arguments preview, run, and expiry
   assert.equal(data.runName, "Invoice Processing (Live)");
   assert.equal(data.holdReason, "Reasoning scope concern");
   assert.match(data.argsPreview, /forbidden payload/);
-  assert.equal(data.expiryText, "12:00:00");
+  assert.match(data.expiryText, /2026-10-15T12:00:00.000Z.*Expired/);
   assert.equal(data.timelineEvent?.id, "ev-hold-1");
 });
 
 test("maps every backend EventType to its expected status (#206)", () => {
   const mapping = {
+    WORKSPACE_PRUNE_ATTEMPTED: "retention-attempted",
+    WORKSPACE_PRUNED: "pruned",
+    WORKSPACE_PRUNE_FAILED: "failed",
     RUN_CREATED: "attempted",
     ACTION_REQUESTED: "attempted",
     POLICY_ALLOWED: "allowed",
@@ -1261,8 +1264,8 @@ test("after approve/deny/expire every row for that action shows the final resolu
   assert.equal(expiredActionEvents[0].approvalStatus, "Expired");
 });
 
-test("each of the seven states renders a distinct label and glyph (#206)", () => {
-  assert.equal(STATUS_FACETS.length, 7);
+test("each status facet renders a distinct glyph (#206)", () => {
+  assert.deepEqual(STATUS_FACETS, ["attempted", "retention-attempted", "pruned", "allowed", "held", "denied", "approved", "executed", "failed"]);
   const glyphs = new Set();
   for (const st of STATUS_FACETS) {
     const glyph = getStatusGlyph(st);

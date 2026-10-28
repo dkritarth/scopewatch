@@ -35,6 +35,7 @@ from scopewatch.app import create_app
 from scopewatch.models import ReasonCode, ReasoningProvenance, RunStatus
 from scopewatch.providers.client import ChatResult, MockProviderClient
 from scopewatch.schemas import ActionResponse, ExecutionReceipt, TaskScope
+from tests.scripted_clock import ScriptedClock
 
 
 # Synthetic capture credential for tests (#116). Never a real secret: it only
@@ -944,10 +945,11 @@ def test_limits_wall_clock_timeout(test_env: dict[str, Any]) -> None:
     """Loop terminates when wall clock timeout is reached."""
     client: TestClient = test_env["client"]
     run_id = create_test_run(client)
+    clock = ScriptedClock()
 
     class SlowMockProvider:
         def complete(self, messages, tools=None):
-            time.sleep(0.15)
+            clock.advance(0.15)  # a 150 ms turn against a 100 ms budget (#159)
             return ChatResult(
                 content="Slow turn",
                 tool_calls=[
@@ -963,18 +965,22 @@ def test_limits_wall_clock_timeout(test_env: dict[str, Any]) -> None:
                 profile="mock",
             )
 
-    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client,
+                                  time_fn=clock, sleep_fn=clock.sleep)
     loop = AgentLoop(
         run_id=run_id,
         provider_client=SlowMockProvider(),
         dispatcher=dispatcher,
         wall_clock_timeout_s=0.1,
+        time_fn=clock,
+        sleep_fn=clock.sleep,
     )
 
     result = loop.run()
 
     assert result.status == "FAILED"
     assert "Wall clock timeout reached" in (result.error or "")
+    assert [message["role"] for message in result.messages] == ["system", "user"]
 
 
 def test_cli_scenario_01_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1173,11 +1179,12 @@ def test_final_response_after_deadline_marks_run_failed(test_env: dict[str, Any]
     """A final response (no tool calls) returned after the wall-clock deadline must NEVER be marked COMPLETED (#125)."""
     client: TestClient = test_env["client"]
     run_id = create_test_run(client)
+    clock = ScriptedClock()
 
     class OvertimeFinalResponseProvider:
         def complete(self, messages, **kwargs):
-            # Sleep longer than the wall-clock timeout
-            time.sleep(0.12)
+            # Cost more than the wall-clock timeout (#159: scripted, no sleep)
+            clock.advance(0.12)
             return ChatResult(
                 content="All work finished successfully.",
                 tool_calls=[],
@@ -1187,18 +1194,22 @@ def test_final_response_after_deadline_marks_run_failed(test_env: dict[str, Any]
                 profile="mock",
             )
 
-    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client,
+                                  time_fn=clock, sleep_fn=clock.sleep)
     loop = AgentLoop(
         run_id=run_id,
         provider_client=OvertimeFinalResponseProvider(),
         dispatcher=dispatcher,
         wall_clock_timeout_s=0.08,
+        time_fn=clock,
+        sleep_fn=clock.sleep,
     )
 
     result = loop.run()
 
     assert result.status == "FAILED"
     assert "Wall clock timeout reached" in (result.error or "")
+    assert [message["role"] for message in result.messages] == ["system", "user"]
     assert result.final_response is None
 
     # Verify run state in gateway database is FAILED, not COMPLETED
@@ -1212,6 +1223,8 @@ def test_provider_client_receives_remaining_budget_kwargs(test_env: dict[str, An
     client: TestClient = test_env["client"]
     run_id = create_test_run(client)
     received_timeouts: list[float] = []
+    clock = ScriptedClock()
+    test_env["app"].state.service.time_fn = clock
 
     class BudgetTrackingProvider:
         def complete(self, messages, **kwargs):
@@ -1224,18 +1237,19 @@ def test_provider_client_receives_remaining_budget_kwargs(test_env: dict[str, An
                 profile="mock",
             )
 
-    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client)
+    dispatcher = GatewayDispatcher(base_url="http://testserver", http_client=client, time_fn=clock, sleep_fn=clock.sleep)
     loop = AgentLoop(
         run_id=run_id,
         provider_client=BudgetTrackingProvider(),
         dispatcher=dispatcher,
         wall_clock_timeout_s=2.5,
+        time_fn=clock, sleep_fn=clock.sleep,
     )
 
     result = loop.run()
     assert result.status == "COMPLETED"
     assert len(received_timeouts) == 1
-    assert 0.0 < received_timeouts[0] <= 2.5
+    assert received_timeouts == [2.5]
 
 
 def test_agent_cli_unreachable_base_url_exits_one_with_message(capsys: pytest.CaptureFixture) -> None:

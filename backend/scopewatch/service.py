@@ -218,7 +218,10 @@ class ScopewatchService:
         guards: Optional[DemoGuardPolicy] = None,
 capture_token: Optional[str] = None,
         run_workspaces_root: Optional[Path | str] = None,
+        time_fn: Callable[[], float] = time.monotonic,
     ) -> None:
+        # Completion budgets include time spent waiting for the SQLite lock.
+        self.time_fn = time_fn
         self.db_path = Path(db_path)
         # Issue #117: workspace_root is the read-only synthetic scenario
         # fixture. Runs never execute against it; each run executes against its
@@ -340,6 +343,27 @@ capture_token: Optional[str] = None,
         trace_text: str,
         recent_actions_list: list[ActionRequest],
     ) -> ReasoningAuditResult:
+        from scopewatch.tiered_audit import routing_mode, run_tiered_audit
+
+        kwargs = dict(run=run, action=action, turn_id=turn_id,
+                      trace_text=trace_text, recent_actions_list=recent_actions_list)
+        if routing_mode() == "single":
+            return await self._run_single_reasoning_audit(**kwargs)
+        return await run_tiered_audit(
+            lambda auditor: self._run_single_reasoning_audit(auditor_override=auditor, **kwargs),
+            self.tokens,
+        )
+
+    async def _run_single_reasoning_audit(
+        self,
+        *,
+        run: Run,
+        action: ActionRequest,
+        turn_id: str,
+        trace_text: str,
+        recent_actions_list: list[ActionRequest],
+        auditor_override: Optional[ReasoningAuditor] = None,
+    ) -> ReasoningAuditResult:
         """Run one reasoning audit off the event loop; never relaxes, never raises.
 
         Auditor construction failures and hung audits fail closed to a FAILED
@@ -347,7 +371,7 @@ capture_token: Optional[str] = None,
         call runs in a worker thread bounded by the auditor profile timeout.
         """
         try:
-            auditor = self._get_auditor()
+            auditor = auditor_override or self._get_auditor()
         except Exception as exc:
             logger.warning(
                 "Sanitized auditor construction failure [%s]", type(exc).__name__
@@ -695,7 +719,7 @@ capture_token: Optional[str] = None,
         so closing the run now would record the execution after the run's
         terminal event; refuse instead.
         """
-        started_at = time.monotonic()
+        started_at = self.time_fn()
         conn = self._get_conn()
         try:
             if not ScopewatchRepository.get_run(conn, run_id):
@@ -710,7 +734,7 @@ capture_token: Optional[str] = None,
                 # overtaken by a concurrent resolve or close.
                 if (
                     deadline_budget is not None
-                    and (time.monotonic() - started_at) >= deadline_budget
+                    and (self.time_fn() - started_at) >= deadline_budget
                 ):
                     raise ScopewatchAPIError(
                         code="COMPLETION_DEADLINE_EXCEEDED",
@@ -1048,7 +1072,8 @@ capture_token: Optional[str] = None,
                     # profile's daily budget cannot cover an estimate.
                     auditor_profile = auditor_profile_name()
                     estimate = 0
-                    if not is_mock_profile(auditor_profile):
+                    from scopewatch.tiered_audit import routing_mode
+                    if routing_mode() == "single" and not is_mock_profile(auditor_profile):
                         estimate = reserve_per_audit()
                         verdict = self.tokens.check(auditor_profile, estimate=estimate)
                         if not verdict.allowed:
@@ -1092,6 +1117,8 @@ capture_token: Optional[str] = None,
                         profile=audit_result.profile,
                         latency_ms=audit_result.latency_ms,
                         error_code=audit_result.error_code,
+                        total_tokens=audit_result.total_tokens,
+                        tiers=audit_result.tiers,
                         audited_at=datetime.now(timezone.utc).isoformat(),
                     )
 
@@ -1126,6 +1153,8 @@ capture_token: Optional[str] = None,
                     "profile": audit_record.profile,
                     "latency_ms": audit_record.latency_ms,
                     "error_code": audit_record.error_code,
+                    "total_tokens": audit_record.total_tokens,
+                    "tiers": [tier.model_dump(mode="json") for tier in audit_record.tiers],
                     # #77: counts only — never prompts, traces, or keys.
                     "tokens_used": max(0, int(fresh_tokens_used)),
                 }

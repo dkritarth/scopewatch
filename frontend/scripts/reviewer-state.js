@@ -2,6 +2,8 @@
 
 export const STATUS_FACETS = [
   "attempted",
+  "retention-attempted",
+  "pruned",
   "allowed",
   "held",
   "denied",

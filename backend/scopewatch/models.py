@@ -72,6 +72,10 @@ class EventType(str, Enum):
     REASONING_AUDIT_COMPLETED = "REASONING_AUDIT_COMPLETED"
     REASONING_AUDIT_FAILED = "REASONING_AUDIT_FAILED"
 
+    WORKSPACE_PRUNE_ATTEMPTED = "WORKSPACE_PRUNE_ATTEMPTED"
+    WORKSPACE_PRUNED = "WORKSPACE_PRUNED"
+    WORKSPACE_PRUNE_FAILED = "WORKSPACE_PRUNE_FAILED"
+
 
 class ReasoningProvenance(str, Enum):
     UNAVAILABLE = "UNAVAILABLE"
@@ -169,7 +173,7 @@ RUN_COMMAND_ALLOWED_FLAGS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] =
 #    reported as ``LEGACY_POLICY_VERSION_LABEL``. They are never backfilled:
 #    stamping today's revision onto a past decision would assert something
 #    untrue about when it was evaluated.
-POLICY_RULES_REVISION = "2026-10-26.3"
+POLICY_RULES_REVISION = "2026-10-28.1"
 
 #: Display label for decisions recorded before policy versions were stored.
 LEGACY_POLICY_VERSION_LABEL = "unknown (legacy)"
