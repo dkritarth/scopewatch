@@ -67,7 +67,7 @@ async function main() {
     stage = 'browser launch';
     browser = await chromium.launch({ headless: true });
     const viewport = { width: 1440, height: 1080 };
-    const page = await browser.newPage({ viewport, deviceScaleFactor: 1, locale: 'en-US', timezoneId: 'UTC', reducedMotion: 'reduce' });
+    let page = await browser.newPage({ viewport, deviceScaleFactor: 1, locale: 'en-US', timezoneId: 'UTC', reducedMotion: 'reduce' });
     const errors = [];
     const failedResponses = [];
     page.on('response', response => { if (response.status() >= 400) failedResponses.push(`${response.status()} ${new URL(response.url()).pathname}`); });
@@ -140,16 +140,22 @@ async function main() {
     await capture('scripted-request-moonlit.png',
       'SCRIPTED MOCK: pending review shows the exact proposed synthetic write and approval controls. This capture does not approve or execute the action.',
       'Moonlit request page with proposed write content and approve and deny controls.');
+    const architecture = await readFile(join(root, 'docs/submission/media/architecture.html'), 'utf8');
+    // A new document must not inherit the gateway's CSP, which blocks inline styles.
+    page = await browser.newPage({ viewport, deviceScaleFactor: 1 });
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+    await page.route('**/*', route => { externalRequests.push('Unexpected architecture request'); return route.abort(); });
+    await page.setContent(architecture);
+    await page.locator('figure').waitFor();
+    assert.equal(await page.locator('.flow').evaluate(element => getComputedStyle(element).display), 'grid', 'Architecture styles must render.');
+    await capture('architecture.png', 'ARCHITECTURE: authored diagram of gateway-mediated execution. This is a design illustration, not a runtime or sponsor-use capture.', 'Policy runs first; final deny stops; allowed actions may be held by audit; approved holds pass an exact single-use gate before execution. Decisions are stored before effects.');
     const knownFontFailures = new Set(['404 /fonts/dm-sans.woff2', '404 /fonts/instrument-serif.woff2', '404 /fonts/instrument-serif-italic.woff2']);
     assert.deepEqual(failedResponses.filter(item => !knownFontFailures.has(item)), [], 'Unexpected HTTP failures invalidate captures.');
     assert.equal(consoleErrors.length, failedResponses.length, 'Unexpected console errors invalidate captures.');
     assert.ok(consoleErrors.every(message => message === 'Failed to load resource: the server responded with a status of 404 (Not Found)'));
     assert.deepEqual(errors, [], 'Browser errors invalidate the captures.');
     assert.deepEqual(externalRequests, [], 'Unexpected external requests invalidate offline capture.');
-    const architecture = await readFile(join(root, 'docs/submission/media/architecture.html'), 'utf8');
-    await page.setContent(architecture);
-    await page.locator('figure').waitFor();
-    await capture('architecture.png', 'ARCHITECTURE: authored diagram of gateway-mediated execution. This is a design illustration, not a runtime or sponsor-use capture.', 'Policy runs first; final deny stops; allowed actions may be held by audit; approved holds pass an exact single-use gate before execution. Decisions are stored before effects.');
     const manifest = {
       schema_version: 1, captured_at_utc: new Date().toISOString(), captured_commit: commit,
       frontend_tree: git('rev-parse', `${commit}:frontend`),
@@ -160,7 +166,7 @@ async function main() {
       warnings: failedResponses.map(item => `${item}; gateway used fallback fonts`),
       browser: `Chromium ${browser.version()}`, playwright: require('playwright/package.json').version,
       viewport, device_scale_factor: 1, locale: 'en-US', timezone: 'UTC',
-      checks: ['six seeded runs', 'reasoning hold present', 'synthetic trace provenance', 'held action has no successful execution', 'request content matches stored arguments exactly', 'no JavaScript page errors', 'only disclosed font HTTP failures', 'no external browser requests', 'PNG signatures and dimensions'],
+      checks: ['six seeded runs', 'reasoning hold present', 'synthetic trace provenance', 'held action has no successful execution', 'request content matches stored arguments exactly', 'no JavaScript page errors', 'only disclosed font HTTP failures', 'no external browser requests', 'architecture layout rendered', 'PNG signatures and dimensions'],
       assets,
     };
     stage = 'publish verified files';

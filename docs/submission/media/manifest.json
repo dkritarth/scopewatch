@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "captured_at_utc": "2026-10-28T03:19:25.599Z",
+  "captured_at_utc": "2026-10-28T03:23:56.339Z",
   "captured_commit": "2bceb3e033c80892778557f0b798a250efcd9c88",
   "frontend_tree": "2604b667679a2e276681f5b738e077eb5ebf1cbc",
-  "capture_script_sha256": "4afa77992903b341cfe8d89dbc5977311aff7a9c3d319a52014f7a2f4149d68a",
+  "capture_script_sha256": "0927d4921035faeb0b6f047ebac433b504299271be69c39a720d8f16e2cf714d",
   "architecture_source_sha256": "123a301730fe7c5aa5ce60c1b94bf50a687f4033b572ccd471b1ac8e41c042bb",
   "mode": "scripted",
   "agent_profile": "mock",
@@ -34,6 +34,7 @@
     "no JavaScript page errors",
     "only disclosed font HTTP failures",
     "no external browser requests",
+    "architecture layout rendered",
     "PNG signatures and dimensions"
   ],
   "assets": [
@@ -51,7 +52,7 @@
       "alt": "Sunbeam activity timeline with the selected reasoning hold and synthetic fixture evidence.",
       "width": 1440,
       "height": 2695,
-      "sha256": "28778fb19b9edcebf6ee26cb355aecbc902dc7e6d6d4cd9858fbf5766621c278"
+      "sha256": "cbb472a88ece927ebc736997d9dfd1d4c059d4232f621d040866d53ade6881cb"
     },
     {
       "file": "scripted-request-moonlit.png",
@@ -59,15 +60,15 @@
       "alt": "Moonlit request page with proposed write content and approve and deny controls.",
       "width": 1440,
       "height": 1260,
-      "sha256": "810a65da7037edd28bb49662bf88f31c74801c1b2460ae882b0b1fffa587456b"
+      "sha256": "3e6c371e5b3122ff6ea23a2ae15c104290740834c96e5566bfb9b1b459ae0995"
     },
     {
       "file": "architecture.png",
       "caption": "ARCHITECTURE: authored diagram of gateway-mediated execution. This is a design illustration, not a runtime or sponsor-use capture.",
       "alt": "Policy runs first; final deny stops; allowed actions may be held by audit; approved holds pass an exact single-use gate before execution. Decisions are stored before effects.",
       "width": 1440,
-      "height": 1168,
-      "sha256": "3a8a3ffb85bfae9b200dd70725f2181bb4e7e7704e2701512f343fbe4efe7844"
+      "height": 1254,
+      "sha256": "49a5595514689f735552125d8394c69ba2a8fa265628337097f2c50fb3342244"
     }
   ]
 }
