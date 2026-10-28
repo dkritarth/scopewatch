@@ -2,6 +2,12 @@
 
 Codex / GPT-6.1-sol, implementation sub-agent. Refs [#287](https://github.com/dkritarth/scopewatch/issues/287).
 
+## Progress refresh, 2026-10-28 05:24 UTC
+
+Independent Sol verification now includes #340's exact fixed head `b57168010c8dd5bc9a4ca6c3e4e7313c164149ec` in unpublished seventeen-draft snapshot `8b23806dbd1760933785759654473113d2e16b7d`. The follow-up delta applied without resolution or functional changes. Full validation passed 2,276 backend tests with 25 Docker-gated skips, reasoning PoC 96 plus 79 subtests, MCP 26, ablation 73, deploy 140, frontend 79, browser 28 and six clean-room scenarios. All 202 focused ACP cases passed. Independent actual CLI effects/refusals, slow header/body deadlines, observed cancellation and descendant cleanup also passed. Exact source/schema, lock regeneration, dependency compatibility and historical media checks passed. These results supersede the earlier combined snapshot for the tested source state.
+
+All six #340 CI jobs pass at that head. Its independent Astra code recheck remains pending; passing validation does not resolve review findings by itself. All 17 published PRs remain open drafts. No merge or issue closure, external inference, real Codex bridge run, native Docker run, public deployment or native casefold qualification occurred. The ready code queue is covered; remaining account/provider/deployment/submission gates stay human-owned. The new-issue cutoff remains 06:00 UTC, with the hard stop at 07:00 UTC.
+
 ## Progress refresh, 2026-10-28 05:18 UTC
 
 There are now 17 open draft PRs. #121's bounded ACP client is draft [#340](https://github.com/dkritarth/scopewatch/pull/340), stacked on reviewed #333. The initial head `4c84315e9ccfda5c8e0e535a5d90e2fd0f2b0db1` had 58 new tests and full owning-branch validation. Independent Sol verification composed it into unpublished `d60c594`, with one disclosed manual dependency resolution: keep one `jsonschema==4.26.0` entry. The lock already matched. Full combined validation passed 2,265 backend tests with 25 skips, 73 ablation, 79 frontend units and 28 browsers, plus the other existing gates. All 191 focused ACP cases passed, as did separate actual CLI/stdio/localhost effect, refusal, receipt-ordering, coverage and cleanup checks. This result applies to the initial ACP head, not later fixes.
