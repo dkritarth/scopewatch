@@ -78,13 +78,18 @@ def load_manifest(path: Path) -> dict[str, Any]:
     manifest = json.loads(path.read_text())
     if manifest["schema_version"] != 1 or manifest["content_origin"] != "synthetic":
         raise ValueError("unsupported dataset manifest")
+    if not re.fullmatch(r"v[1-9][0-9]*", manifest["dataset_version"]):
+        raise ValueError("invalid dataset version")
     if manifest["split_status"] not in {"spent", "frozen_unmeasured"}:
         raise ValueError("unsupported split status")
     seen: set[str] = set()
     for split, pin in manifest["splits"].items():
         if split not in {"dev", "heldout"}:
             raise ValueError("unsupported split")
-        file = ROOT / pin["file"]
+        relative = Path(pin["file"])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("dataset pin must use a repository-relative path")
+        file = ROOT / relative
         if not file.resolve().is_relative_to(ROOT) or file.is_symlink():
             raise ValueError("dataset must be inside repository")
         cases = json.loads(file.read_text())

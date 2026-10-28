@@ -114,3 +114,17 @@ def test_v2_splits_validate_as_scopewatch_cases_without_provider_feedback():
         TaskScope.model_validate(case["task_scope"])
         for action in case["planned_actions"]:
             PlannedAction.model_validate(action)
+
+
+def test_manifest_cannot_export_home_paths_or_free_text_versions(tmp_path):
+    manifest = json.loads(MANIFEST.read_text())
+    manifest["splits"]["dev"]["file"] = str(ROOT / manifest["splits"]["dev"]["file"])
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="repository-relative"):
+        load_manifest(path)
+    manifest = json.loads(MANIFEST.read_text())
+    manifest["dataset_version"] = "synthetic private text"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="dataset version"):
+        load_manifest(path)
