@@ -22,6 +22,8 @@ Artifacts stay in the local, ignored `artifacts/` directory. `--check` verifies 
 
 `--fault` also accepts `malformed`, `transport`, and `over_budget`. These are isolated synthetic fault campaigns applied at every eligible monitor attempt. They are not part of the normal dataset score. `--seeds` accepts one to three distinct unsigned 32-bit integers. Defaults are 17 and 29. Invalid configuration exits nonzero. Setting provider environment variables cannot enable inference. Provider mode requires all three explicit opt-in arguments below. Mock faults cannot be combined with provider mode.
 
+Both `./scripts/validate.sh --quick` and `./scripts/validate.sh` run the complete ablation test suite. The dedicated [CI workflow](../../.github/workflows/monitor-ablation.yml) uses Python 3.12 and the hashed backend dependency lock, runs the suite with `PYTHONPATH=backend`, and generates and checks an offline artifact. Tests use synthetic fixtures and mocked transports; CI requires no provider credentials or inference calls.
+
 ## Opt-in provider monitor
 
 The following command is an operator example, **not run during this implementation**. Supply an existing explicitly selected TOML profile using the repository's `ProviderProfile` schema. Its model, endpoint and optional credential environment variable come from that profile. There is no model ID in this adapter.
