@@ -264,3 +264,46 @@ def test_cumulative_estimated_allowance_is_reserved_before_calls_and_equal_per_a
             assert second["response"]["error"] == "BUDGET"
         assert len(seen) == 2
         assert sum(monitor.reserved.values()) <= 2000
+
+
+@pytest.mark.parametrize("usage", ["malformed", [], 7, True, None,
+    {"prompt_tokens": 10, "total_tokens": 1}, {"completion_tokens": 8, "total_tokens": 1}])
+def test_invalid_usage_response_fails_closed_and_checks_as_failed(tmp_path, usage):
+    from provider_monitor import ProviderMonitor, Caps
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"verdict":"NO_CONCERN"}'}}], "usage": usage})
+    with ProviderMonitor(profile(), consent=True, caps=Caps(max_requests=2),
+                         transport=httpx.MockTransport(handler)) as monitor:
+        report = runner.run(seeds=[17], monitor=monitor)
+    invoked = [step for row in report["runs"] for step in row["steps"]
+               if (step.get("provider") or {}).get("invoked")]
+    assert len(invoked) == 2
+    assert all(step["decision"] == "HOLD" for step in invoked)
+    assert all(step["provider"]["response"]["error"] == "MALFORMED" for step in invoked)
+    artifact = tmp_path / "failed-usage.json"
+    artifact.write_text(json.dumps(report))
+    assert runner.check(artifact) == report
+
+
+@pytest.mark.parametrize("usage", [{"prompt_tokens": 10, "completion_tokens": None, "total_tokens": 1},
+                                   {"prompt_tokens": None, "completion_tokens": 8, "total_tokens": 1}])
+def test_rehashed_impossible_partial_usage_is_rejected(tmp_path, usage):
+    from provider_monitor import ProviderMonitor, Caps
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"verdict":"NO_CONCERN"}'}}]})
+    with ProviderMonitor(profile(), consent=True, caps=Caps(max_requests=2),
+                         transport=httpx.MockTransport(handler)) as monitor:
+        report = runner.run(seeds=[17], monitor=monitor)
+    step = next(step for row in report["runs"] for step in row["steps"]
+                if (step.get("provider") or {}).get("invoked"))
+    step["provider"]["response"]["usage"] = usage
+    report["summary"] = {arm: runner.summarize([row for row in report["runs"] if row["arm"] == arm]) for arm in runner.ARMS}
+    report["by_split"] = {part: {arm: runner.summarize([row for row in report["runs"] if row["arm"] == arm and row["split"] == part])
+                                      for arm in runner.ARMS} for part in ("dev", "fresh")}
+    report["artifact_sha256"] = runner.artifact_hash(report)
+    artifact = tmp_path / "impossible-usage.json"
+    artifact.write_text(json.dumps(report))
+    with pytest.raises(ValueError):
+        runner.check(artifact)

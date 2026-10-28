@@ -10,9 +10,9 @@ import json
 from typing import Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from scopewatch.providers.client import ProviderClient
+from scopewatch.providers.client import ChatResult, ProviderClient
 from scopewatch.providers.errors import ProviderError
 from scopewatch.providers.profile import ProviderProfile
 
@@ -47,6 +47,29 @@ class Usage(BaseModel):
     completion_tokens: int | None = Field(default=None, ge=0, le=10_000_000)
     total_tokens: int | None = Field(default=None, ge=0, le=20_000_000)
 
+    @model_validator(mode="after")
+    def consistent_counts(self) -> Usage:
+        if self.total_tokens is not None:
+            for component in (self.prompt_tokens, self.completion_tokens):
+                if component is not None and component > self.total_tokens:
+                    raise ValueError("total usage is smaller than a known component")
+            if (self.prompt_tokens is not None and self.completion_tokens is not None
+                    and self.total_tokens != self.prompt_tokens + self.completion_tokens):
+                raise ValueError("inconsistent usage")
+        return self
+
+
+class _MonitorClient(ProviderClient):
+    """Keep malformed accounting distinct from absent accounting for this PoC.
+
+    The shared client intentionally treats accounting as optional metadata.
+    Inspect its response envelope before that normalization discards the shape.
+    """
+    def _parse_chat_response(self, data: dict, latency_ms: float) -> ChatResult:
+        if isinstance(data, dict) and "usage" in data and not isinstance(data["usage"], dict):
+            raise ValueError("malformed usage container")
+        return super()._parse_chat_response(data, latency_ms)
+
 
 class Observation(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -60,10 +83,6 @@ def validate_observation(value: dict, caps: Caps) -> dict:
     if (observation.verdict is None) == (observation.error is None):
         raise ValueError("invalid observation outcome")
     usage = observation.usage
-    if (usage.prompt_tokens is not None and usage.completion_tokens is not None
-            and usage.total_tokens is not None
-            and usage.total_tokens != usage.prompt_tokens + usage.completion_tokens):
-        raise ValueError("inconsistent usage")
     if usage.completion_tokens is not None and usage.completion_tokens > caps.max_completion_tokens:
         if observation.error != "BUDGET":
             raise ValueError("observed completion budget exceeded")
@@ -132,7 +151,7 @@ class ProviderMonitor(RecordedMonitor):
                     "n": 1, "best_of": None, "retries": 0, "temperature": 0,
                     "response_format": {"type": "json_object"}}
         super().__init__(metadata, [])
-        self.client = ProviderClient(bounded, transport=transport)
+        self.client = _MonitorClient(bounded, transport=transport)
 
     def observation(self, messages: list[dict], seed: int, admitted: bool) -> dict:
         if not admitted:
@@ -145,10 +164,6 @@ class ProviderMonitor(RecordedMonitor):
             # Select only numeric usage fields. Unknown response metadata, model
             # names, traces and arbitrary usage keys are never persisted.
             candidate = Usage.model_validate({k: result.usage.get(k) for k in Usage.model_fields})
-            if (candidate.prompt_tokens is not None and candidate.completion_tokens is not None
-                    and candidate.total_tokens is not None
-                    and candidate.total_tokens != candidate.prompt_tokens + candidate.completion_tokens):
-                raise ValueError("inconsistent usage")
             usage = candidate
             if usage.completion_tokens is not None and usage.completion_tokens > self.caps.max_completion_tokens:
                 return Observation(error="BUDGET", usage=usage).model_dump()
