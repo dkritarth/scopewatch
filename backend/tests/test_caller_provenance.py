@@ -417,4 +417,5 @@ def test_provenance_is_not_decoded_into_decision_outcomes(tmp_path: Path) -> Non
     assert resp.status_code == 422
     error = resp.json()["error"]
     assert error["code"] == "SCHEMA_VALIDATION_ERROR"
-    assert "reasoning_provenance" in error["message"]
+    assert error["message"] == "Request validation failed."
+    assert "TOTALLY_MADE_UP" not in resp.text

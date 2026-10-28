@@ -58,6 +58,22 @@ The gateway enforces, for actions routed through its API:
 - **Action-aware turn audit caching**: Turn-level reasoning audit caching is bound not only to `(run_id, turn_id, trace_hash)`, but also to the target action identity (`tool`, `operation`, `resource`, `arguments`). Actions within the same model turn targeting different resources trigger distinct auditor reviews instead of reusing earlier verdicts (issue #111).
 - **One Docker job builder**: The image pin, container hardening flags, in-container helper source, staged-workspace copy, and symlink-tolerant copy-back walk live in `backend/scopewatch/docker_job.py` and are imported by both the Docker backend and the `executor-runner` sidecar (`deploy/executor-runner/runner.py`), which previously re-declared them (issue #106). Staging leaves the run's `blocked_paths` out of the container's copy (by name and by resolved symlink target, verified after the copy, failing closed) and copy-back refuses blocked or out-of-workspace destinations, so code run by an allowlisted `run_command` cannot read or overwrite a blocked file (issue #183; what it can still reach is listed in `docs/operations/docker-executor.md`). `prepare_docker_job` returns a frozen `DockerJob` carrying its arguments and their JSON serialization together, following the `prepare_dispatch` model from #104, so the dispatched form and the serialized form cannot disagree. The shared module is stdlib-only by contract, because the sidecar is; `backend/tests/test_docker_job_share.py` asserts byte-identical argv across operations and argument shapes, that the module imports nothing outside the standard library, and that neither caller re-declares the flag list.
 
+### Ingress bounds (issue #304)
+
+Public request bodies are bounded before any handler or auth layer runs. A pure
+ASGI `BodySizeLimitMiddleware` (outermost, in `backend/scopewatch/ingress.py`)
+counts streamed `http.request` bytes and rejects oversized requests with a
+sanitized `413 {"error":"request body too large"}` that never echoes input;
+`GET` and `HEAD` are exempt by method. The request body limit defaults to 256 KiB
+and is configurable via `SCOPEWATCH_MAX_BODY_BYTES`. Pydantic bounds
+(`max_length`) on request fields return a sanitized `422` without echoing the
+offending value:
+- Reasoning trace: 32,000 characters (`MAX_REASONING_TRACE_CHARS`)
+- Reasoning summary: 8,000 characters (`MAX_REASONING_SUMMARY_CHARS`)
+- Resolution reason: 2,000 characters (`MAX_RESOLUTION_REASON_CHARS`)
+- Argument strings: 64 KiB (`MAX_ARGUMENT_STRING_CHARS` = `MAX_WRITE_BYTES`, 65,536 characters)
+- Body limit: `SCOPEWATCH_MAX_BODY_BYTES` (256 KiB default)
+
 Key endpoints:
 - `POST /api/v1/runs`: Initialize an isolated run with an explicit task scope.
 - `GET /api/v1/runs`: List active and historical runs.
