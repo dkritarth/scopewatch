@@ -1,10 +1,17 @@
-# Scopewatch
+<h1><img src="site/assets/logo.svg" alt="" width="36" height="36" align="top"> Scopewatch</h1>
 
-Coding agents run shell commands and edit files, and a prompt injection in a README or invoice can steer them. Scopewatch is a gateway that checks each tool action before it runs. A deterministic policy returns `ALLOW`, `HOLD`, or `DENY`. An auditor model reads the agent's exposed reasoning and can hold an allowed action for human review. Every step is recorded as evidence in a reviewer dashboard. It mediates only actions routed through its API.
+**Check every agent action before it runs.** A pre-execution gateway for AI agents, built for the Nebius × NVIDIA Global AI Hackathon 2026.
 
-![Scripted mock capture of the current celestial dashboard home. No live inference.](docs/submission/media/scripted-home-moonlit.png)
+[Website](https://dkritarth.github.io/scopewatch/) · [Live demo replay](https://dkritarth.github.io/scopewatch/demo.html) · [Judge runbook](docs/operations/judge-runbook.md) · [Project status](docs/STATUS.md)
 
-Scripted mock UI capture, fallback fonts. [Gallery and capture provenance](docs/submission/media/README.md).
+<a href="https://dkritarth.github.io/scopewatch/">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/readme/hero-light.png">
+    <img src="docs/images/readme/hero-dark.png" alt="Scopewatch website hero: 'Check every agent action before it runs.' beside a held write_text request that passes policy, gets an auditor concern, is held by the gateway, and is not run by the executor">
+  </picture>
+</a>
+
+Coding agents run shell commands and edit files, and a prompt injection in a README or invoice can steer them. Scopewatch checks each tool action before it runs. A deterministic policy returns `ALLOW`, `HOLD`, or `DENY`. An auditor model reads the agent's exposed reasoning and can hold an allowed action for human review. Every step is recorded as evidence in a reviewer dashboard. It mediates only actions routed through its API.
 
 **Run it (no keys, no Docker, no network):**
 
@@ -14,14 +21,21 @@ python3 -m venv .venv && . .venv/bin/activate && pip install --require-hashes -r
 
 Then open <http://127.0.0.1:8000/>. Needs Python 3.12+. Node 22+ is only for the frontend test suites ([BUILDING.md](BUILDING.md) has details).
 
-**Where to look:** [project website and replay](https://dkritarth.github.io/scopewatch/) (source in [`site/`](site/README.md)) | [judge runbook](docs/operations/judge-runbook.md), a five-minute cold run | [project status](docs/STATUS.md), what works and what is unverified | [hackathon checklist](docs/hackathon.md) | [submission package](docs/submission/description.md)
+Also: [hackathon checklist](docs/hackathon.md) · [submission package](docs/submission/description.md) · website source in [`site/`](site/README.md)
 
 ## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/readme/how-it-works-light.png">
+  <img src="docs/images/readme/how-it-works-dark.png" alt="Four checkpoints between intent and effect: deterministic policy, reasoning auditor, human approval, controlled executor">
+</picture>
 
 1. Policy checks paths, tools, and operations first. Network operations are currently denied, even when the task scope lists destinations. A `DENY` is final.
 2. The auditor can escalate a policy `ALLOW` to `HOLD`. An audit that was attempted and failed also holds the action. The model cannot grant access.
 3. A held action needs an exact, single-use approval before the executor runs it. Approval cannot override a policy `DENY`.
 4. The dashboard separates observed actions, policy decisions, provider-exposed traces, summaries, approvals, and execution receipts. A capture credential gates verified provenance labels. Grounded excerpts quote the submitted evidence and do not prove intent.
+
+Reviewer dashboard screenshots, with how each was captured, are in the [media gallery](docs/submission/media/README.md).
 
 [Adoption and prior art](docs/adoption-and-prior-art.md) covers who this is for, real vulnerability disclosures, overlap with existing guardrails, and limits under monitoring awareness. No adoption-time or cost savings have been measured. The shipped agent/auditor pair and the live headline scenario are still open ([#214](https://github.com/dkritarth/scopewatch/issues/214)).
 

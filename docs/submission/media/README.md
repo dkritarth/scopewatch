@@ -78,7 +78,9 @@ commit, and run `node scripts/media/capture.mjs --ref origin/main`. An explicit
 `--output runtime-data/media-preview` keeps trial output out of the committed
 gallery. Inspect every PNG, run the verifier with the same `--output`, then update
 this gallery's pinned commit and warnings to match the new manifest. Keep the
-README image and Devpost asset list pointed at files that actually exist.
+Devpost asset list pointed at files that actually exist. The root README's hero
+and "How it works" images come from the project website instead, not from this
+gallery; regenerate them with `node scripts/capture_readme_images.cjs`.
 
 ## Live capture and hero GIF checklist
 

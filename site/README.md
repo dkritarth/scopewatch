@@ -23,3 +23,9 @@ Preview locally (the demo page fetches JSON, so it needs HTTP rather than `file:
 ```bash
 python3 -m http.server 8765 --directory site
 ```
+
+The root README shows the hero and "How it works" sections of this site. After changing either, refresh those images (they go to `docs/images/readme/`):
+
+```bash
+node scripts/capture_readme_images.cjs
+```
