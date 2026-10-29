@@ -5,12 +5,13 @@
 // local gateway seeded by ./scripts/run_demo.sh with the offline mock provider,
 // so the badge "SCRIPTED REPLAY" is burned into every gateway frame. The
 // spoken script is burned in as captions and also written as an .srt file.
+// Audio is an original synthesized background track (make_background_music.py); there is no voiceover.
 //
 // Usage:
 //   ./scripts/run_demo.sh --db-path /tmp/sw/demo.db --workspace-root /tmp/sw/ws &   # fresh seed: approvals expire after 300 s
 //   node scripts/media/record_walkthrough.cjs [--gateway http://127.0.0.1:8000] [--out runtime-data/walkthrough]
 //
-// Needs Playwright (npm ci --prefix frontend) and ffmpeg on PATH.
+// Needs Playwright (npm ci --prefix frontend), ffmpeg on PATH, and numpy for the music.
 
 const http = require('node:http');
 const fs = require('node:fs');
@@ -291,6 +292,16 @@ python3 -m venv .venv && . .venv/bin/activate && pip install --require-hashes -r
   execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', path.join(OUT, 'frames.txt'),
     '-vf', `scale=${W}:${H}:flags=lanczos,fps=30,format=yuv420p`, '-c:v', 'libx264', '-preset', 'slow', '-crf', '20',
     '-movflags', '+faststart', '-an', mp4]);
+
+  // Background music: an original track synthesized for this video, mixed at -20 LUFS. --no-music skips it.
+  if (!args.includes('--no-music')) {
+    const seconds = String(stopT - frames[0].t);
+    const wav = path.join(OUT, 'music.wav'), silent = path.join(OUT, 'silent.mp4');
+    execFileSync('python3', [path.join(__dirname, 'make_background_music.py'), '--seconds', seconds, '--out', wav], { stdio: 'inherit' });
+    fs.renameSync(mp4, silent);
+    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', silent, '-i', wav, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy',
+      '-af', 'loudnorm=I=-20:TP=-2:LRA=7', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-shortest', '-movflags', '+faststart', mp4]);
+  }
 
   // Captions as SRT, relative to the first frame.
   const base = (frames[0].t * 1000 - t0) / 1000;
