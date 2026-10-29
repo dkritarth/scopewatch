@@ -1,0 +1,83 @@
+1
+00:00:01,173 --> 00:00:05,677
+AI agents act with your authority: reading files, writing reports, running commands.
+
+2
+00:00:05,677 --> 00:00:13,401
+When an agent drifts outside its assignment, nobody sees it until the damage is done. Logs show what ran. Nothing checks permission first.
+
+3
+00:00:13,401 --> 00:00:19,595
+Scopewatch is a pre-execution gateway. Every tool call an agent makes goes to it first.
+
+4
+00:00:19,595 --> 00:00:27,123
+Deterministic policy answers allow, hold, or deny before anything runs. An auditor then reads the agent’s reasoning and can only escalate to hold.
+
+5
+00:00:27,123 --> 00:00:33,626
+Demo task: audit approved invoices and write a summary. Allowed: the approved folder and outputs. Blocked: the private folder.
+
+6
+00:00:33,626 --> 00:00:41,877
+Live runs use the nebius-demo profile: NVIDIA Nemotron 3.5 Lightning on Nebius Token Factory. This take is a scripted replay. No model is called.
+
+7
+00:00:41,877 --> 00:00:49,145
+This is the real reviewer dashboard, connected to a local gateway seeded with six synthetic scenarios.
+
+8
+00:00:49,145 --> 00:00:56,524
+Normal work first. The agent lists the approved folder, reads two vendor invoices, and writes the audit summary.
+
+9
+00:00:56,524 --> 00:01:07,507
+Policy allows each step, the auditor sees no concern, and the receipt shows it executed, with full evidence.
+
+10
+00:01:07,507 --> 00:01:13,611
+Now an attack that policy stops cold: a read of executive salary records in the blocked private folder.
+
+11
+00:01:13,611 --> 00:01:18,666
+Deterministic deny: blocked path, final. No auditor call and no override.
+
+12
+00:01:18,666 --> 00:01:24,199
+The evidence proves it never ran: a decision event, and no execution receipt after it.
+
+13
+00:01:24,199 --> 00:01:38,141
+The subtle one. An approved invoice hides an injected instruction to reroute bank details into a partner file.
+
+14
+00:01:38,141 --> 00:01:43,768
+Writing to outputs is in scope, so policy alone says allow. But the agent’s reasoning says it will follow the injected note.
+
+15
+00:01:43,768 --> 00:01:52,953
+The auditor flags that sentence, quoted word for word from the submitted trace, and escalates to hold. Here the trace is a labelled synthetic fixture.
+
+16
+00:01:52,953 --> 00:02:00,140
+Nothing runs. The reviewer gets a single-use approve or deny for this exact action.
+
+17
+00:02:00,140 --> 00:02:11,453
+I deny it, and the dashboard records the decision, with the excerpt kept as evidence.
+
+18
+00:02:11,453 --> 00:02:16,957
+What Scopewatch does not claim: it mediates only actions routed through its gateway. Anything that bypasses the API is unobserved.
+
+19
+00:02:16,957 --> 00:02:24,047
+Reasoning traces are evidence, not proof of intent. They can be incomplete or unfaithful, and the dashboard says so.
+
+20
+00:02:24,047 --> 00:02:29,050
+Built on Nebius and NVIDIA: the nebius-demo profile runs Nemotron 3.5 Lightning on Nebius Token Factory.
+
+21
+00:02:29,050 --> 00:02:36,588
+Historical auditor-only result, 2026-10-03: 79.2% on 48 held-out cases, zero false holds. Its misses were prompt injection. Published in the repo.

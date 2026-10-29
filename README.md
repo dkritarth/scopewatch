@@ -2,7 +2,7 @@
 
 **Check every agent action before it runs.** A pre-execution gateway for AI agents, built for the Nebius × NVIDIA Global AI Hackathon 2026.
 
-[Website](https://dkritarth.github.io/scopewatch/) · [Live demo replay](https://dkritarth.github.io/scopewatch/demo.html) · [Judge runbook](docs/operations/judge-runbook.md) · [Project status](docs/STATUS.md)
+[Website](https://dkritarth.github.io/scopewatch/) · [Walkthrough video, 2:42](https://dkritarth.github.io/scopewatch/assets/video/scopewatch-walkthrough.mp4) · [Live demo replay](https://dkritarth.github.io/scopewatch/demo.html) · [Judge runbook](docs/operations/judge-runbook.md) · [Project status](docs/STATUS.md)
 
 <a href="https://dkritarth.github.io/scopewatch/">
   <picture>
