@@ -25,7 +25,7 @@ All of this runs offline with the `mock` provider. Tests use synthetic fixtures 
 | Live Nebius/Nemotron run of the headline scenario, and the shipped agent/auditor profile pair | Not observed. `nebius-demo` exposes no reasoning field, so scenario 06 may `HOLD` on an agent-written summary or stay `ALLOW`. Unknown until run. | #214 |
 | Real Codex mediation over ACP | Not demonstrated. The client is tested against a synthetic peer only. Native Codex file, process, and network activity is outside the gateway. | #121 |
 | Nebius VM deployment and hosted URL | Not provisioned. Needs a Nebius account and budget. | #43 |
-| Demo video | Script written, not recorded. | #45 |
+| Demo video | A 2:42 silent, captioned scripted-replay cut is recorded ([MP4](https://dkritarth.github.io/scopewatch/assets/video/scopewatch-walkthrough.mp4), source `site/assets/video/`). It still needs a YouTube or Vimeo upload for Devpost. An optional voiceover can follow the captions. | #45 |
 | Devpost submission | Not submitted. Needs the team representative. | #47 |
 | Track choice, team eligibility, Nemotron license confirmation | Open, owned by people. No license text is asserted in the repo. | #40, #41 |
 | Full suite on the merged tree | Run locally 2026-10-28 on the integrated tree: all suites passed except four root-only `PermissionError` tests that pass as non-root ([hackathon.md](hackathon.md)). No Docker daemon, so 25 Docker tests were skipped. | |

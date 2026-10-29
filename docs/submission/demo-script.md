@@ -18,6 +18,20 @@ of this file. Target: under 2:45 (367 words at 140 wpm).
 
 ---
 
+## Recorded take
+
+A scripted-replay take of this script was recorded on 2026-10-29: [`site/assets/video/scopewatch-walkthrough.mp4`](../../site/assets/video/scopewatch-walkthrough.mp4) (2:42, 1080p, no audio), with captions in `scopewatch-walkthrough.srt` and a thumbnail beside it. It is published at https://dkritarth.github.io/scopewatch/assets/video/scopewatch-walkthrough.mp4.
+
+- Every gateway frame is the real local dashboard seeded by `./scripts/run_demo.sh` with the offline `mock` provider. The `SCRIPTED REPLAY` badge is burned into each of those frames. The Deny click on scenario 06 is a real single-use denial recorded by the gateway.
+- The spoken lines below are burned in as captions, lightly shortened. The mode line uses the scripted-replay variant, and beat 5 quotes the "Synthetic fixture" label shown on screen. Beat 7 is captioned as a historical auditor-only result.
+- There is no voiceover. To add one, read the captions over the video, or upload the `.srt` file to YouTube as subtitles.
+- Regenerate it after UI changes. Approvals expire 300 seconds after seeding, so start from a fresh seed:
+
+```bash
+./scripts/run_demo.sh --db-path /tmp/sw/demo.db --workspace-root /tmp/sw/workspace &
+node scripts/media/record_walkthrough.cjs --out runtime-data/walkthrough
+```
+
 ## Spoken script
 
 ### Beat 1 — The problem (~15 s)
