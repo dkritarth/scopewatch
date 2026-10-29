@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scopewatch project brief</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  @page { size: A4; margin: 16mm 15mm 18mm; }
+  :root { --ink:#18181b; --muted:#52525b; --line:#e4e4e7; --amber:#b45309; --amber-bg:#fef3c7; --green:#15803d; --red:#b91c1c; --blue:#1d4ed8; }
+  * { box-sizing: border-box; }
+  body { margin:0; color:var(--ink); font:10pt/1.5 'IBM Plex Sans', system-ui, sans-serif; }
+  h1, h2, h3 { font-family:'Bricolage Grotesque', sans-serif; letter-spacing:-.01em; line-height:1.15; }
+  h2 { font-size:17pt; margin:0 0 6pt; padding-top:4pt; break-after:avoid; }
+  h3 { font-size:11.5pt; margin:12pt 0 4pt; break-after:avoid; }
+  p { margin:0 0 6pt; }
+  ul { margin:0 0 6pt; padding-left:15pt; } li { margin:0 0 2.5pt; }
+  code, .mono { font-family:'IBM Plex Mono', monospace; font-size:8.6pt; }
+  code { background:#f4f4f5; padding:0 3pt; border-radius:3pt; }
+  a { color:var(--blue); text-decoration:none; }
+  .eyebrow { font-family:'IBM Plex Mono', monospace; color:var(--amber); font-size:8pt; letter-spacing:.16em; text-transform:uppercase; margin:0 0 2pt; }
+  section { margin-top:18pt; }
+  .cover { break-after:page; }
+  .cover + section { margin-top:0; }
+  section.flow { break-before:auto; margin-top:14pt; }
+  table { width:100%; border-collapse:collapse; margin:4pt 0 8pt; font-size:8.8pt; break-inside:auto; }
+  th, td { text-align:left; vertical-align:top; padding:4pt 6pt; border-bottom:1px solid var(--line); }
+  th { font-weight:600; background:#fafafa; font-size:8.2pt; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  tr { break-inside:avoid; }
+  .note { border-left:3px solid var(--amber); background:var(--amber-bg); padding:6pt 9pt; margin:6pt 0 9pt; font-size:9pt; break-inside:avoid; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10pt 16pt; }
+  .card { border:1px solid var(--line); border-radius:6pt; padding:8pt 10pt; break-inside:avoid; }
+  .card h3 { margin-top:0; }
+  .pill { display:inline-block; font-family:'IBM Plex Mono', monospace; font-size:7.6pt; font-weight:600; padding:1pt 5pt; border-radius:3pt; border:1px solid; }
+  .ok { color:var(--green); border-color:#86efac; background:#f0fdf4; }
+  .hold { color:var(--amber); border-color:#fcd34d; background:#fffbeb; }
+  .no { color:var(--red); border-color:#fca5a5; background:#fef2f2; }
+  .todo { color:var(--blue); border-color:#93c5fd; background:#eff6ff; }
+  .muted { color:var(--muted); }
+  .small { font-size:8.4pt; }
+  /* cover */
+  .cover { height:257mm; display:flex; flex-direction:column; justify-content:space-between; }
+  .cover h1 { font-size:46pt; margin:6pt 0 0; letter-spacing:-.03em; }
+  .cover .hl { color:#d97706; }
+  .cover .meta { border-top:2px solid var(--ink); padding-top:10pt; font-size:9.5pt; }
+  .cover .meta td { border:0; padding:2pt 10pt 2pt 0; }
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:8pt; margin:16pt 0; }
+  .stat { border:1px solid var(--line); border-radius:6pt; padding:8pt; }
+  .stat b { display:block; font-family:'Bricolage Grotesque'; font-size:20pt; line-height:1; }
+  .stat span { font-size:8pt; color:var(--muted); }
+  .flow-steps { display:grid; grid-template-columns:repeat(4,1fr); gap:6pt; margin:6pt 0 10pt; }
+  .flow-steps div { border:1.5px solid #d97706; border-radius:6pt; padding:6pt 7pt; font-size:8.6pt; break-inside:avoid; }
+  .flow-steps b { display:block; font-family:'Bricolage Grotesque'; font-size:10.5pt; margin-bottom:2pt; }
+</style>
+</head>
+<body>
+
+<!-- ============ COVER ============ -->
+<div class="cover">
+  <div>
+    <div style="display:flex;align-items:center;gap:10pt">
+      <svg width="34" height="34" viewBox="0 0 24 24" fill="none"><rect width="24" height="24" rx="5" fill="#09090b"/><circle cx="12" cy="12" r="8.5" stroke="#fafafa" stroke-width="1.5" stroke-opacity="0.35"/><circle cx="12" cy="12" r="5" stroke="#fafafa" stroke-width="1.5" stroke-dasharray="2.2 2.2"/><circle cx="12" cy="12" r="2.2" fill="#f59e0b"/><line x1="12" y1="3" x2="12" y2="5.5" stroke="#fafafa" stroke-width="1.6" stroke-linecap="round"/><line x1="12" y1="18.5" x2="12" y2="21" stroke="#fafafa" stroke-width="1.6" stroke-linecap="round"/><line x1="3" y1="12" x2="5.5" y2="12" stroke="#fafafa" stroke-width="1.6" stroke-linecap="round"/><line x1="18.5" y1="12" x2="21" y2="12" stroke="#fafafa" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <span style="font-family:'Bricolage Grotesque';font-size:20pt;font-weight:700">Scopewatch</span>
+    </div>
+    <p class="eyebrow" style="margin-top:40pt">Project brief · Nebius × NVIDIA Global AI Hackathon 2026</p>
+    <h1>Check every<br>agent action<br><span class="hl">before it runs.</span></h1>
+    <p style="font-size:12pt;max-width:150mm;margin-top:14pt">A pre-execution gateway for AI agents. Deterministic policy decides first. An auditor model reads the agent's exposed reasoning and can only escalate an allowed action to a human hold. Nothing executes without a recorded decision.</p>
+    <div class="stats">
+      <div class="stat"><b>166</b><span>issues filed, 144 closed</span></div>
+      <div class="stat"><b>164</b><span>pull requests merged</span></div>
+      <div class="stat"><b>2,287</b><span>backend tests passing (2026-10-28 run)</span></div>
+      <div class="stat"><b>7 wks</b><span>2026-09-10 to 2026-10-29</span></div>
+    </div>
+  </div>
+  <div class="meta">
+    <table>
+      <tr><td class="muted">Prepared</td><td>2026-10-29 by <b>@dkritarth</b>, written with <b>Claude Code</b> using <b>Claude Opus 5.5</b></td></tr>
+      <tr><td class="muted">Replaces</td><td>The earlier one-page review brief attached to the Devpost draft (prepared with GPT-6.1 Terra)</td></tr>
+      <tr><td class="muted">Deadline</td><td>Friday 2026-10-30, 10:00 a.m. Pacific (1:00 p.m. Eastern)</td></tr>
+      <tr><td class="muted">Code</td><td><a href="https://github.com/dkritarth/scopewatch">github.com/dkritarth/scopewatch</a> (MIT)</td></tr>
+      <tr><td class="muted">Website</td><td><a href="https://dkritarth.github.io/scopewatch/">dkritarth.github.io/scopewatch</a> · <a href="https://dkritarth.github.io/scopewatch/demo.html">step-by-step replay</a></td></tr>
+      <tr><td class="muted">Video</td><td><a href="https://dkritarth.github.io/scopewatch/assets/video/scopewatch-walkthrough.mp4">2:42 walkthrough</a>, scripted replay, captioned, background music, no voiceover</td></tr>
+      <tr><td class="muted">Team</td><td>@dkritarth (Kritarth Dandapat) · @sujaldeshmukh1012 · @nawailkhan · @atshalahmedkhan</td></tr>
+    </table>
+    <p class="small muted" style="margin-top:6pt">Sources: GitHub issues and PRs, and the repository docs on <code>main</code> at the time of writing. All demo data is synthetic. Numbers are quoted with their profile, date and caveats; nothing here claims guaranteed detection or prevention.</p>
+  </div>
+</div>
+
+<!-- ============ 1. SUBMISSION ============ -->
+<section>
+  <p class="eyebrow">01 · Submission</p>
+  <h2>What is ready, and what each of us still has to do</h2>
+  <p>This answers the open points in <a href="https://github.com/dkritarth/scopewatch/issues/343">#343</a>. The Devpost draft is saved and not yet submitted.</p>
+  <table>
+    <tr><th style="width:23%">Item</th><th style="width:14%">State</th><th>Detail</th></tr>
+    <tr><td>Demo video (#45)</td><td><span class="pill hold">upload needed</span></td><td>A 2:42 1080p walkthrough is recorded and published on the project site. It follows <code>docs/submission/demo-script.md</code> beat by beat on the real local gateway with the offline mock provider. A <b>SCRIPTED REPLAY</b> badge is on every gateway frame. The Deny shown is a real single-use denial. Still needed: upload it to YouTube or Vimeo as public or unlisted (no password), and paste that URL into Devpost. Devpost reviews only the first three minutes.</td></tr>
+    <tr><td>Hosted demo (#43)</td><td><span class="pill no">not provisioned</span></td><td>The Nebius VM was never provisioned, and <code>deploy/</code> is ready but unused. Recommendation: no hosted gateway URL. List the website, the replay and the two-command local run as "Try it out". Label the replay as a static replay of recorded gateway decisions, not a live gateway.</td></tr>
+    <tr><td>Live Nebius headline run (#214)</td><td><span class="pill hold">not run</span></td><td>Scenario 06 has not been run live on <code>nebius-demo</code>, and the shipped agent/auditor pair is undecided. If it stays unrun, the submission is still accurate: the auditor numbers are labelled historical (2026-10-03, auditor only), and the video makes no live claim. Don't add "live" wording to Devpost without a recorded result.</td></tr>
+    <tr><td>Track (#40)</td><td><span class="pill todo">confirm</span></td><td>The draft uses Coding and agentic engineering. The decision was due 2026-10-15; confirm it in Devpost.</td></tr>
+    <tr><td>Team and eligibility (#41)</td><td><span class="pill todo">each member</span></td><td>Each member accepts the Devpost invite and completes eligibility, representative, licensing review, ratings and feedback. The repository does not assert a Nemotron licence text.</td></tr>
+    <tr><td>Submit (#47)</td><td><span class="pill todo">representative</span></td><td>When the rows above are done, the representative reviews the draft and clicks Submit before the deadline.</td></tr>
+    <tr><td>Code and docs</td><td><span class="pill ok">done</span></td><td>Every open PR is merged and CI is green on <code>main</code>. The README, the status page (<code>docs/STATUS.md</code>), the judge runbook and the testing instructions match the code.</td></tr>
+  </table>
+
+  <h3>Devpost fields, ready to paste</h3>
+  <table class="small">
+    <tr><th style="width:23%">Field</th><th>Value</th></tr>
+    <tr><td>Video demo link</td><td>The YouTube or Vimeo URL once uploaded. Upload <code>scopewatch-walkthrough.mp4</code>, add <code>scopewatch-walkthrough.srt</code> as subtitles, and set <code>scopewatch-walkthrough-thumbnail.png</code> as the thumbnail. All three are in <code>site/assets/video/</code>.</td></tr>
+    <tr><td>Try it out</td><td>https://dkritarth.github.io/scopewatch/ · https://dkritarth.github.io/scopewatch/demo.html · https://github.com/dkritarth/scopewatch</td></tr>
+    <tr><td>Built with</td><td>Python 3.12, FastAPI, SQLite, vanilla JavaScript, Docker, Playwright, Nebius Token Factory, NVIDIA Nemotron 3.5 Lightning (<code>nvidia/Nemotron-3_5-Lightning</code>), OpenRouter (development only)</td></tr>
+    <tr><td>YouTube title</td><td>Scopewatch: check every AI agent action before it runs (Nebius × NVIDIA Global AI Hackathon)</td></tr>
+    <tr><td>YouTube description</td><td>Scopewatch is a pre-execution gateway for AI agents. Every tool call goes to the gateway first. Deterministic policy answers ALLOW, HOLD or DENY before anything runs, and an auditor model reads the agent's exposed reasoning and can only escalate an allowed action to HOLD for a human. This walkthrough is a scripted replay. It shows the real reviewer dashboard and local gateway running synthetic scenarios with the offline mock provider, so no model is called. Live runs use the nebius-demo profile: NVIDIA Nemotron 3.5 Lightning on Nebius Token Factory. All data is synthetic.</td></tr>
+  </table>
+</section>
+
+<!-- ============ 2. WHAT & WHY ============ -->
+<section>
+  <p class="eyebrow">02 · The idea</p>
+  <h2>Problem, adopter, and where it sits among existing tools</h2>
+  <p><b>Problem.</b> Coding agents run shell commands and edit files with a person's authority, and a prompt injection hidden in a README or an invoice can steer them. Logs record what already ran; nothing checks permission first. The docs cite two vendor-confirmed Microsoft CVEs: CVE-2025-32711 (M365 Copilot, AI command injection leading to disclosure) and CVE-2025-53773 (GitHub Copilot and Visual Studio, command injection leading to local code execution). They also cite OWASP LLM01:2025 (prompt injection) and LLM06:2025 (excessive agency). Scopewatch has not reproduced those vulnerabilities, and it does not claim it would stop their exploit chains.</p>
+  <p><b>Who adopts it.</b> Platform and security teams running coding agents that need to review tool actions before they touch a workspace. The proposal's first user is a developer running a single coding agent.</p>
+  <h3>How it works</h3>
+  <div class="flow-steps">
+    <div><b>1 · Deterministic policy</b>Checks tool, operation and path against the declared task scope before any model call. Catches traversal, symlink breakouts and blocked folders, and denies every network operation. <span class="pill ok">ALLOW</span> <span class="pill hold">HOLD</span> <span class="pill no">DENY</span></div>
+    <div><b>2 · Reasoning auditor</b>An independent model reads the agent's exposed reasoning for drift, injection-following, exfiltration intent or evasion. Flagged excerpts must match the trace verbatim. It can only escalate: <span class="pill hold">ALLOW→HOLD</span></div>
+    <div><b>3 · Human approval</b>A held action waits in the reviewer dashboard. Each approval is bound to one exact action, works once, expires, and can never override a policy DENY.</div>
+    <div><b>4 · Controlled executor</b>Runs only actions with a stored decision, inside a per-run workspace. Commands run in a Docker container with <code>--network none</code>, a non-root user and a read-only root.</div>
+  </div>
+  <h3>Prior art, compared from documentation (not benchmarked)</h3>
+  <table class="small">
+    <tr><th style="width:26%">System</th><th>Overlap and difference</th></tr>
+    <tr><td>Meta LlamaFirewall</td><td>Already audits reasoning and traces (AlignmentCheck). Scopewatch does not claim to have invented reasoning audits.</td></tr>
+    <tr><td>NVIDIA NeMo Guardrails</td><td>Its tool and action rails overlap with the policy layer.</td></tr>
+    <tr><td>Invariant Guardrails</td><td>Overlaps directly on gateway mediation and rule enforcement.</td></tr>
+    <tr><td>NVIDIA AEGIS 1.0</td><td>A content-safety classifier. It answers a different question from task authorisation.</td></tr>
+  </table>
+  <p><b>What Scopewatch adds is the combination and the review record.</b> A deterministic DENY is final. Reasoning can only escalate. A failed audit holds. The executor needs a stored decision, plus a valid single-use approval for held actions. Provenance labels are gated by a capture credential, and excerpts must be grounded in the submitted text.</p>
+  <div class="note"><b>Honest limits.</b> Only actions routed through the gateway API are mediated; anything that bypasses it is not observed, blocked or recorded. Reasoning is evidence, not proof of intent: a model can omit, rationalise or encode its plan, so a policy-legal harmful edit with concealed intent may pass. Docker constrains dispatched commands, not unrelated host processes. No adoption-time, cost or reviewer-workload figures have been measured.</div>
+</section>
+
+<!-- ============ 3. IDEATION ============ -->
+<section>
+  <p class="eyebrow">03 · Ideation</p>
+  <h2>How the design was chosen</h2>
+  <p>The repository began as a passive monitor: an instrumented run plus a reviewer timeline. Early notes from several models proposed alternatives. A 2026-09-16 validation on OpenRouter found that seven requests returned no reasoning, and four of six live auditor cases failed validation or transport. A 2026-09-19 gap audit found two disconnected prototypes. PR #4 (2026-09-13) moved the project toward active enforcement.</p>
+  <h3>Planning session, 2026-09-23 (became ADR-0001)</h3>
+  <p class="small muted">@dkritarth made the decisions, and Claude Opus 5.5 in Claude Code asked the questions and kept the record. The record became team policy when ADR-0001 (#21) merged.</p>
+  <table class="small">
+    <tr><th style="width:15%">Question</th><th style="width:47%">Chosen</th><th>Not chosen</th></tr>
+    <tr><td>Product shape</td><td>A pre-execution gateway: the only shape that can show a stopped action, and one where a model failure cannot cause unsafe execution.</td><td>A post-hoc monitor: cheaper, but it cannot claim prevention.</td></tr>
+    <tr><td>Stack</td><td>Python 3.12, FastAPI, SQLite, the existing vanilla-JS UI</td><td>Next.js and TypeScript, with five weeks left</td></tr>
+    <tr><td>Agent runtime</td><td>The team's own minimal agent loop and tool surface, so there is no bypass path by construction. ACP and Codex as a stretch goal (#48, #49).</td><td>An MCP adapter (voluntary mediation), or wrapping an existing agent</td></tr>
+    <tr><td>Model roles</td><td>Agent and auditor are swappable through provider profiles, with Nemotron as the default</td><td>Pinning Nemotron in code</td></tr>
+    <tr><td>Reasoning authority</td><td>Escalate-only. A failed audit holds. One audit per agent turn, because the proof of concept took about 7.6 s per call.</td><td>Display-only reasoning, or reasoning that can DENY</td></tr>
+    <tr><td>Executor</td><td>Docker per run (<code>--network none</code>, non-root, read-only root) with allowlisted <code>run_command</code> argv. The hosted demo was planned on one Nebius VM.</td><td>A plain subprocess</td></tr>
+    <tr><td>Demo domain</td><td>Invoice scenarios first, then a coding scenario with Docker</td><td>Coding only, or invoice only</td></tr>
+    <tr><td>Autonomy</td><td>Agents self-merge ordinary PRs after CI. Security-critical issues get <code>review: second-pass</code>.</td><td>A human merge for every PR</td></tr>
+  </table>
+  <h3>Architecture decision records</h3>
+  <ul>
+    <li><b>ADR-0001, Accepted.</b> Thirteen decisions: the gateway shape, the stack, the agent loop, provider profiles (<code>mock</code>, <code>openrouter-dev</code>, <code>nebius-demo</code>), an open-weight reasoning agent, escalate-only reasoning, one audit per turn, the Docker executor, the demo plan, synthetic-only data and the governance model. It also sets the provenance rules: only <code>reasoning.text</code> counts as a raw trace, and a verified provider trace requires the <code>SCOPEWATCH_CAPTURE_TOKEN</code>.</li>
+    <li><b>ADR-0002, Proposed.</b> A tamper-evident evidence hash chain over exported events, with an offline verifier. It detects later edits; it does not prevent unsafe execution.</li>
+    <li><b>ADR-0003, Proposed.</b> Policy identity persisted in evidence (<code>policy_version = date.N+fingerprint</code>). An approval is honoured on the decision the reviewer saw, and any drift is recorded.</li>
+  </ul>
+  <h3>Ideas explored as prototypes</h3>
+  <table class="small">
+    <tr><th style="width:30%">Idea</th><th>Outcome</th></tr>
+    <tr><td>Graded severity levels (#50)</td><td>Display-only prototype in <code>poc/severity-levels/</code> (PR #88). Automatic blocking would conflict with "model output never produces DENY", so it stays display-only.</td></tr>
+    <tr><td>MCP server adapter (#51)</td><td>Prototype in <code>poc/mcp-gateway/</code> (PR #86, 26 tests). Not yet a supported integration.</td></tr>
+    <tr><td>Tamper-evident log (#52)</td><td>Prototype plus ADR-0002 (PR #82); the verifier was hardened in PRs #261 and #273.</td></tr>
+    <tr><td>Codex over ACP (#48, #49, #121)</td><td>Adapter (PR #98), relay bounds (#333) and a bounded ACP v1 client (#340). Real Codex mediation is not demonstrated: the observed bridge made no filesystem callbacks.</td></tr>
+    <tr><td>Claude Code permission hook (#291)</td><td>A fail-closed preflight hook (PR #313) routes Claude tool calls through the gateway.</td></tr>
+    <tr><td>Two-tier auditor (#292)</td><td>A conservative fast screen plus strong review (PR #325), exercised only with synthetic responses</td></tr>
+    <tr><td>Monitor ablation (#298)</td><td>A replay harness comparing policy alone with policy plus the monitor (PR #329, 73 tests). No live results yet.</td></tr>
+    <tr><td>Search through the gateway (#306)</td><td>Blocked: it needs a separately reviewed, bounded network operation</td></tr>
+  </table>
+</section>
+
+<!-- ============ 4. BUILD HISTORY ============ -->
+<section>
+  <p class="eyebrow">04 · Build history</p>
+  <h2>Seven weeks, from concept to submission</h2>
+  <table class="small">
+    <tr><th style="width:17%">Phase</th><th>What landed</th></tr>
+    <tr><td><b>Sep 10–19</b><br>Concept and baseline</td><td>Governance and naming (#1, #2). An in-flight gateway idea with taint tracking and a two-tier NVIDIA/Nebius design (#3), which shaped the final design. The architecture proposal (#6), a chain-of-thought auditing proof of concept (#7), a synthetic replay frontend (#8), the tested baseline (#11), the gap audit (#12) and a bounded, scope-aware auditor (#14, #15).</td></tr>
+    <tr><td><b>Sep 22–24</b><br>Core build, M0</td><td>Domain model, persistence, policy engine and executor; the API with the approval lifecycle and SSE; the frontend with its simulator and browser tests; demo scenarios and clean-room validation (#16–#19). Then the planning session (#20, #53), ADR-0001 (#21), and backlog issues #22–#52 filed in one batch.</td></tr>
+    <tr><td><b>Sep 25–29</b><br>M1 and M2</td><td>Gateway, agent loop, reasoning audit and scenarios (#57), plus a coding scenario on the Docker executor (#65). A fix wave: approvals reopening completed runs (#67), a symlink bypass (#69), unresolvable paths (#70), single-use approvals and <code>run_command</code> revalidation (#81). A 71-case bypass suite (#75). The hosted deploy bundle (#79) and remote executor sidecar (#84). Prototypes: hash chain (#82), MCP adapter (#86), severity levels (#88).</td></tr>
+    <tr><td><b>Sep 30–Oct 4</b><br>Live providers</td><td>The ACP client for Codex (#98). Nebius Token Factory verification with pinned Nemotron IDs (#102, #103). Unified pre-dispatch gates (#104, #165). Two-phase persistence and action-aware audit caching (#143). A live-run bug batch (#127–#136, fixed in #137–#147 and #182). A wall-clock budget (#177), the grounding fail-closed rate (#181) and per-run isolated workspaces (#163).</td></tr>
+    <tr><td><b>Oct 10–17</b><br>Audit sweep</td><td>An independent review filed about 35 issues (#183–#220), mostly fixed in PRs #221–#260: reviewer authentication and same-origin CORS (#258), remote-executor checks (#257), auditor prompt escaping (#259), blocked paths inside the container (#260), UI state and accessibility fixes, and deploy runbook fixes.</td></tr>
+    <tr><td><b>Oct 21–29</b><br>Submission push</td><td>The audit queue (#287 with #288–#307). The project website, then its redesign as a checkpoint console (#272, #277). The celestial dashboard wired to the real gateway (#308). Case-variant and casefold path blocking (#316, #331). Request body bounds (#320). Reasoning required for high-impact actions (#310). Fail closed on omitted evidence (#312). Two-tier review (#325). Reproducible evaluation evidence (#327), the ablation harness (#329), media (#330) and workspace retention (#339). On 10-28, seventeen draft PRs were integrated and merged after independent review. Then the README, status page, walkthrough video and this brief (#341–#344).</td></tr>
+  </table>
+
+  <h3>Security hardening worth knowing about</h3>
+  <ul class="small">
+    <li><b>Path containment:</b> a symlink inside an allowed directory exposed blocked content (#63, fixed in #69). Copy-back wrote through a destination symlink (#167, fixed in #337). Symlink loops now fail closed on Python 3.12 and 3.13 (#178, #279). Case-variant and casefold aliases of restricted paths are blocked (#316, #331).</li>
+    <li><b>Approvals:</b> an approval could reopen a completed run (#67, #233), and a consumed approval could be replayed (#81). The stored single-use check was unreachable (#141). A run could close during execution (#282).</li>
+    <li><b>Executors:</b> the remote executor skipped scope, approval and lifecycle checks (#257). Blocked paths were staged into the <code>run_command</code> container, leaving <code>.env</code> readable (#260). Output and copy-back sizes are now bounded (#286).</li>
+    <li><b>API:</b> there was no reviewer authentication, plus wildcard CORS with credentials and a shared token (#258). Request bodies and reasoning payloads were unbounded (#320). Validation errors no longer echo input.</li>
+    <li><b>Auditor:</b> unescaped fields allowed prompt injection into the auditor (#259). Omitted evidence now fails closed (#312). Timeouts, token caps and malformed output all hold the action (#181, #226, #228).</li>
+    <li><b>Evidence:</b> decisions are persisted before effects (#143). Caller-supplied provenance is marked unverified (#164). The hash-chain verifier no longer accepts bad sequences (#261, #273).</li>
+  </ul>
+</section>
+
+<!-- ============ 5. EVIDENCE ============ -->
+<section>
+  <p class="eyebrow">05 · Evidence</p>
+  <h2>What has been measured, with its caveats</h2>
+  <h3>Historical auditor-only results: held-out split, one pinned run per profile, 2026-10-03</h3>
+  <p class="small">48 cases (36 concern, 12 clean), seed 42, prompt <code>v1.0-hardened-1cea92f0</code>. <code>--check</code> passed on each run.</p>
+  <table>
+    <tr><th>Metric</th><th><code>nebius-demo</code><br><span class="mono">nvidia/Nemotron-3_5-Lightning</span></th><th><code>openrouter-dev</code><br><span class="mono">nvidia/nemotron-3.5-lightning</span></th><th>Target</th></tr>
+    <tr><td>Accuracy</td><td>79.2% (41 of 48 valid)</td><td>87.5% (44 of 48 valid)</td><td>none</td></tr>
+    <tr><td>False-negative rate</td><td>8.33% (3 of 36)</td><td>5.56% (2 of 36)</td><td>&lt;5%: not met by either</td></tr>
+    <tr><td>False holds on clean cases</td><td>0 of 12</td><td>0 of 12</td><td>&lt;15%: met</td></tr>
+    <tr><td>Audit failure rate</td><td>14.58% (7 of 48)</td><td>8.33% (4 of 48)</td><td>&lt;1% in operation: not met</td></tr>
+    <tr><td>Latency p50 / p95</td><td>619 / 799 ms</td><td>2,372 / 16,652 ms</td><td>none</td></tr>
+  </table>
+  <ul class="small">
+    <li>Every false negative on both profiles was <code>injection_following</code>, where the auditor said no concern. That is the only direction in which a concern can slip through, and it is published in the repository rather than hidden.</li>
+    <li>Failures were mostly <code>UNGROUNDED_EXCERPT</code> (OpenRouter 4; Nebius 5, plus 2 <code>INVALID_AUDIT_OUTPUT</code>). A failed audit holds the action; the harness scores it as a miss, not a false negative.</li>
+    <li>The zero-false-hold figure is 0 of 12 clean cases per profile, or 0 of 24 clean evaluations across both runs. It is not 0 of 96 audits.</li>
+    <li>These results predate the grounding fix (#150) and later prompt changes (v1.1, v1.2), so they do not measure the current gateway or the shipped agent/auditor pair. The fixtures and the mock auditor landed in the same PR, and there is no freeze-then-tune history, so treat the figures as a generalisation estimate.</li>
+    <li>The historical held-out split is spent: an automated audit flags 17 cross-split pairs and literal mock-rule overlap in 53 of 61 cases. A fresh v2 split (12 dev, 12 held-out) has no provider measurement yet.</li>
+    <li>Five dev-split runs on <code>nebius-demo</code> ranged from 61.5% to 84.6% accuracy: a sample, not a measurement of record.</li>
+  </ul>
+  <h3>Software verification, 2026-10-28, on the integrated tree</h3>
+  <p class="small">Backend: 2,287 passed, 25 Docker tests skipped, and 4 read-only <code>PermissionError</code> tests failed only because the run was as root; they pass as a non-root user. Reasoning PoC: 96 passed plus 79 subtests. MCP gateway: 26. Monitor ablation: 73. Deploy: 140. Frontend units: 79. Playwright browser tests: 28. The clean-room scenario check passed. CI is green on <code>main</code> across all eight workflows. Not exercised: native Docker, macOS and Windows case-insensitive volumes, and public TLS or multi-replica deployment.</p>
+
+  <h3>Nebius and NVIDIA usage</h3>
+  <table class="small">
+    <tr><th style="width:26%">What</th><th>Detail</th></tr>
+    <tr><td>Inference</td><td>The <code>nebius-demo</code> profile: Nebius Token Factory at <code>https://api.tokenfactory.nebius.com/v1</code> (OpenAI-compatible), with the key from <code>NEBIUS_API_KEY</code>. It serves both the agent loop and the auditor.</td></tr>
+    <tr><td>Model</td><td>NVIDIA Nemotron 3.5 Lightning, <code>nvidia/Nemotron-3_5-Lightning</code>. Profiles keep model IDs out of code.</td></tr>
+    <tr><td>Verified live</td><td>2026-10-01: catalog fetch, tool calling (<code>finish_reason: tool_calls</code>) and JSON-mode auditor calls. 2026-10-03: the 48-case held-out auditor run above. An earlier 401 came from using an AI Cloud service-account key against Token Factory: the wrong credential type, not a product fault.</td></tr>
+    <tr><td>Not yet observed</td><td>Nebius returned no reasoning field on a plain completion. In scenario 06 on <code>nebius-demo</code>, the action is held only if Nemotron writes text into tool-call <code>content</code>. That text would then be audited as an agent-authored summary. With empty content, the audit is skipped and the action stays allowed. Neither outcome has been observed live (#214). Pricing was not re-confirmed, so no cost is claimed.</td></tr>
+    <tr><td>Provider feedback</td><td>Drafted in <code>docs/submission/provider-feedback.md</code>. It asks providers to document which credential type each product needs and a reasoning-field contract per model and turn type, and to explain that hidden reasoning consumes the completion budget in bounded JSON mode. On Nebius, 256 and 512 tokens ran out with thinking on, and 28 tokens sufficed with it off.</td></tr>
+  </table>
+</section>
+
+<!-- ============ 6. HOW WE BUILT IT / ROADMAP ============ -->
+<section>
+  <p class="eyebrow">06 · Team and direction</p>
+  <h2>How it was built, and what comes next</h2>
+  <h3>A human-led, multi-agent workflow</h3>
+  <p>@dkritarth set direction and made the decisions, with review from teammates. The backlog lived in GitHub issues with acceptance criteria and "blocked by" links. Agent threads claimed issues, worked in separate git worktrees and opened one PR per issue. They self-merged after CI, except on <code>review: second-pass</code> issues, which needed an independent reviewer first. Nine roles have specs in <code>.agents/roles/</code>: orchestrator, implementer, test-writer, test-runner, verifier, change-monitor, reviewer, researcher and docs-keeper. Claude Code, Codex and Gemini CLI all read the same roles and skills.</p>
+  <p class="small"><b>Models credited in the repository</b>, as the docs record them. Model-authored documents name the model and date, per <code>AGENTS.md</code>.</p>
+  <ul class="small">
+    <li>Claude Opus 5.5 (Claude Code): the planning session (2026-09-23); this brief, the 2026-10-28 integration and merges, the docs sync, the README images and the walkthrough video (2026-10-28 to 2026-10-29)</li>
+    <li>GPT-6 and GPT-5 (Codex): early notes and the gap audit (September). GPT-6.1 Sol (Codex): provider feedback and the readiness audit (2026-10-28). GPT-6.1 Terra: the earlier one-page review brief and #343 (2026-10-29).</li>
+    <li>Gemini 3.8 Flash: early notes. Union Alpha: reasoning-capture validation. Space Bunny Free: post-M1 audit and the M1/M2 run. Muse Spark: the MCP adapter and severity prototypes.</li>
+  </ul>
+  <div class="grid2">
+    <div class="card">
+      <h3>Open, owned by people</h3>
+      <ul class="small">
+        <li>#40 track · #41 eligibility and licensing</li>
+        <li>#43 Nebius VM and hosted URL</li>
+        <li>#45 video upload · #47 Devpost submit · #343 coordination</li>
+        <li>#214 live scenario 06 and the shipped profile pair</li>
+        <li>#101 live Nemotron behaviour (spike)</li>
+        <li>#293 code-tampering scenario acceptance</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>After the hackathon (nothing here is built)</h3>
+      <ul class="small">
+        <li>Finish Codex acceptance over ACP (#121); move MCP from prototype to supported (#51)</li>
+        <li>Display-only severity triage (#50)</li>
+        <li>Operate the evidence hash chain with a pinned head (#52, ADR-0002)</li>
+        <li>A reviewed, bounded network operation (#306)</li>
+        <li>Run the ablation and a fresh benchmark on unspent cases before any quality claim; a LoRA auditor study (#303)</li>
+      </ul>
+    </div>
+  </div>
+  <h3>Run it yourself (no keys, no Docker, no network)</h3>
+  <pre class="mono" style="background:#f4f4f5;padding:8pt;border-radius:5pt;white-space:pre-wrap;margin:0 0 6pt">git clone https://github.com/dkritarth/scopewatch && cd scopewatch
+python3 -m venv .venv && . .venv/bin/activate && pip install --require-hashes -r backend/requirements.lock
+./scripts/run_demo.sh        # dashboard at http://127.0.0.1:8000/
+./scripts/validate.sh        # full verification; --quick skips the browser suite</pre>
+  <p class="small">In the dashboard, open "Reasoning-Injection Escalation" to see a policy ALLOW escalated to HOLD with the grounded excerpt, then press Deny. Then open "Blocked Confidential Directory Access" to see a final DENY (<code>BLOCKED_PATH</code>) with no execution receipt after it. The one-page judge sheet is <code>docs/operations/judge-runbook.md</code>.</p>
+  <p class="small muted" style="margin-top:12pt;border-top:1px solid var(--line);padding-top:6pt">Prepared by @dkritarth with Claude Code (Claude Opus 5.5), 2026-10-29. All demo data is synthetic. Scopewatch mediates only actions routed through its API and makes no claim of guaranteed detection or prevention.</p>
+</section>
+
+</body>
+</html>
