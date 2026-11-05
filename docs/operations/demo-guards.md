@@ -80,11 +80,17 @@ calls). Mock/scripted usage records 0 tokens and is never refused.
 | `SCOPEWATCH_DAILY_TOKEN_BUDGET_<PROFILE>` | _(unset = unlimited)_ | Daily cap for one profile, e.g. `SCOPEWATCH_DAILY_TOKEN_BUDGET_NEBIUS_DEMO`. Profile name upper-cased, non-alphanumerics become `_`. Malformed values fail closed to `0`. |
 | `SCOPEWATCH_TOKEN_BUDGET_DEFAULT` | _(unset = unlimited)_ | Fallback cap for any live profile without its own budget. |
 | `SCOPEWATCH_TOKEN_RESERVE_PER_AUDIT` | `8000` | Estimate reserved before each auditor call (check-then-reserve); settled to actuals afterwards. |
-| `SCOPEWATCH_TOKEN_BUDGET_STORE` | _(unset = memory only)_ | Optional JSON file for the counters, shared by co-located processes. Counts only. |
+| `SCOPEWATCH_TOKEN_BUDGET_STORE` | _(unset = memory only)_ | Optional JSON file containing counts for restart recovery. It does not synchronize concurrent processes. |
 
-Refusal: `429 {"error": "token_budget_exhausted"}` naming the profile and the
-UTC-midnight rollover, raised at run creation (agent profile) and before each
-auditor spend (auditor profile). Token counts (only) are reported in
+Auditor reservations belong to one ledger instance and UTC day. Releasing an
+old reservation cannot subtract from a later day's usage. Budget checks and
+reservations are atomic within that instance.
+
+Run creation and single-tier audit budget refusals return
+`429 {"error": "token_budget_exhausted"}`, naming the profile and UTC-midnight
+rollover. Two-tier routing records `TOKEN_BUDGET_EXCEEDED` for a refused tier
+and keeps the action on HOLD, even if another tier returns clean.
+Token counts are reported in
 `RUN_CREATED` (`details.token_budget`) and reasoning-audit events
 (`details.tokens_used` + `details.profile`).
 

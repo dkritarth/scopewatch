@@ -65,8 +65,7 @@ async def run_tiered_audit(
         model = "unknown"
         attempted = False
         timeout_s = config.timeout_s
-        reservation = 0
-        reservation_profile = None
+        reservation = None
         resolved_profile = None
         client = None
         try:
@@ -91,11 +90,9 @@ async def run_tiered_audit(
             })
             if not is_mock_profile(profile.name, profile.base_url):
                 estimate = max(reserve_per_audit(), config.max_tokens)
-                if not tokens.check(profile.name, estimate=estimate).allowed:
+                verdict, reservation = tokens.reserve(profile.name, estimate=estimate)
+                if not verdict.allowed:
                     raise _TierBudgetExceeded
-                tokens.add(profile.name, estimate)
-                reservation = estimate
-                reservation_profile = profile.name
             client = ProviderClient(profile)
             auditor = ReasoningAuditor(provider=client, profile=profile.name,
                                        model=model, timeout_s=profile.timeout_s)
@@ -107,8 +104,8 @@ async def run_tiered_audit(
             result = failed(config.profile, model)
         finally:
             try:
-                if reservation:
-                    tokens.add(reservation_profile, -reservation)
+                if reservation is not None:
+                    tokens.release(reservation)
             except Exception:
                 pass  # Metering cleanup must not discard the fail-closed result.
             try:

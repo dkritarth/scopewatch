@@ -1071,17 +1071,16 @@ capture_token: Optional[str] = None,
                     # below is the model spend; refuse here when the auditor
                     # profile's daily budget cannot cover an estimate.
                     auditor_profile = auditor_profile_name()
-                    estimate = 0
+                    reservation = None
                     from scopewatch.tiered_audit import routing_mode
                     if routing_mode() == "single" and not is_mock_profile(auditor_profile):
                         estimate = reserve_per_audit()
-                        verdict = self.tokens.check(auditor_profile, estimate=estimate)
+                        verdict, reservation = self.tokens.reserve(auditor_profile, estimate=estimate)
                         if not verdict.allowed:
                             budget = verdict.budget or 0
                             raise self._refuse_token_budget(
                                 auditor_profile, verdict.used, budget
                             )
-                        self.tokens.add(auditor_profile, estimate)
                     try:
                         audit_result = await self._run_reasoning_audit(
                             run=run,
@@ -1094,9 +1093,9 @@ capture_token: Optional[str] = None,
                         # Actual usage was recorded at spend time by the
                         # provider hook; release the estimate here so the
                         # ledger converges to actuals. Never raises.
-                        if estimate:
+                        if reservation is not None:
                             try:
-                                self.tokens.add(auditor_profile, -estimate)
+                                self.tokens.release(reservation)
                             except Exception:  # noqa: BLE001 - metering is best-effort
                                 logger.debug("Sanitized token-settle skip")
 

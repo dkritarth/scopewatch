@@ -19,8 +19,9 @@ Rules:
     bodies are never logged or persisted here.
   * State is in-memory per process (thread-safe). When
     ``SCOPEWATCH_TOKEN_BUDGET_STORE`` points at a JSON file, counters are
-    additionally persisted there (best-effort) so co-located processes (e.g.
-    an agent loop and the gateway on the same demo host) share one ledger.
+    additionally persisted there (best-effort) for restart recovery. Budget
+    checks and reservation ownership remain local to one ledger instance;
+    the JSON file does not synchronize concurrent processes.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -143,6 +145,16 @@ class TokenDecision:
     reset_in_s: float = 0.0
 
 
+@dataclass(frozen=True)
+class TokenReservation:
+    """An outstanding estimate owned by one ledger instance and UTC day."""
+
+    id: str
+    profile: str
+    day: str
+    tokens: int
+
+
 _UNSET: Any = object()
 
 
@@ -150,7 +162,8 @@ class TokenLedger:
     """Thread-safe per-profile per-UTC-day token ledger.
 
     ``now`` is injectable for deterministic tests. ``store_path`` enables
-    best-effort JSON persistence shared by co-located processes.
+    best-effort JSON persistence for restart recovery, without interprocess
+    synchronization.
     """
 
     def __init__(
@@ -164,6 +177,7 @@ class TokenLedger:
         self._lock = threading.Lock()
         self._day: str = self._today()
         self._used: dict[str, int] = {}
+        self._reservations: dict[str, TokenReservation] = {}
         self._load_store()
 
     # -- time/day ----------------------------------------------------------
@@ -176,6 +190,7 @@ class TokenLedger:
         if today != self._day:
             self._day = today
             self._used = {}
+            self._reservations.clear()
             self._save_store_locked()
 
     # -- persistence (best-effort, counts only) -----------------------------
@@ -256,10 +271,52 @@ class TokenLedger:
             self._save_store_locked()
             return updated
 
+    def reserve(
+        self, profile: str, estimate: int = 0, budget: int | None | Any = _UNSET,
+    ) -> tuple[TokenDecision, TokenReservation | None]:
+        """Atomically check and reserve an estimate within this ledger instance.
+
+        Release the returned handle after the provider records actual usage.
+        Handles are process-local and are invalidated by rollover or reset;
+        persisted counters do not transfer their ownership to a new instance.
+        """
+        if is_mock_profile(profile):
+            return TokenDecision(allowed=True), None
+        amount = max(0, int(estimate))
+        eff_budget = daily_token_budget_for(profile) if budget is _UNSET else budget
+        with self._lock:
+            self._rollover_locked()
+            used = self._used.get(profile, 0)
+            decision = TokenDecision(
+                allowed=eff_budget is None or used + amount <= eff_budget,
+                used=used, budget=eff_budget, reset_in_s=self.reset_in_seconds(),
+            )
+            if not decision.allowed:
+                return decision, None
+            reservation = TokenReservation(str(uuid.uuid4()), profile, self._day, amount)
+            self._reservations[reservation.id] = reservation
+            self._used[profile] = used + amount
+            self._save_store_locked()
+            return decision, reservation
+
+    def release(self, reservation: TokenReservation | None) -> None:
+        """Release exactly this outstanding estimate, once, in its original day."""
+        if reservation is None:
+            return
+        with self._lock:
+            self._rollover_locked()
+            if self._reservations.get(reservation.id) is not reservation:
+                return
+            del self._reservations[reservation.id]
+            profile = reservation.profile
+            self._used[profile] = max(0, self._used.get(profile, 0) - reservation.tokens)
+            self._save_store_locked()
+
     def reset(self) -> None:
         """Clear all counters (tests and operator resets)."""
         with self._lock:
             self._used = {}
+            self._reservations.clear()
             self._day = self._today()
             self._save_store_locked()
 
