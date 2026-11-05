@@ -37,6 +37,93 @@ function createStaticServer() {
   });
 }
 
+for (const delayedStage of ["list", "detail", "error"]) {
+  test(`newer approval refresh wins over delayed ${delayedStage}`, { timeout: 30000 }, async () => {
+    const server = createStaticServer();
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    let browser;
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    let reached;
+    const intercepted = new Promise(resolve => { reached = resolve; });
+    let stage = "bootstrap";
+    const run = { id: "synthetic-refresh-run", name: "Refresh race", status: "ACTIVE",
+      task_scope: { task_description: "Synthetic refresh test", allowed_paths: ["scratch"],
+        blocked_paths: [], allowed_tools: ["workspace"], allowed_operations: ["read_text"], requires_approval: [] } };
+    const event = { id: "synthetic-event", sequence: 1, run_id: run.id,
+      event_type: "RUN_CREATED", timestamp: "2026-01-01T00:00:00Z", summary: "Original event", details: {} };
+    const approval = { id: "synthetic-approval", run_id: run.id, action_request_id: "synthetic-action",
+      status: "PENDING", expires_at: "2099-01-01T00:00:00Z" };
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      const errors = [];
+      page.on("pageerror", error => errors.push(error.message));
+      await page.addInitScript(() => {
+        window.EventSource = class {
+          addEventListener() {}
+          close() {}
+        };
+      });
+      await page.route("**/api/v1/**", async route => {
+        const path = new URL(route.request().url()).pathname;
+        const json = value => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
+        if (path.endsWith("/health")) return json({ status: "ok" });
+        if (path.endsWith("/runs")) return json([run]);
+        if (path.endsWith("/events")) return json([event]);
+        if (path.endsWith("/approvals")) {
+          if (stage === "old") {
+            stage = "new";
+            if (delayedStage !== "detail") {
+              reached();
+              await held;
+            }
+            if (delayedStage === "error") {
+              stage = "fail-retries";
+              return route.fulfill({ status: 503, body: "{}" });
+            }
+            return json([approval]);
+          }
+          if (stage === "fail-retries") return route.fulfill({ status: 503, body: "{}" });
+          return json([]);
+        }
+        if (path.endsWith("/actions/synthetic-action")) {
+          if (delayedStage === "detail") { reached(); await held; }
+          return json({ action_request: { operation: "read_text", resource: "scratch/input.txt", arguments: {} },
+            events: [{ ...event, summary: "Obsolete detail marker" }] });
+        }
+        return route.fulfill({ status: 404 });
+      });
+      await page.goto(`http://127.0.0.1:${server.address().port}/?live=1`);
+      await page.locator("#run-buttons button").first().waitFor();
+      await page.evaluate(() => window.__scopewatch.refreshApprovals());
+      await page.evaluate(() => clearInterval(window.__runRefreshInterval));
+      await page.locator('.rail-nav [data-view-target="requests"]').click();
+      stage = "old";
+      await page.evaluate(() => { window.__oldApprovalRefresh = window.__scopewatch.refreshApprovals(); });
+      await intercepted;
+      await page.evaluate(() => window.__scopewatch.refreshApprovals());
+      assert.equal(await page.locator("#pending-approvals-count").innerText(), "0");
+      release();
+      await page.evaluate(() => window.__oldApprovalRefresh);
+      assert.equal(await page.locator(".approval-card").count(), 0);
+      assert.equal(await page.locator("#pending-approvals-count").innerText(), "0");
+      assert.equal(await page.locator("#approvals-retry").isHidden(), true);
+      assert.doesNotMatch(await page.locator("#approvals-status").innerText(), /Could not load/);
+      await page.locator('.rail-nav [data-view-target="activity"]').click();
+      await page.locator("#text-filter").fill("Obsolete");
+      await page.locator("#text-filter").fill("");
+      assert.doesNotMatch(await page.locator("#timeline").innerText(), /Obsolete detail marker/);
+      assert.deepEqual(errors, []);
+    } finally {
+      release();
+      if (browser) await browser.close();
+      server.close();
+    }
+  });
+}
+
 test("approval double-confirm arms, switches target, and fires exactly once", { timeout: 30000 }, async () => {
   const server = createStaticServer();
   server.listen(0, "127.0.0.1");

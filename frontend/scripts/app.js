@@ -493,6 +493,7 @@ let liveStreamHandle = null;
 let isLiveMode = false;
 // Every bootstrap invalidates reads and stream callbacks from the prior view.
 let liveReadGeneration = 0;
+let approvalRefreshRequest = 0;
 let pendingApprovals = [];
 
 export function getPendingApprovals() {
@@ -1607,6 +1608,9 @@ export async function refreshApprovals() {
   if (!isLiveMode) return;
   const generation = liveReadGeneration;
   const run = getSelectedRun();
+  const request = ++approvalRefreshRequest;
+  const isCurrent = () => generation === liveReadGeneration &&
+    request === approvalRefreshRequest && getSelectedRun()?.id === run?.id;
   // With a fixture run selected, never show live approvals (#208)
   if (!run?.isLive) {
     pendingApprovals = [];
@@ -1622,12 +1626,12 @@ export async function refreshApprovals() {
   if (elements.approvalsRetry) elements.approvalsRetry.hidden = true;
   try {
     const fetched = await withRetry(() => getApprovals("PENDING", run.id), { retries: 2, baseDelayMs: 300 });
-    if (generation !== liveReadGeneration) return;
+    if (!isCurrent()) return;
     if (Array.isArray(fetched)) {
       const enriched = await Promise.all(fetched.map(async approval => {
         try {
           const detail = await getAction(run.id, approval.action_request_id);
-          if (generation === liveReadGeneration && getSelectedRun()?.id === run.id) {
+          if (isCurrent()) {
             for (const rawEvent of detail.events || []) {
               const transformed = transformApiEvent(rawEvent, { runId: run.id, actionRequest: detail.action_request, reasoningAudit: detail.reasoning_audit });
               const existing = run.events.find(event => event.id === transformed.id);
@@ -1640,7 +1644,7 @@ export async function refreshApprovals() {
           return { ...approval, detailsError: true };
         }
       }));
-      if (generation !== liveReadGeneration || getSelectedRun()?.id !== run.id) return;
+      if (!isCurrent()) return;
       pendingApprovals = enriched;
       renderApprovals();
       renderTimeline();
@@ -1656,7 +1660,7 @@ export async function refreshApprovals() {
       );
     }
   } catch (err) {
-    if (generation !== liveReadGeneration) return;
+    if (!isCurrent()) return;
     if (elements.approvalsStatus) {
       renderPanelStatus(
         elements.approvalsStatus,
