@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlite3
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Coroutine, Optional
 import uuid
 
 from fastapi import status
@@ -207,6 +207,34 @@ def _approval_policy_evidence(
         details["policy_version_current"] = current
         details["policy_version_changed"] = True
     return details
+
+
+class _ExecutionCancellation:
+    """Defer caller cancellation until the dispatched result is persisted.
+
+    The service's result transactions are synchronous. Keep cancellation out
+    of the worker await, then propagate it after those transactions and event
+    publication, while the service still owns the worker's connection.
+    """
+
+    def __init__(self) -> None:
+        self.cancelled: Optional[asyncio.CancelledError] = None
+
+    async def wait(self, execution: Coroutine[Any, Any, ExecutionReceipt]) -> ExecutionReceipt:
+        task = asyncio.create_task(execution)
+        while True:
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError as error:
+                if task.cancelled():
+                    raise
+                self.cancelled = error
+                if task.done():
+                    return task.result()
+
+    def propagate(self) -> None:
+        if self.cancelled is not None:
+            raise self.cancelled from None
 
 
 class ScopewatchService:
@@ -1459,11 +1487,12 @@ capture_token: Optional[str] = None,
                     )
                     ScopewatchRepository.create_execution_receipt(conn, receipt)
 
+            execution_cancellation = _ExecutionCancellation()
             # Phase 2: Action dispatch for ALLOW outcome (evidence committed before effect #109)
             if decision.outcome == PolicyOutcome.ALLOW:
                 try:
                     # Run execution in thread pool to avoid blocking the event loop (#189)
-                    receipt = await asyncio.to_thread(
+                    receipt = await execution_cancellation.wait(asyncio.to_thread(
                         execute_action,
                         action,
                         workspace,
@@ -1476,7 +1505,7 @@ capture_token: Optional[str] = None,
                         # workspace identity rather than re-derived from a host
                         # path inside the remote backend.
                         run_workspace=self.run_workspaces.workspace_key(fresh_run.id),
-                    )
+                    ))
                 except ExecutionSecurityError as exc:
                     # ExecutionSecurityError indicates a policy/security violation:
                     # return structured 409 with the FAILED receipt, don't 500.
@@ -1515,6 +1544,7 @@ capture_token: Optional[str] = None,
                     # Broadcast and return structured response with FAILED receipt
                     for ev in generated_events:
                         await broadcaster.publish(run_id, ev)
+                    execution_cancellation.propagate()
                     raise exc
                 except Exception as exc:
                     # Other exceptions: sanitize error, persist FAILED receipt, return 500
@@ -1555,6 +1585,7 @@ capture_token: Optional[str] = None,
                     # Broadcast and return structured response with FAILED receipt
                     for ev in generated_events:
                         await broadcaster.publish(run_id, ev)
+                    execution_cancellation.propagate()
                     raise ScopewatchAPIError(
                         code="INTERNAL_EXECUTION_ERROR",
                         message="Execution failed due to an internal error.",
@@ -1589,6 +1620,7 @@ capture_token: Optional[str] = None,
             # Broadcast generated events to live SSE subscribers
             for ev in generated_events:
                 await broadcaster.publish(run_id, ev)
+            execution_cancellation.propagate()
 
             return ActionResponse(
                 action_request=action,
@@ -1982,11 +2014,12 @@ capture_token: Optional[str] = None,
                             conn, approval.run_id, RunStatus.ACTIVE, now_iso
                         )
 
+            execution_cancellation = _ExecutionCancellation()
             # Phase 2: Action dispatch for approved action (#109)
             if approve and updated_approval:
                 try:
                     # Run execution in thread pool to avoid blocking the event loop (#189)
-                    receipt = await asyncio.to_thread(
+                    receipt = await execution_cancellation.wait(asyncio.to_thread(
                         execute_action,
                         action,
                         run_workspace,
@@ -1995,7 +2028,7 @@ capture_token: Optional[str] = None,
                         db_path=conn,
                         task_scope=run.task_scope,
                         run_workspace=self.run_workspaces.workspace_key(run.id),
-                    )
+                    ))
                 except ExecutionSecurityError as exc:
                     # ExecutionSecurityError indicates a policy/security violation:
                     # return structured 409 with the FAILED receipt, don't 500.
@@ -2049,6 +2082,7 @@ capture_token: Optional[str] = None,
                             )
                     for ev in generated_events:
                         await broadcaster.publish(approval.run_id, ev)
+                    execution_cancellation.propagate()
                     raise exc
                 except Exception as exc:
                     # Other exceptions: sanitize error, persist FAILED receipt, return 500
@@ -2104,6 +2138,7 @@ capture_token: Optional[str] = None,
                             )
                     for ev in generated_events:
                         await broadcaster.publish(approval.run_id, ev)
+                    execution_cancellation.propagate()
                     raise ScopewatchAPIError(
                         code="INTERNAL_EXECUTION_ERROR",
                         message="Execution failed due to an internal error.",
@@ -2156,6 +2191,7 @@ capture_token: Optional[str] = None,
             # Broadcast generated events
             for ev in generated_events:
                 await broadcaster.publish(approval.run_id, ev)
+            execution_cancellation.propagate()
 
             return ApprovalResolutionResponse(
                 approval_request=updated_approval,
