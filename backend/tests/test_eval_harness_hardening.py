@@ -29,6 +29,7 @@ import pytest
 
 from scripts.evaluate_reasoning_audit import (
     HeldoutTuningRefused,
+    compute_file_hash,
     compute_metrics,
     evaluate_reasoning_auditor,
     main as harness_main,
@@ -325,6 +326,91 @@ def _synthetic_case(
         "expected_concern_type": None,
         "description": "Synthetic tmp-dataset case for harness self-test.",
     }
+
+
+@pytest.fixture(params=["dev", "all"])
+def dataset_bound_report(request: pytest.FixtureRequest, tmp_path: Path) -> dict[str, Any]:
+    for split in ("dev", "heldout"):
+        directory = tmp_path / split
+        directory.mkdir()
+        cases = [_synthetic_case(f"{split}-clean", "clean", "List scratch.", "NO_CONCERN")]
+        (directory / "cases.json").write_text(json.dumps(cases), encoding="utf-8")
+    return evaluate_reasoning_auditor(
+        profile="mock", split=request.param, cases_dir=str(tmp_path), quiet=True
+    )
+
+
+def test_verify_synthetic_dataset_binding_accepts_reordered_rows(dataset_bound_report) -> None:
+    dataset_bound_report["results"].reverse()
+    assert verify_evaluation_report(dataset_bound_report) == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("case_id", "fabricated-case"),
+    ("category", "drift"),
+    ("expected_verdict", "CONCERN"),
+    ("expected_concern_type", "scope_drift"),
+])
+def test_verify_rejects_rewritten_ground_truth(dataset_bound_report, field, value) -> None:
+    report = dataset_bound_report
+    report["results"][0][field] = value
+    report["summary_metrics"] = compute_metrics(report["results"])
+    assert verify_evaluation_report(report), f"accepted rewritten {field}"
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra"])
+def test_verify_rejects_changed_case_coverage(dataset_bound_report, mutation) -> None:
+    report = dataset_bound_report
+    if mutation == "missing":
+        report["results"].pop()
+    else:
+        extra = dict(report["results"][0], case_id="fabricated-case")
+        report["results"].append(extra)
+    report["metadata"]["dataset_cases_count"] = len(report["results"])
+    report["summary_metrics"] = compute_metrics(report["results"])
+    assert verify_evaluation_report(report), f"accepted {mutation} case"
+
+
+def test_verify_checks_combined_dataset_hash(tmp_path: Path) -> None:
+    for split in ("dev", "heldout"):
+        directory = tmp_path / split
+        directory.mkdir()
+        case = _synthetic_case(split, "clean", "List scratch.", "NO_CONCERN")
+        (directory / "cases.json").write_text(json.dumps([case]), encoding="utf-8")
+    report = evaluate_reasoning_auditor(
+        profile="mock", split="all", cases_dir=str(tmp_path), quiet=True
+    )
+    case["description"] = "Changed synthetic dataset."
+    (directory / "cases.json").write_text(json.dumps([case]), encoding="utf-8")
+    assert any("hash mismatch" in error for error in verify_evaluation_report(report))
+
+
+def test_verify_hash_opt_out_skips_dataset_binding(dataset_bound_report) -> None:
+    dataset_bound_report["results"][0]["case_id"] = "fabricated-case"
+    assert verify_evaluation_report(dataset_bound_report, check_hash=False) == []
+
+
+def test_verify_unavailable_dataset_retains_metrics_checks(dataset_bound_report, tmp_path) -> None:
+    dataset_bound_report["metadata"]["dataset_file"] = str(tmp_path / "unavailable")
+    assert verify_evaluation_report(dataset_bound_report) == []
+    dataset_bound_report["summary_metrics"]["total_cases"] += 1
+    assert verify_evaluation_report(dataset_bound_report)
+
+
+def test_verify_rejects_null_dataset(dataset_bound_report, tmp_path) -> None:
+    dataset = tmp_path / "null.json"
+    dataset.write_text("null", encoding="utf-8")
+    dataset_bound_report["metadata"].update(
+        dataset_file=str(dataset), dataset_hash=compute_file_hash(dataset), dataset_split="dev"
+    )
+    assert any("pinned dataset must be a list" in e for e in verify_evaluation_report(dataset_bound_report))
+
+
+def test_verify_combined_dataset_missing_split_fails(dataset_bound_report, tmp_path) -> None:
+    report = dataset_bound_report
+    report["metadata"].update(dataset_split="all", dataset_file=str(tmp_path))
+    (tmp_path / "heldout" / "cases.json").unlink()
+    assert any("could not load combined dataset" in e for e in verify_evaluation_report(report))
 
 
 def test_empty_tmp_split_runs_and_verifies(tmp_path: Path) -> None:
