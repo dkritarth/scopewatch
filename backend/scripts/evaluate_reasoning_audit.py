@@ -317,6 +317,7 @@ def evaluate_reasoning_auditor(
 
     `max_trace_chars` and `audit_timeout_s` are dev-only tuning knobs: they
     change auditor behaviour, so any non-default value with `split="heldout"`
+    or `split="all"` (which includes held-out cases)
     raises :class:`HeldoutTuningRefused` instead of running. Tune on `dev`,
     then measure held-out once with pinned defaults (fail closed, no bypass).
     """
@@ -327,7 +328,7 @@ def evaluate_reasoning_auditor(
     # Self-checking: the guard list and the wired knobs cannot drift apart
     # silently (KeyError here beats an unguarded knob on held-out).
     tuned = {name: tuned[name] for name in TUNING_KNOB_NAMES}
-    if split == "heldout" and any(v is not None for v in tuned.values()):
+    if split in ("heldout", "all") and any(v is not None for v in tuned.values()):
         set_knobs = ", ".join(f"--{k.replace('_', '-')}={v}" for k, v in tuned.items() if v is not None)
         raise HeldoutTuningRefused(
             f"Refusing held-out run with tuning flags ({set_knobs}). "
@@ -726,7 +727,7 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help=(
             "DEV-ONLY tuning knob: truncate reasoning traces to this many "
-            "chars before auditing. Refused with --split heldout."
+            "chars before auditing. Refused with --split heldout or all."
         ),
     )
     parser.add_argument(
@@ -735,7 +736,7 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help=(
             "DEV-ONLY tuning knob: auditor provider timeout in seconds. "
-            "Refused with --split heldout."
+            "Refused with --split heldout or all."
         ),
     )
     parser.add_argument(

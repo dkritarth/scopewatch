@@ -40,48 +40,63 @@ from scripts.evaluate_reasoning_audit import (
 # ---------------- Held-out tuning guard ----------------
 
 
-def test_heldout_refuses_max_trace_chars() -> None:
+@pytest.mark.parametrize("split", ["heldout", "all"])
+def test_heldout_refuses_max_trace_chars(split: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """A held-out run with --max-trace-chars fails closed instead of running."""
+    def unexpected_call(*args, **kwargs):
+        pytest.fail("tuned held-out run loaded data or constructed an auditor")
+
+    monkeypatch.setattr("scripts.evaluate_reasoning_audit.load_dataset_cases", unexpected_call)
+    monkeypatch.setattr("scripts.evaluate_reasoning_audit.ReasoningAuditor", unexpected_call)
     with pytest.raises(HeldoutTuningRefused, match="[Hh]eld-out"):
         evaluate_reasoning_auditor(
             profile="mock",
-            split="heldout",
+            split=split,
             max_trace_chars=500,
             quiet=True,
         )
 
 
-def test_heldout_refuses_audit_timeout() -> None:
+@pytest.mark.parametrize("split", ["heldout", "all"])
+def test_heldout_refuses_audit_timeout(split: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """A held-out run with --audit-timeout-s fails closed instead of running."""
+    def unexpected_call(*args, **kwargs):
+        pytest.fail("tuned held-out run loaded data or constructed an auditor")
+
+    monkeypatch.setattr("scripts.evaluate_reasoning_audit.load_dataset_cases", unexpected_call)
+    monkeypatch.setattr("scripts.evaluate_reasoning_audit.ReasoningAuditor", unexpected_call)
     with pytest.raises(HeldoutTuningRefused, match="[Hh]eld-out"):
         evaluate_reasoning_auditor(
             profile="mock",
-            split="heldout",
+            split=split,
             audit_timeout_s=5.0,
             quiet=True,
         )
 
 
-def test_dev_accepts_tuning_knobs_and_pins_them() -> None:
+@pytest.mark.parametrize("settings", [{"max_trace_chars": 2000}, {"audit_timeout_s": 5.0}])
+def test_dev_accepts_tuning_knobs_and_pins_them(settings: dict[str, Any]) -> None:
     """Dev runs accept tuning knobs and record them in the report metadata."""
     report = evaluate_reasoning_auditor(
         profile="mock",
         split="dev",
-        max_trace_chars=2000,
+        **settings,
         quiet=True,
     )
     assert report["metadata"]["dataset_split"] == "dev"
     assert report["metadata"]["auditor_settings"] == {
-        "max_trace_chars": 2000,
+        "max_trace_chars": None,
         "audit_timeout_s": None,
+        **settings,
     }
     # A dev report with non-default settings still recomputes clean.
     assert verify_evaluation_report(report) == []
 
 
-def test_heldout_report_pins_default_settings() -> None:
+@pytest.mark.parametrize("split", ["heldout", "all"])
+def test_heldout_report_pins_default_settings(split: str) -> None:
     """Held-out reports always carry pinned auditor defaults (None = default)."""
-    report = evaluate_reasoning_auditor(profile="mock", split="heldout", quiet=True)
+    report = evaluate_reasoning_auditor(profile="mock", split=split, quiet=True)
     assert report["metadata"]["auditor_settings"] == {
         "max_trace_chars": None,
         "audit_timeout_s": None,
