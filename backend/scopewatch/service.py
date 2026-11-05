@@ -1844,6 +1844,38 @@ capture_token: Optional[str] = None,
 
             require_resolvable_run()
 
+            def expire_approval(timestamp: str) -> EvidenceEvent:
+                ScopewatchRepository.resolve_approval(
+                    conn,
+                    approval_id=approval_id,
+                    new_status=ApprovalStatus.EXPIRED,
+                    resolved_by="system",
+                    resolved_at=timestamp,
+                    reason="Approval request expired.",
+                )
+                ev_exp = ScopewatchRepository.append_event(
+                    conn,
+                    run_id=approval.run_id,
+                    event_type=EventType.APPROVAL_EXPIRED,
+                    actor="system",
+                    summary=f"Approval request '{approval_id}' expired.",
+                    timestamp=timestamp,
+                    action_request_id=approval.action_request_id,
+                    approval_request_id=approval_id,
+                    details={
+                        "expired_at": approval.expires_at,
+                        # Evaluated identity of the hold this approval
+                        # was bound to (#119); None for a legacy decision.
+                        "policy_version": decision.policy_version,
+                    },
+                )
+                remaining_pending = ScopewatchRepository.list_approvals(
+                    conn, status_filter=ApprovalStatus.PENDING, run_id=approval.run_id
+                )
+                if not remaining_pending and run.status == RunStatus.WAITING_FOR_APPROVAL:
+                    ScopewatchRepository.update_run_status(conn, approval.run_id, RunStatus.ACTIVE, timestamp)
+                return ev_exp
+
             # Check expiration
             now = datetime.now(timezone.utc)
             now_iso = now.isoformat()
@@ -1851,35 +1883,7 @@ capture_token: Optional[str] = None,
             if now > expires_at:
                 with db_transaction(conn):
                     require_resolvable_run()
-                    ScopewatchRepository.resolve_approval(
-                        conn,
-                        approval_id=approval_id,
-                        new_status=ApprovalStatus.EXPIRED,
-                        resolved_by="system",
-                        resolved_at=now_iso,
-                        reason="Approval request expired.",
-                    )
-                    ev_exp = ScopewatchRepository.append_event(
-                        conn,
-                        run_id=approval.run_id,
-                        event_type=EventType.APPROVAL_EXPIRED,
-                        actor="system",
-                        summary=f"Approval request '{approval_id}' expired.",
-                        timestamp=now_iso,
-                        action_request_id=approval.action_request_id,
-                        approval_request_id=approval_id,
-                        details={
-                            "expired_at": approval.expires_at,
-                            # Evaluated identity of the hold this approval
-                            # was bound to (#119); None for a legacy decision.
-                            "policy_version": decision.policy_version,
-                        },
-                    )
-                    remaining_pending = ScopewatchRepository.list_approvals(
-                        conn, status_filter=ApprovalStatus.PENDING, run_id=approval.run_id
-                    )
-                    if not remaining_pending and run.status == RunStatus.WAITING_FOR_APPROVAL:
-                        ScopewatchRepository.update_run_status(conn, approval.run_id, RunStatus.ACTIVE, now_iso)
+                    ev_exp = expire_approval(now_iso)
                 await broadcaster.publish(approval.run_id, ev_exp)
                 raise ScopewatchAPIError(
                     code="APPROVAL_EXPIRED",
@@ -1899,11 +1903,27 @@ capture_token: Optional[str] = None,
 
             updated_approval: Optional[ApprovalRequest] = None
             exec_started: Optional[str] = None
+            expired_event: Optional[EvidenceEvent] = None
 
             # Phase 1: Re-verify run status and commit approval & start of execution before dispatch (#109)
             with db_transaction(conn):
                 require_resolvable_run()
-                if approve:
+                # Acquiring the writer lock may outlast the initial deadline
+                # check. Read the approval and clock under that lock before
+                # committing a grant or denial.
+                current_approval = ScopewatchRepository.get_approval_request(conn, approval_id)
+                if current_approval is None or current_approval.status != ApprovalStatus.PENDING:
+                    raise ScopewatchAPIError(
+                        code="APPROVAL_ALREADY_RESOLVED",
+                        message=f"Approval request '{approval_id}' is no longer pending.",
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
+                approval = current_approval
+                now = datetime.now(timezone.utc)
+                now_iso = now.isoformat()
+                if now > datetime.fromisoformat(approval.expires_at):
+                    expired_event = expire_approval(now_iso)
+                elif approve:
                     updated_approval = ScopewatchRepository.resolve_approval(
                         conn,
                         approval_id=approval_id,
@@ -1973,7 +1993,7 @@ capture_token: Optional[str] = None,
                     )
                     ScopewatchRepository.create_execution_receipt(conn, receipt)
 
-                if not approve:
+                if not approve and expired_event is None:
                     pending = ScopewatchRepository.list_approvals(
                         conn, status_filter=ApprovalStatus.PENDING, run_id=approval.run_id
                     )
@@ -1981,6 +2001,14 @@ capture_token: Optional[str] = None,
                         ScopewatchRepository.update_run_status(
                             conn, approval.run_id, RunStatus.ACTIVE, now_iso
                         )
+
+            if expired_event is not None:
+                await broadcaster.publish(approval.run_id, expired_event)
+                raise ScopewatchAPIError(
+                    code="APPROVAL_EXPIRED",
+                    message=f"Approval request '{approval_id}' has expired.",
+                    status_code=status.HTTP_409_CONFLICT,
+                )
 
             # Phase 2: Action dispatch for approved action (#109)
             if approve and updated_approval:
