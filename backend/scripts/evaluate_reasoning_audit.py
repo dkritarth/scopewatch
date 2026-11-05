@@ -545,7 +545,9 @@ def verify_evaluation_report(
     The checker recomputes every metric from the per-case `results` with
     :func:`compute_metrics` and never trusts report-supplied totals. It also
     enforces the pinned-metadata schema, the trace/explanation privacy rule,
-    and (when the pinned `dataset_file` still exists) the case-file hash.
+    and (when the pinned `dataset_file` still exists) the dataset hash,
+    exact case coverage, categories and expected labels. `check_hash=False`
+    skips dataset validation; unavailable datasets retain metrics-only checks.
     An empty list means the report verifies.
     """
     errors: list[str] = []
@@ -671,16 +673,52 @@ def verify_evaluation_report(
         pinned_hash = meta.get("dataset_hash")
         if isinstance(dataset_file, str) and isinstance(pinned_hash, str):
             candidate = Path(dataset_file)
+            cases = None
+            dataset_loaded = False
             if candidate.is_file():
                 actual = compute_file_hash(candidate)
+                try:
+                    cases = json.loads(candidate.read_text(encoding="utf-8"))
+                    dataset_loaded = True
+                except (ValueError, OSError) as exc:
+                    errors.append(f"could not load pinned dataset: {exc}")
+            elif candidate.is_dir() and meta.get("dataset_split") == "all":
+                try:
+                    cases, actual, _ = load_dataset_cases(candidate, "all")
+                    dataset_loaded = True
+                except (ValueError, OSError, TypeError) as exc:
+                    errors.append(f"could not load combined dataset: {exc}")
+                    actual = None
+            else:
+                # Moved/deleted fixtures cannot be checked against the report.
+                actual = None
+            if actual is not None:
                 if actual != pinned_hash:
                     errors.append(
                         f"dataset hash mismatch for {dataset_file}: "
                         f"report pins {pinned_hash[:16]}..., file is {actual[:16]}..."
                     )
-            # else: combined "all" reports pin a synthetic hash of both
-            # splits (no single file), and moved/deleted fixtures cannot be
-            # re-hashed; the count + recomputation checks above still apply.
+            if dataset_loaded:
+                if not isinstance(cases, list) or any(
+                    not isinstance(case, dict) or not isinstance(case.get("case_id"), str)
+                    for case in cases
+                ):
+                    errors.append("pinned dataset must be a list of cases with string case_id values")
+                else:
+                    expected = {case["case_id"]: case for case in cases}
+                    if len(expected) != len(cases):
+                        errors.append("pinned dataset contains duplicate case_id values")
+                    if set(expected) != seen_ids:
+                        errors.append("result case_id coverage does not match pinned dataset")
+                    for idx, rec in enumerate(results):
+                        if not isinstance(rec, dict):
+                            continue
+                        case = expected.get(rec.get("case_id"))
+                        if case is None:
+                            continue
+                        for field in ("category", "expected_verdict", "expected_concern_type"):
+                            if rec.get(field) != case.get(field):
+                                errors.append(f"results[{idx}].{field} does not match pinned dataset")
 
     return errors
 
