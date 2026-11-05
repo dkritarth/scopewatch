@@ -1186,6 +1186,9 @@ function renderTimeline() {
   publishReviewSummary();
   const run = getSelectedRun();
   if (!run || !elements.timeline || !elements.timelineCount) return;
+  renderPanelStatus(elements.timelineStatus, run.historyLoadFailed
+    ? { kind: "error", text: "Could not load stored events. Waiting for live replay." }
+    : { kind: "ready", text: "" });
   reconcileRunActionStates(run.events);
   const visibleEvents = filterEvents(run.events, state.filters);
   state.eventId = reconcileSelection(activeRuns, state.runId, state.eventId, visibleEvents);
@@ -2339,6 +2342,7 @@ function subscribeToRun(runId) {
       // Malformed frames are logged + skipped, never crash the timeline.
       const formatted = safeTransformApiEvent(apiEvent, { runId });
       if (!formatted) return;
+      targetRun.historyLoadFailed = false;
       if (!targetRun.events.some((e) => e.sequence === formatted.sequence)) {
         targetRun.events.push(formatted);
         reconcileRunActionStates(targetRun.events);
@@ -2902,15 +2906,18 @@ async function bootstrap() {
       // Render EVERY backend run so all six seeded scenario runs stay
       // selectable (defect 3b); never truncate to backendRuns[0].
       const eventsByRun = {};
+      const historyFailures = new Set();
       for (const run of backendRuns) {
         try {
           eventsByRun[run.id] = await getEvents(run.id);
         } catch {
           eventsByRun[run.id] = [];
+          historyFailures.add(run.id);
         }
         if (generation !== liveReadGeneration) return;
       }
       const formattedLiveRuns = buildLiveRuns(backendRuns, eventsByRun);
+      for (const run of formattedLiveRuns) run.historyLoadFailed = historyFailures.has(run.id);
 
       // Show only stored gateway evidence, preferring a reviewable HOLD.
       activeRuns = formattedLiveRuns;
@@ -2925,6 +2932,7 @@ async function bootstrap() {
           )
         ) ||
         formattedLiveRuns.find((run) => Array.isArray(run.events) && run.events.length > 0) ||
+        formattedLiveRuns[0] ||
         null;
       if (preferredLiveRun) {
         state.runId = preferredLiveRun.id;

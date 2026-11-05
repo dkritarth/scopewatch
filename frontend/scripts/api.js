@@ -406,9 +406,9 @@ export function connectLiveEvents(runId, { onEvent, onStatusChange, initialSeque
 
   if (typeof EventSource !== "undefined") {
     try {
-      const url = initialSequence > 0
-        ? `/api/v1/runs/${encodeURIComponent(runId)}/events/stream?after_sequence=${encodeURIComponent(initialSequence)}`
-        : `/api/v1/runs/${encodeURIComponent(runId)}/events/stream`;
+      // Zero is a replay cursor too: omitting it subscribes only to future
+      // events and cannot recover a failed initial history request.
+      const url = `/api/v1/runs/${encodeURIComponent(runId)}/events/stream?after_sequence=${encodeURIComponent(initialSequence)}`;
       eventSource = new EventSource(url);
 
       eventSource.onopen = () => {

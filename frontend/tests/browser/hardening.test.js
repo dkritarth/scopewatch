@@ -11,6 +11,68 @@ import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { chromium } from "playwright";
 
+for (const transport of ["sse", "polling"]) {
+  test(`initial history failure recovers automatically through ${transport}`, { timeout: 30000 }, async () => {
+    const server = createStaticServer();
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    let browser;
+    let recovered = false;
+    const run = { id: "synthetic-history-run", name: "History recovery", status: "ACTIVE",
+      task_scope: { task_description: "Synthetic history recovery", allowed_paths: ["scratch"],
+        blocked_paths: [], allowed_tools: ["workspace"], allowed_operations: ["read_text"], requires_approval: [] } };
+    const event = { id: "recovered-event", sequence: 1, run_id: run.id,
+      event_type: "RUN_CREATED", timestamp: "2026-01-01T00:00:00Z", summary: "Recovered stored event", details: {} };
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      const errors = [];
+      page.on("pageerror", error => errors.push(error.message));
+      await page.addInitScript(mode => {
+        if (mode === "polling") {
+          delete window.EventSource;
+        } else {
+          window.EventSource = class {
+            constructor(url) { this.url = url; this.handlers = {}; window.__historyStream = this; }
+            addEventListener(type, handler) { this.handlers[type] = handler; }
+            close() {}
+          };
+        }
+      }, transport);
+      await page.route("**/api/v1/**", async route => {
+        const path = new URL(route.request().url()).pathname;
+        const json = value => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
+        if (path.endsWith("/health")) return json({ status: "ok" });
+        if (path.endsWith("/runs")) return json([run]);
+        if (path.endsWith("/approvals")) return json([]);
+        if (path.endsWith("/events")) {
+          return recovered ? json([event]) : route.fulfill({ status: 503, body: "{}" });
+        }
+        return route.fulfill({ status: 404 });
+      });
+      await page.goto(`http://127.0.0.1:${server.address().port}/?live=1`);
+      await page.waitForFunction(() => Boolean(window.__runRefreshInterval));
+      await page.locator('.rail-nav [data-view-target="activity"]').click();
+      assert.equal(await page.locator("#run-buttons button").getAttribute("aria-pressed"), "true");
+      assert.match(await page.locator("#timeline-status").innerText(), /Could not load stored events/);
+      recovered = true;
+      if (transport === "sse") {
+        assert.equal(await page.evaluate(() => new URL(window.__historyStream.url, location.href).searchParams.get("after_sequence")), "0");
+        await page.evaluate(stored => {
+          window.__historyStream.handlers.RUN_CREATED({ data: JSON.stringify(stored) });
+        }, event);
+      }
+      await page.locator('#timeline [data-event-id="recovered-event"]').waitFor({ timeout: 10000 });
+      assert.match(await page.locator("#timeline").innerText(), /Recovered stored event/);
+      assert.equal(await page.locator("#timeline-status").isHidden(), true);
+      assert.deepEqual(errors, []);
+    } finally {
+      if (browser) await browser.close();
+      server.close();
+    }
+  });
+}
+
 function createStaticServer() {
   const root = new URL("../../", import.meta.url);
   const files = new Map([

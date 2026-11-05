@@ -81,6 +81,28 @@ async function reseed(page) {
   await page.waitForFunction(() => document.querySelector('#demo-controls-status').textContent.includes('reseeded'));
 }
 
+test('failed initial history fetch replays stored events from the real SSE endpoint', { timeout: 30000 }, async t => {
+  const { origin, page, errors } = await gateway(t, 300, false);
+  await reseed(page);
+  const runs = await (await fetch(`${origin}/api/v1/runs`)).json();
+  assert.ok(runs.length > 0);
+  const stored = await (await fetch(`${origin}/api/v1/runs/${runs[0].id}/events`)).json();
+  assert.ok(stored.length > 0);
+  const streams = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith('/events/stream')) streams.push(url);
+  });
+  await page.route(/\/api\/v1\/runs\/[^/]+\/events(?:\?|$)/,
+    route => route.fulfill({ status: 503, contentType: 'application/json', body: '{}' }));
+  await page.reload();
+  await page.locator('.rail-nav [data-view-target="activity"]').click();
+  await page.locator(`#timeline [data-event-id="${stored[0].id}"]`).waitFor({ timeout: 10000 });
+  assert.equal(streams[0].searchParams.get('after_sequence'), '0');
+  assert.equal(await page.locator('#timeline-status').isHidden(), true);
+  assert.deepEqual(errors, []);
+});
+
 test('stranger on arbitrary gateway port authenticates, reviews 06, denies and recovers safely', { timeout: 30000 }, async t => {
   const { origin, page, errors, dir } = await gateway(t);
   assert.match(await page.locator('#gateway-status').innerText(), /Live gateway connected/);
