@@ -16,7 +16,7 @@ import re
 import sys
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from scopewatch.providers.loader import get_profile
 from scopewatch.reasoning_audit import AuditConcernType, AuditErrorCode
@@ -69,8 +69,16 @@ class PublicationRow(BaseModel):
     error_code: str | None
     flagged_excerpts_count: int = Field(ge=0)
     total_tokens: int | None = Field(ge=0)
-    prompt_tokens: int = Field(ge=0)
-    completion_tokens: int = Field(ge=0)
+    prompt_tokens: int | None = Field(ge=0)
+    completion_tokens: int | None = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_incomplete_usage(self) -> "PublicationRow":
+        incomplete = (self.prompt_tokens is None) != (self.completion_tokens is None)
+        subtotal = (self.prompt_tokens or 0) + (self.completion_tokens or 0)
+        if incomplete and self.total_tokens is not None and subtotal > self.total_tokens:
+            raise ValueError("total_tokens contradicts incomplete token components")
+        return self
 
 
 def load_manifest(path: Path) -> dict[str, Any]:

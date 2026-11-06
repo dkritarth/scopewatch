@@ -414,10 +414,13 @@ def test_verify_rejects_mutated_token_total() -> None:
         "prompt": 100,
         "completion": 50,
     }
-    # Per-case results matching the genuine tokens
-    tampered["results"][0]["prompt_tokens"] = 100
-    tampered["results"][0]["completion_tokens"] = 50
-    tampered["results"][0]["total_tokens"] = 150
+    # Every row has a complete breakdown; unknown mock rows would correctly
+    # require partial-coverage metadata rather than this fully populated total.
+    for row in tampered["results"]:
+        row.update(prompt_tokens=0, completion_tokens=1, total_tokens=1)
+    other_cases = len(tampered["results"]) - 1
+    tampered["results"][0].update(prompt_tokens=100, completion_tokens=50 - other_cases,
+                                  total_tokens=150 - other_cases)
 
     # With consistent totals, it recomputes clean:
     assert verify_evaluation_report(tampered) == []
@@ -456,9 +459,11 @@ def test_verify_accepts_consistent_tokens_and_explicit_partial() -> None:
         "prompt": 84715,
         "completion": 5477,
     }
-    consistent["results"][0]["prompt_tokens"] = 84715
-    consistent["results"][0]["completion_tokens"] = 5477
-    consistent["results"][0]["total_tokens"] = 90192
+    for row in consistent["results"]:
+        row.update(prompt_tokens=0, completion_tokens=1, total_tokens=1)
+    other_cases = len(consistent["results"]) - 1
+    consistent["results"][0].update(prompt_tokens=84715, completion_tokens=5477 - other_cases,
+                                    total_tokens=90192 - other_cases)
     assert verify_evaluation_report(consistent) == []
 
     # 2. Explicit partial: labelled with partial=True and populated_cases

@@ -20,6 +20,7 @@ import random
 import sys
 from typing import Any, Optional
 
+from scopewatch.budget_store import measured_tokens_from_usage
 from scopewatch.reasoning_audit import (
     AUDITOR_PROMPT_VERSION,
     ReasoningAuditResult,
@@ -109,6 +110,7 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     latencies: list[float] = []
     available_tokens = 0
     total_only_cases = 0
+    partial_component_cases = 0
     component_cases = 0
     prompt_tokens = 0
     completion_tokens = 0
@@ -132,14 +134,21 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         components = (r.get("prompt_tokens") or 0) + (r.get("completion_tokens") or 0)
         # Prefer components per case, not globally: a provider may expose a
         # breakdown for one turn and only a total for another. Count both.
-        if components > 0:
+        complete_components = r.get("prompt_tokens") is not None and r.get("completion_tokens") is not None
+        if complete_components and components > 0:
             component_cases += 1
             total_tokens_populated_cases += 1
             available_tokens += components
         elif tt is not None:
+            if not complete_components and components > tt:
+                raise ValueError("total_tokens contradicts incomplete token components")
             total_only_cases += 1
             total_tokens_populated_cases += 1
             available_tokens += tt
+        elif (r.get("prompt_tokens") is not None) != (r.get("completion_tokens") is not None):
+            partial_component_cases += 1
+            total_tokens_populated_cases += 1
+            available_tokens += components
 
         if actual == ReasoningAuditVerdict.FAILED.value:
             failures += 1
@@ -207,11 +216,12 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
                 "prompt": prompt_tokens,
                 "completion": completion_tokens,
                 "aggregation": "available_case_usage",
-                "partial": total_tokens_populated_cases < total_cases,
+                "partial": total_tokens_populated_cases < total_cases or partial_component_cases > 0,
                 "populated_cases": total_tokens_populated_cases,
                 "component_cases": component_cases,
             }
-            if total_only_cases and available_tokens > 0
+            if ((total_only_cases and available_tokens > 0) or partial_component_cases > 0
+                or total_tokens_populated_cases < total_cases)
             else {"total": prompt_tokens + completion_tokens,
                   "prompt": prompt_tokens, "completion": completion_tokens}
         ),
@@ -384,13 +394,11 @@ def evaluate_reasoning_auditor(
         match = audit_res.verdict.value == expected_verdict
         # Privacy: omit raw trace AND auditor explanation from the report.
         # Keep ids, verdicts, counts, and error codes only.
-        prompt_toks = last_usage.get("prompt_tokens") or 0
-        completion_toks = last_usage.get("completion_tokens") or 0
+        prompt_toks = measured_tokens_from_usage({"total_tokens": last_usage.get("prompt_tokens")})
+        completion_toks = measured_tokens_from_usage({"total_tokens": last_usage.get("completion_tokens")})
+        # The auditor already normalized the total and complete component
+        # fallback. Never restore rejected raw values or invent a missing part.
         case_total_tokens = audit_res.total_tokens
-        if case_total_tokens is None and last_usage:
-            case_total_tokens = last_usage.get("total_tokens")
-            if case_total_tokens is None and (prompt_toks or completion_toks):
-                case_total_tokens = prompt_toks + completion_toks
 
         record = {
             "case_id": case_id,
