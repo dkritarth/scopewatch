@@ -123,6 +123,7 @@ Every decision records the policy identity that produced it, as `policy_version`
 
 The reasoning auditor (`backend/scopewatch/reasoning_audit.py`) audits agent reasoning traces per turn:
 - **XML boundary isolation**: Places agent traces inside `<untrusted_reasoning_trace>` tags, instructing the auditor to treat trace contents as untrusted data rather than instructions.
+- **Provider audit completion signals**: An explicit refusal, content filtering, pending tool calls, or a tool-call finish reason yields `FAILED` / `INVALID_AUDIT_OUTPUT`, even beside valid verdict JSON. Measured usage remains recorded. Missing finish reasons and null refusals remain compatible with supported adapters. General agent tool calls remain supported.
 - **Grounded excerpt validation**: Flagged excerpts must be exact verbatim substrings of the trace. If an excerpt is hallucinated or ungrounded, the audit fails closed with `UNGROUNDED_EXCERPT`.
 - **Escalate-only authority**: The auditor can only escalate an `ALLOW` to a `HOLD` (reason codes: `REASONING_SCOPE_CONCERN`, `REASONING_AUDIT_FAILED`). It can never produce `ALLOW` or `DENY`, and never relaxes a policy decision.
 - **Turn caching**: Audits are cached per `(run_id, turn_id, sha256(trace))`. Multiple actions in a single turn share one audit execution.

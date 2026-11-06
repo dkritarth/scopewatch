@@ -36,6 +36,8 @@ class ChatResult(BaseModel):
 
     content: Optional[str] = None
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    finish_reason: Optional[str] = None
+    refused: bool = False
     reasoning_text: Optional[str] = None
     reasoning_provenance: str = "UNAVAILABLE"
     reasoning_detail_type: Optional[str] = None
@@ -509,6 +511,8 @@ class ProviderClient:
             return ChatResult(
                 content=content,
                 tool_calls=tool_calls,
+                finish_reason=choice.get("finish_reason"),
+                refused=message.get("refusal") is not None,
                 reasoning_text=extraction.text,
                 reasoning_provenance=extraction.provenance,
                 reasoning_detail_type=extraction.detail_type,

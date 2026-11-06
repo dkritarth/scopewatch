@@ -1288,14 +1288,35 @@ class ReasoningAuditor:
             if total_tokens is None:
                 total_tokens = measured_tokens_from_usage(getattr(resp, "usage", None))
 
-            result = parse_auditor_output(
-                response_text=content,
-                bounded_trace_text=sanitized_trace,
-                model=resp_model,
-                profile=resp_profile,
-                latency_ms=eff_latency,
-                total_tokens=total_tokens,
-            )
+            # Provider-level refusal, filtering, or pending tool work cannot
+            # establish a completed audit, even beside valid verdict JSON.
+            # Check after usage extraction so recorded spending stays measured.
+            if (
+                getattr(resp, "refused", False)
+                or getattr(resp, "refusal", None) is not None
+                or getattr(resp, "finish_reason", None) in ("content_filter", "tool_calls", "function_call")
+                or getattr(resp, "tool_calls", None)
+            ):
+                result = ReasoningAuditResult(
+                    verdict=ReasoningAuditVerdict.FAILED,
+                    concern_type=None,
+                    flagged_excerpts=[],
+                    explanation="Audit failed closed: provider refused, filtered, or requested further tool work.",
+                    model=resp_model,
+                    profile=resp_profile,
+                    latency_ms=eff_latency,
+                    total_tokens=total_tokens,
+                    error_code=AuditErrorCode.INVALID_AUDIT_OUTPUT.value,
+                )
+            else:
+                result = parse_auditor_output(
+                    response_text=content,
+                    bounded_trace_text=sanitized_trace,
+                    model=resp_model,
+                    profile=resp_profile,
+                    latency_ms=eff_latency,
+                    total_tokens=total_tokens,
+                )
 
         except (TimeoutError, OSError) as exc:
             latency_ms = (time.monotonic() - start_time) * 1000
