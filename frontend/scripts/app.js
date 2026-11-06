@@ -2834,8 +2834,19 @@ export async function refreshRuns() {
       }
     }
     if (runsChanged) {
-      renderRunButtons();
-      renderScope();
+      const selectedRun = getSelectedRun();
+      if (selectedRun && state.runId !== selectedRun.id) {
+        // The first discovered run already appears selected through the
+        // selection fallback. Initialize the evidence and stream to match.
+        state.runId = selectedRun.id;
+        state.eventId = selectedRun.events.find(e => e.status === "pending-approval" || e.status === "held")?.id || selectedRun.events[0]?.id || null;
+        render();
+        subscribeToRun(selectedRun.id);
+        await refreshApprovals();
+      } else {
+        renderRunButtons();
+        renderScope();
+      }
     }
   } catch (err) {
     if (!isCurrent()) return;
