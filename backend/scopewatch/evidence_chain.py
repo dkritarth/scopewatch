@@ -193,14 +193,23 @@ class ChainRecord:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ChainRecord":
+        # Coercion would verify different content from the exported JSON.
+        # In particular, int(1.9) and int(True) both hide sequence tampering.
+        if type(data["seq"]) is not int:
+            raise ValueError("seq must be an integer")
+        for field in ("run_id", "event_type", "payload_digest", "prev_hash", "record_hash"):
+            if not isinstance(data[field], str):
+                raise ValueError(f"{field} must be a string")
+        if data.get("action_id") is not None and not isinstance(data["action_id"], str):
+            raise ValueError("action_id must be a string or null")
         return cls(
-            seq=int(data["seq"]),
-            run_id=str(data["run_id"]),
-            event_type=str(data["event_type"]),
+            seq=data["seq"],
+            run_id=data["run_id"],
+            event_type=data["event_type"],
             action_id=data.get("action_id"),
-            payload_digest=str(data["payload_digest"]),
-            prev_hash=str(data["prev_hash"]),
-            record_hash=str(data["record_hash"]),
+            payload_digest=data["payload_digest"],
+            prev_hash=data["prev_hash"],
+            record_hash=data["record_hash"],
         )
 
 

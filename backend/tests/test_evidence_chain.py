@@ -20,6 +20,8 @@ module was added to make it green.
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import runpy
 import time
 
 import pytest
@@ -39,6 +41,39 @@ from scopewatch.evidence_chain import (
 
 RUN_A = "run-aaaaaaaa-0001"
 RUN_B = "run-bbbbbbbb-0002"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("seq", 1.9), ("seq", 1.0), ("seq", True), ("seq", "1"),
+    ("run_id", 123), ("run_id", True),
+    ("event_type", True), ("payload_digest", 123), ("prev_hash", []),
+    ("record_hash", []), ("action_id", 123),
+])
+def test_import_rejects_invalid_types_before_pinned_verification(tmp_path, capsys, field, value):
+    run_id = str(value) if field == "run_id" else RUN_A
+    chain = EvidenceChain(run_id)
+    chain.append("RUN_CREATED")
+    record = json.loads(chain.to_jsonl())
+    record[field] = value
+    data = json.dumps(record)
+    with pytest.raises(ValueError, match=field):
+        EvidenceChain.from_jsonl_string(data)
+    path = tmp_path / "chain.jsonl"
+    path.write_text(data, encoding="utf-8")
+    main = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts/verify_evidence_chain.py"))["main"]
+    assert main([str(path), "--expected-head", chain.head_hash(),
+                 "--expected-length", "1", "--run-id", run_id]) == 2
+    assert json.loads(capsys.readouterr().out)["code"] == "MALFORMED"
+
+
+def test_integer_sequence_retains_pinned_cli_round_trip(tmp_path, capsys):
+    chain = EvidenceChain(RUN_A)
+    chain.append("RUN_CREATED")
+    path = chain.export_jsonl(tmp_path / "chain.jsonl")
+    main = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts/verify_evidence_chain.py"))["main"]
+    assert main([str(path), "--expected-head", chain.head_hash(),
+                 "--expected-length", "1", "--run-id", RUN_A]) == 0
+    assert json.loads(capsys.readouterr().out)["code"] == "OK"
 
 
 def _happy_chain(run_id: str = RUN_A) -> EvidenceChain:
