@@ -326,7 +326,7 @@ class _StubAuditor:
         from scopewatch.reasoning_audit import ReasoningAuditResult, ReasoningAuditVerdict
 
         self.calls += 1
-        return ReasoningAuditResult(
+        result = ReasoningAuditResult(
             verdict=ReasoningAuditVerdict.NO_CONCERN,
             concern_type=None,
             flagged_excerpts=[],
@@ -336,6 +336,8 @@ class _StubAuditor:
             latency_ms=1.0,
             total_tokens=self.total_tokens,
         )
+        result._provider_attempted = False  # This stub never invokes a provider.
+        return result
 
 
 def _service_with_stub(

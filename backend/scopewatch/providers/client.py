@@ -6,9 +6,9 @@ import os
 import time
 from typing import Any, NamedTuple, Optional
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
 
-from scopewatch.budget_store import is_mock_profile, record_completion
+from scopewatch.budget_store import is_mock_profile, measured_tokens_from_usage, record_completion
 from scopewatch.providers.errors import ProviderError, ProviderErrorCode
 from scopewatch.providers.profile import ProviderProfile
 
@@ -40,6 +40,7 @@ class ChatResult(BaseModel):
     reasoning_provenance: str = "UNAVAILABLE"
     reasoning_detail_type: Optional[str] = None
     usage: dict[str, Any] = Field(default_factory=dict)
+    _usage_recorded: bool = PrivateAttr(default=False)
     latency_ms: float = 0.0
     model: str
     profile: str
@@ -279,7 +280,7 @@ class ProviderClient:
             return base
         return f"{base}/chat/completions"
 
-    def _record_token_metering(self, result: "ChatResult") -> None:
+    def _record_token_metering(self, result: "ChatResult") -> bool:
         """Record usage into the per-profile daily ledger (metering only).
 
         Scripted (mock) profiles record nothing. Metering never raises and
@@ -287,10 +288,14 @@ class ProviderClient:
         """
         try:
             if is_mock_profile(self.profile.name, self.profile.base_url):
-                return
+                return True
+            if measured_tokens_from_usage(result.usage) is None:
+                return False
             record_completion(self.profile.name, result.usage)
+            return True
         except Exception as exc:  # noqa: BLE001 - metering must never break requests
             logger.debug("Sanitized token-metering skip [%s]", type(exc).__name__)
+            return False
 
     def complete(
         self,
@@ -369,7 +374,7 @@ class ProviderClient:
                             f"Provider '{self.profile.name}' returned error response envelope.",
                         )
                     result = self._parse_chat_response(data, latency_ms)
-                    self._record_token_metering(result)
+                    result._usage_recorded = self._record_token_metering(result)
                     return result
 
                 status_code = response.status_code

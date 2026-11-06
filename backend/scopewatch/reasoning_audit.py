@@ -17,7 +17,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any, Optional, Protocol, Union, runtime_checkable
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from scopewatch.budget_store import measured_tokens_from_usage
 from scopewatch.models import ReasoningProvenance
@@ -121,6 +121,9 @@ class ReasoningAuditResult(BaseModel):
     total_tokens: Optional[int] = None
     error_code: Optional[str] = None
     tiers: list[AuditTierEvidence] = Field(default_factory=list)
+    # Per-invocation accounting only; never serialized as audit evidence.
+    _provider_attempted: bool = PrivateAttr(default=True)
+    _usage_recorded: bool = PrivateAttr(default=False)
 
 
 class AuditorChatResponse(BaseModel):
@@ -1198,6 +1201,7 @@ class ReasoningAuditor:
             )
             if raise_on_failure:
                 raise ReasoningAuditException(res.error_code or "AUDIT_ERROR", res.explanation)
+            res._provider_attempted = False
             return res
 
         # Normalize planned actions
@@ -1225,6 +1229,7 @@ class ReasoningAuditor:
             )
             if raise_on_failure:
                 raise ReasoningAuditException(result.error_code, result.explanation)
+            result._provider_attempted = False
             return result
 
         messages = build_turn_audit_messages(
@@ -1236,6 +1241,7 @@ class ReasoningAuditor:
             max_trace_chars=self.max_trace_chars,
         )
 
+        usage_recorded = False
         try:
             # Query provider
             if hasattr(self.provider, "audit_chat"):
@@ -1252,6 +1258,7 @@ class ReasoningAuditor:
             else:
                 raise AttributeError("Provider does not implement audit_chat, complete, or callable interface.")
 
+            usage_recorded = getattr(resp, "_usage_recorded", False) is True
             latency_ms = (time.monotonic() - start_time) * 1000
 
             if isinstance(resp, AuditorChatResponse):
@@ -1335,6 +1342,8 @@ class ReasoningAuditor:
                     error_code=AuditErrorCode.AUDIT_ERROR.value,
                 )
 
+        result._provider_attempted = not isinstance(self.provider, MockAuditorProvider)
+        result._usage_recorded = usage_recorded
         if raise_on_failure and result.verdict == ReasoningAuditVerdict.FAILED:
             raise ReasoningAuditException(result.error_code or "AUDIT_ERROR", result.explanation)
 

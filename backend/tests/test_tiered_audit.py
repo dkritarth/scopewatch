@@ -321,9 +321,11 @@ model = "synthetic-strong"
     async def run(auditor):
         if auditor.profile == "canonical":
             ledger.add("canonical", 1)
-        return ReasoningAuditResult(verdict=ReasoningAuditVerdict.NO_CONCERN,
-                                   profile=auditor.profile, model=auditor.model,
-                                   explanation="Synthetic clean response.", total_tokens=1)
+        result = ReasoningAuditResult(verdict=ReasoningAuditVerdict.NO_CONCERN,
+                                      profile=auditor.profile, model=auditor.model,
+                                      explanation="Synthetic clean response.", total_tokens=1)
+        result._usage_recorded = True  # The synthetic callback charged the ledger above.
+        return result
 
     result = asyncio.run(run_tiered_audit(run, ledger))
     assert ledger.used_today("canonical") == (0 if construction_fails else 1)
