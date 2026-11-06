@@ -87,6 +87,8 @@ Key endpoints:
   fall back to the query. Overflow returns the sanitized JSON 422 envelope.
   Leading zeros are accepted. Existing zero and negative query semantics
   remain unchanged.
+  The connected/ready frame is sent after subscription. A no-cursor stream
+  receives future publications; earlier stored history still requires a cursor.
 - `GET /api/v1/approvals`: List pending, approved, or denied human review requests.
 - `POST /api/v1/approvals/{approval_id}/approve`: Single-use endpoint to authorize an action on hold.
 - `POST /api/v1/approvals/{approval_id}/deny`: Reject an action on hold.
