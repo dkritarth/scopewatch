@@ -86,6 +86,13 @@ Auditor reservations belong to one ledger instance and UTC day. Releasing an
 old reservation cannot subtract from a later day's usage. Budget checks and
 reservations are atomic within that instance.
 
+Provider usage accepts nonnegative whole counts, including decimal integer
+strings and integral finite floats. Booleans, negative or fractional values,
+and nonfinite values are not counts. A valid explicit total wins, including
+zero; otherwise both valid prompt and completion counts are required. Audit
+evidence and metering use the same parser. Unknown totals remain null in the
+audit evidence rather than being presented as measured zero.
+
 Aliases use the resolved provider name for budget accounting.
 `RUN_CREATED.details.token_budget.agent_profile` retains the configured name.
 The snapshot's `budget_profile` identifies the counter used for its counts

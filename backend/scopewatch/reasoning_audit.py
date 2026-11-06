@@ -19,6 +19,7 @@ import time
 from typing import Any, Optional, Protocol, Union, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field
 
+from scopewatch.budget_store import measured_tokens_from_usage
 from scopewatch.models import ReasoningProvenance
 from scopewatch.schemas import AuditTierEvidence, TaskScope
 
@@ -1276,9 +1277,9 @@ class ReasoningAuditor:
             else:
                 raise ValueError("Unsupported provider response type")
 
-            total_tokens = getattr(resp, "total_tokens", None)
-            if total_tokens is None and hasattr(resp, "usage") and isinstance(resp.usage, dict):
-                total_tokens = resp.usage.get("total_tokens")
+            total_tokens = measured_tokens_from_usage({"total_tokens": getattr(resp, "total_tokens", None)})
+            if total_tokens is None:
+                total_tokens = measured_tokens_from_usage(getattr(resp, "usage", None))
 
             result = parse_auditor_output(
                 response_text=content,
