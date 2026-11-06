@@ -79,7 +79,17 @@ function currentRun() {
 }
 
 function isPendingHold(action) {
-  return action.gateway_decision.outcome === "HOLD" && !action.execution;
+  return action.gateway_decision.outcome === "HOLD" && action.approval === "PENDING" && !action.execution;
+}
+
+function approvalStatus(action, index) {
+  return state.resolutions.get(index) || action.approval || "NOT RECORDED";
+}
+
+function approvalKind(status) {
+  if (status === "APPROVED" || status === "CONSUMED") return "allow";
+  if (status === "DENIED") return "deny";
+  return status === "PENDING" ? "hold" : "muted";
 }
 
 function stageReached(index) {
@@ -112,9 +122,9 @@ function nodesFor(action, index) {
   }
 
   if (gw.outcome === "HOLD") {
-    if (resolution === "APPROVED") nodes.push({ kind: "allow", s: "APPROVED", x: "by you (single-use)" });
-    else if (resolution === "DENIED") nodes.push({ kind: "deny", s: "DENIED", x: "by you" });
-    else nodes.push({ kind: "hold", s: "PENDING", x: gw.reason_code });
+    const status = approvalStatus(action, index);
+    nodes.push({ kind: approvalKind(status), s: resolution ? `${status} (hypothetical)` : status,
+      x: resolution ? "local choice; no gateway call" : status === "PENDING" ? gw.reason_code : action.approval ? "recorded approval state" : "no approval status recorded" });
   } else if (gw.outcome === "DENY") {
     nodes.push({ kind: "skip", s: "NOT ALLOWED", x: "approval can't override DENY" });
   } else {
@@ -124,9 +134,10 @@ function nodesFor(action, index) {
   const exec = action.execution;
   if (exec && exec.status === "EXECUTED") nodes.push({ kind: "allow", s: "EXECUTED", x: exec.executor });
   else if (exec) nodes.push({ kind: "deny", s: "NOT RUN", x: exec.error_code || "refused: no allowing decision" });
-  else if (resolution === "APPROVED") nodes.push({ kind: "info", s: "RUNS ONCE", x: "approval consumed (not replayed here)" });
-  else if (resolution === "DENIED") nodes.push({ kind: "deny", s: "NOT RUN", x: "denied by reviewer" });
-  else nodes.push({ kind: "hold", s: "WAITING", x: "no decision, no execution" });
+  else if (resolution === "APPROVED") nodes.push({ kind: "info", s: "WOULD RUN ONCE", x: "hypothetical; no gateway call" });
+  else if (resolution === "DENIED") nodes.push({ kind: "deny", s: "WOULD NOT RUN", x: "hypothetical; no gateway call" });
+  else if (isPendingHold(action)) nodes.push({ kind: "hold", s: "WAITING", x: "no approval, no execution" });
+  else nodes.push({ kind: "muted", s: "NO RECEIPT", x: "no execution receipt recorded" });
 
   return nodes;
 }
@@ -134,8 +145,9 @@ function nodesFor(action, index) {
 function finalPill(action, index) {
   const gw = action.gateway_decision;
   const resolution = state.resolutions.get(index);
-  if (gw.outcome === "HOLD" && resolution) {
-    return pill(`HOLD → ${resolution}`, resolution === "APPROVED" ? "allow" : "deny");
+  if (gw.outcome === "HOLD" && (resolution || action.approval !== "PENDING")) {
+    const status = approvalStatus(action, index);
+    return pill(`HOLD → ${status}${resolution ? " (hypothetical)" : ""}`, approvalKind(status));
   }
   return pill(`${gw.outcome} · ${gw.reason_code}`, outcomeKind(gw.outcome));
 }
@@ -297,12 +309,12 @@ function section(title, badge, ...body) {
 
 function whatNext(action, resolution) {
   if (resolution === "DENIED") {
-    return "The gateway closes the request without running it. The executor never sees it, and the agent gets a denial back.";
+    return "A denial would close the request without execution. This replay sends no decision to a gateway.";
   }
   if (action.operation === "delete_path") {
-    return "The gateway consumes your single-use approval and the executor runs delete_path once. In this baseline, delete is simulated: the receipt reports it but the file is not removed.";
+    return "An approval would authorize one local delete_path attempt. That executor simulates deletion in this baseline. This replay does not execute it.";
   }
-  return `The gateway consumes your single-use approval and the executor runs ${action.operation} on ${action.resource} exactly once. Re-sending the same approval would be refused. This is why the reviewer reads the evidence above first.`;
+  return `An approval would authorize ${action.operation} on ${action.resource} once. This replay does not create an approval or execution receipt.`;
 }
 
 function renderEvidence() {
@@ -378,21 +390,27 @@ function renderEvidence() {
   if (reached >= 3) {
     const gw = action.gateway_decision;
     const resolution = state.resolutions.get(index);
-    if (gw.outcome === "HOLD" && isPendingHold(action)) {
+    if (gw.outcome === "HOLD") {
+      const status = approvalStatus(action, index);
       const box = el(
         "div",
         { class: "approval-box" },
         el("div", {}, el("strong", { text: `Approval required: ${action.operation}` }), el("div", { class: "sim-note", text: `Resource: ${action.resource} · Reason: ${gw.reason_code}` })),
       );
-      if (resolution) {
+      if (!isPendingHold(action)) {
+        box.replaceChildren(el("p", { class: "sim-note", text: action.approval
+          ? `Recorded gateway approval status: ${action.approval}.`
+          : "No approval status was recorded for this HOLD." }));
+      } else if (resolution) {
         box.append(el("div", { class: "what-next", text: whatNext(action, resolution) }));
+        box.append(el("p", { class: "sim-note", text: "Recorded gateway state: PENDING. Your choice is hypothetical and is not sent anywhere." }));
       } else {
         box.append(
           approvalButtons(index),
           el("p", { class: "sim-note", text: "The recorded gateway state is PENDING. Your choice is shown here only and isn't sent anywhere." }),
         );
       }
-      blocks.push(section("3 · Human approval", pill(resolution || "PENDING", resolution === "APPROVED" ? "allow" : resolution === "DENIED" ? "deny" : "hold"), box));
+      blocks.push(section("3 · Human approval", pill(resolution ? `${status} (hypothetical)` : status, approvalKind(status)), box));
     } else {
       blocks.push(section("3 · Human approval", pill("NOT REQUIRED", "muted", "no-dot"), el("p", { class: "muted", style: "font-size:14px", text: gw.outcome === "DENY" ? "Approvals cannot override a policy DENY, so none was offered." : "The decision was ALLOW, so no approval was needed." })));
     }
@@ -413,7 +431,7 @@ function renderEvidence() {
         ),
       );
     } else {
-      blocks.push(section("4 · Execution receipt", pill("NONE YET", "hold", "no-dot"), el("p", { class: "muted", style: "font-size:14px", text: "No receipt. The executor refuses anything without an allowing decision or a valid approval." })));
+      blocks.push(section("4 · Execution receipt", pill(isPendingHold(action) ? "NONE YET" : "NOT RECORDED", "muted", "no-dot"), el("p", { class: "muted", style: "font-size:14px", text: "No execution receipt was recorded for this action." })));
     }
   }
 
@@ -478,6 +496,8 @@ function play() {
 }
 
 function resolve(index, decision) {
+  const action = currentRun()?.actions[index];
+  if (!action || !isPendingHold(action) || !["APPROVED", "DENIED"].includes(decision)) return;
   state.resolutions.set(index, decision);
   const resume = state.pausedForReview && index === state.action;
   state.pausedForReview = false;
