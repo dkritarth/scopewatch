@@ -378,7 +378,7 @@ capture_token: Optional[str] = None,
                 "Sanitized auditor construction failure [%s]", type(exc).__name__
             )
             profile_name, model_name = self._requested_auditor_identity()
-            return ReasoningAuditResult(
+            result = ReasoningAuditResult(
                 verdict=ReasoningAuditVerdict.FAILED,
                 concern_type=None,
                 flagged_excerpts=[],
@@ -391,6 +391,8 @@ capture_token: Optional[str] = None,
                 latency_ms=0.0,
                 error_code=_audit_error_code(exc),
             )
+            result._provider_attempted = False
+            return result
 
         planned = [
             PlannedAction(
@@ -1103,6 +1105,7 @@ capture_token: Optional[str] = None,
                             raise self._refuse_token_budget(
                                 auditor_profile, verdict.used, budget
                             )
+                    audit_result = None
                     try:
                         audit_result = await self._run_reasoning_audit(
                             run=run,
@@ -1112,16 +1115,17 @@ capture_token: Optional[str] = None,
                             recent_actions_list=recent_actions_list,
                         )
                     finally:
-                        # Actual usage was recorded at spend time by the
-                        # provider hook; release the estimate here so the
-                        # ledger converges to actuals. Never raises.
-                        if reservation is not None:
+                        # Unknown or unrecorded spending retains its estimate.
+                        # A timed-out worker may still complete after this returns.
+                        if reservation is not None and audit_result is not None and (
+                            not audit_result._provider_attempted or audit_result._usage_recorded
+                        ):
                             try:
                                 self.tokens.release(reservation)
                             except Exception:  # noqa: BLE001 - metering is best-effort
                                 logger.debug("Sanitized token-settle skip")
 
-                    fresh_tokens_used = audit_result.total_tokens or 0
+                    fresh_tokens_used = audit_result.total_tokens
 
                     audit_record = ReasoningAuditRecord(
                         id=str(uuid.uuid4()),
@@ -1177,7 +1181,7 @@ capture_token: Optional[str] = None,
                     "total_tokens": audit_record.total_tokens,
                     "tiers": [tier.model_dump(mode="json") for tier in audit_record.tiers],
                     # #77: counts only — never prompts, traces, or keys.
-                    "tokens_used": max(0, int(fresh_tokens_used)),
+                    "tokens_used": None if fresh_tokens_used is None else max(0, int(fresh_tokens_used)),
                 }
 
                 # Escalate-only merge rules from ADR-0001:

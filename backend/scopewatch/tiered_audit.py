@@ -68,6 +68,7 @@ async def run_tiered_audit(
         reservation = None
         resolved_profile = None
         client = None
+        result = None
         try:
             profile = get_profile(config.profile)
             model = profile.model
@@ -104,7 +105,11 @@ async def run_tiered_audit(
             result = failed(config.profile, model)
         finally:
             try:
-                if reservation is not None:
+                if reservation is not None and (
+                    not attempted or (result is not None and (
+                        not result._provider_attempted or result._usage_recorded
+                    ))
+                ):
                     tokens.release(reservation)
             except Exception:
                 pass  # Metering cleanup must not discard the fail-closed result.

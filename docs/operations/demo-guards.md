@@ -86,6 +86,15 @@ Auditor reservations belong to one ledger instance and UTC day. Releasing an
 old reservation cannot subtract from a later day's usage. Budget checks and
 reservations are atomic within that instance.
 
+An estimate is released only after the provider hook confirms recorded usage,
+or when local preflight/client construction confirms no provider call occurred.
+Unknown usage and recording failures retain the estimate until rollover or
+reset. Unknown fresh audit usage appears as null in `details.tokens_used`.
+A worker that finishes after the gateway timeout can add measured usage on
+top of a retained estimate; this conservative overcount prevents a premature
+refund. Configuring a zero reservation retains the existing opt-out and cannot
+protect against unmeasured spending.
+
 Provider usage accepts nonnegative whole counts, including decimal integer
 strings and integral finite floats. Booleans, negative or fractional values,
 and nonfinite values are not counts. A valid explicit total wins, including
