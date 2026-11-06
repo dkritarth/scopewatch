@@ -84,6 +84,29 @@ logger = logging.getLogger("scopewatch.app")
 frontend_dir = Path(__file__).resolve().parent.parent.parent / "frontend"
 
 
+_SQLITE_INTEGER_MIN = -(2**63)
+_SQLITE_INTEGER_MAX = 2**63 - 1
+
+
+def _event_integer(value: Optional[int]) -> Optional[int]:
+    """Keep cursor and limit values within SQLite's integer binding range."""
+    if value is not None and not _SQLITE_INTEGER_MIN <= value <= _SQLITE_INTEGER_MAX:
+        raise RequestValidationError([])
+    return value
+
+
+def _event_replay_cursor(last_event_id: Optional[str], after_sequence: Optional[int]) -> Optional[int]:
+    if last_event_id and re.fullmatch(r"[0-9]+", last_event_id):
+        # Strip leading zeros and compare magnitude before int(): headers
+        # can exceed Python's decimal conversion limit, even for value one.
+        digits = last_event_id.lstrip("0") or "0"
+        maximum = str(_SQLITE_INTEGER_MAX)
+        if len(digits) > len(maximum) or (len(digits) == len(maximum) and digits > maximum):
+            raise RequestValidationError([])
+        return int(digits)
+    return _event_integer(after_sequence)
+
+
 async def demo_guard_refusal_handler(request: Request, exc: DemoGuardRefusal) -> JSONResponse:
     """Render demo-guard/token-budget refusals as flat sanitized JSON.
 
@@ -825,7 +848,7 @@ def create_app(
         svc: ScopewatchService = Depends(get_service),
     ) -> list[EvidenceEvent]:
         svc.get_run(run_id)
-        return svc.get_events(run_id, after_sequence=after_sequence, limit=limit)
+        return svc.get_events(run_id, after_sequence=_event_integer(after_sequence), limit=_event_integer(limit))
 
     @app.get("/api/v1/runs/{run_id}/events/stream")
     async def stream_events(
@@ -837,6 +860,9 @@ def create_app(
         svc: ScopewatchService = Depends(get_service),
     ) -> EventSourceResponse:
         svc.get_run(run_id)
+        # Validate before EventSourceResponse can announce a successful stream.
+        cursor = _event_replay_cursor(last_event_id, after_sequence)
+        limit = _event_integer(limit)
 
         async def event_generator():
             count = 0
@@ -844,12 +870,6 @@ def create_app(
             count += 1
             if limit is not None and count >= limit:
                 return
-
-            cursor = None
-            if last_event_id and last_event_id.isdigit():
-                cursor = int(last_event_id)
-            elif after_sequence is not None:
-                cursor = after_sequence
 
             # Subscribe to future events BEFORE fetching replay events to eliminate race gap (#112)
             queue = await broadcaster.subscribe(run_id)
