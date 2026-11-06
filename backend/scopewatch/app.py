@@ -1,6 +1,7 @@
 """FastAPI application for Scopewatch synthetic baseline."""
 
 import asyncio
+import anyio
 from contextlib import asynccontextmanager
 import hmac
 import logging
@@ -15,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import Receive, Scope, Send
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from scopewatch import __version__
@@ -86,6 +88,17 @@ frontend_dir = Path(__file__).resolve().parent.parent.parent / "frontend"
 
 _SQLITE_INTEGER_MIN = -(2**63)
 _SQLITE_INTEGER_MAX = 2**63 - 1
+
+
+class _ClosingEventSourceResponse(EventSourceResponse):
+    """Close our event iterator even if cancellation interrupts a send."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await self.body_iterator.aclose()
 
 
 def _event_integer(value: Optional[int]) -> Optional[int]:
@@ -865,16 +878,17 @@ def create_app(
         limit = _event_integer(limit)
 
         async def event_generator():
-            count = 0
-            yield ServerSentEvent(event="connected", data="ready")
-            count += 1
-            if limit is not None and count >= limit:
-                return
-
-            # Subscribe to future events BEFORE fetching replay events to eliminate race gap (#112)
+            # Readiness means the queue already accepts new publications.
+            # It also precedes replay reads to preserve gap-free recovery.
             queue = await broadcaster.subscribe(run_id)
             seen_sequences: set[int] = set()
             try:
+                count = 0
+                yield ServerSentEvent(event="connected", data="ready")
+                count += 1
+                if limit is not None and count >= limit:
+                    return
+
                 if cursor is not None:
                     stored_events = svc.get_events(run_id, after_sequence=cursor)
                     for ev in stored_events:
@@ -907,7 +921,7 @@ def create_app(
             finally:
                 await broadcaster.unsubscribe(run_id, queue)
 
-        return EventSourceResponse(
+        return _ClosingEventSourceResponse(
             event_generator(),
             ping=None,
         )
