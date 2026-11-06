@@ -1,6 +1,7 @@
 """Raw report checking rejects invented or malformed numeric measurements."""
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -34,7 +35,8 @@ def reload_and_check_cli(report, tmp_path):
     path.write_text(json.dumps(report))
     loaded = json.loads(path.read_text())
     checked = subprocess.run([sys.executable, str(ROOT / "backend/scripts/evaluate_reasoning_audit.py"),
-                              "--check", str(path)], capture_output=True, text=True, timeout=10)
+                              "--check", str(path)], env={**os.environ, "PYTHONPATH": str(ROOT / "backend")},
+                              capture_output=True, text=True, timeout=10)
     return loaded, checked
 
 
