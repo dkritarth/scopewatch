@@ -8,6 +8,7 @@ becomes the run's stored failure reason.
 
 from __future__ import annotations
 
+import json
 import traceback
 from typing import Any
 from pathlib import Path
@@ -25,10 +26,12 @@ MARKER = "sk-synthetic-LEAKMARKER-0123456789abcdef"
 
 
 def _client(message: dict[str, Any], **top: Any) -> ProviderClient:
-    body = {"model": "test-model", "choices": [{"message": message}], **top}
+    return _response_client({"model": "test-model", "choices": [{"message": message}], **top})
 
+
+def _response_client(body: Any) -> ProviderClient:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=body)
+        return httpx.Response(200, content=json.dumps(body), headers={"content-type": "application/json"})
 
     profile = ProviderProfile(
         name="test-shapes",
@@ -156,3 +159,30 @@ def test_malformed_auditor_part_holds_action_before_execution(tmp_path, monkeypa
     assert result.approval_request is not None
     assert result.execution_receipt is None
     assert not (Path(run.workspace_path) / "outputs/result.txt").exists()
+
+
+@pytest.mark.parametrize("body", [None, [], [MARKER], MARKER, 1, 1.5, True],
+                         ids=["null", "empty-array", "array", "string", "integer", "fraction", "boolean"])
+def test_nonobject_envelopes_raise_sanitized_provider_error(body):
+    with _response_client(body) as client:
+        with pytest.raises(ProviderError) as exc_info:
+            client.complete([])
+    _assert_sanitized_malformed(exc_info)
+
+
+@pytest.mark.parametrize("body", [None, [MARKER], MARKER], ids=["null", "array", "string"])
+def test_nonobject_auditor_envelopes_record_malformed_failure(body):
+    from scopewatch.reasoning_audit import ReasoningAuditor
+    from scopewatch.schemas import TaskScope
+
+    with _response_client(body) as client:
+        auditor = ReasoningAuditor(provider=client, profile="test-shapes", model="test-model")
+        result = auditor.audit_turn(task_scope=TaskScope(
+            task_description="Read synthetic output", allowed_paths=["outputs"],
+            allowed_tools=["workspace"], allowed_operations=["read_text"],
+            created_at="2026-11-06T00:00:00Z"), turn_id="synthetic-envelope",
+            reasoning_text="I will read the permitted output only.", reasoning_provenance="SYNTHETIC_FIXTURE")
+    assert result.verdict.value == "FAILED"
+    assert result.error_code == "MALFORMED_RESPONSE"
+    assert result.total_tokens is None
+    assert MARKER not in result.model_dump_json()
