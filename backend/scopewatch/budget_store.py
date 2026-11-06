@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -107,19 +108,44 @@ def reserve_per_audit(env: Mapping[str, str] | None = None) -> int:
         return DEFAULT_RESERVE_PER_AUDIT
 
 
-def total_tokens_from_usage(usage: Any) -> int:
-    """Extract a token count from a provider ``usage`` payload (counts only)."""
+def _token_count(value: Any) -> int | None:
+    """Normalize a whole nonnegative count without boolean or float coercion."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) and value >= 0 and value.is_integer() else None
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def measured_tokens_from_usage(usage: Any) -> int | None:
+    """Return a measured total, preserving unknown usage as None.
+
+    A valid explicit total wins, including zero. Otherwise both components
+    must be present and valid; a missing component is not measured zero.
+    """
     if not isinstance(usage, dict):
-        return 0
-    total = usage.get("total_tokens")
-    if isinstance(total, (int, float)) and total >= 0:
-        return int(total)
-    prompt = usage.get("prompt_tokens", 0)
-    completion = usage.get("completion_tokens", 0)
-    if isinstance(prompt, (int, float)) and isinstance(completion, (int, float)):
-        combined = int(prompt) + int(completion)
-        return combined if combined >= 0 else 0
-    return 0
+        return None
+    total = _token_count(usage.get("total_tokens"))
+    if total is not None:
+        return total
+    prompt = _token_count(usage.get("prompt_tokens"))
+    completion = _token_count(usage.get("completion_tokens"))
+    if prompt is not None and completion is not None:
+        return prompt + completion
+    return None
+
+
+def total_tokens_from_usage(usage: Any) -> int:
+    """Compatibility count for metering; unknown usage contributes no count."""
+    total = measured_tokens_from_usage(usage)
+    return total if total is not None else 0
 
 
 def seconds_until_utc_midnight(now_s: float | None = None) -> float:
