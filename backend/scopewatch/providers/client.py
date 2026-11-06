@@ -456,7 +456,12 @@ class ProviderClient:
             request_options["request_timeout"] = timeout
         return self.complete(messages, **request_options)
 
-    def _parse_chat_response(self, data: dict[str, Any], latency_ms: float) -> ChatResult:
+    def _parse_chat_response(self, data: Any, latency_ms: float) -> ChatResult:
+        if not isinstance(data, dict):
+            raise ProviderError(
+                ProviderErrorCode.MALFORMED_RESPONSE,
+                f"Provider '{self.profile.name}' returned a non-object response envelope.",
+            )
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices:
             raise ProviderError(
