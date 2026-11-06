@@ -391,12 +391,20 @@ on #136, is in `docs/spikes/2026-10-nemotron-provider-verification.md`. A live
 
 ### Token-usage coverage
 
-The evaluation harness prefers prompt plus completion usage for each case.
-When some cases expose only a total, it also counts those totals instead of
-silently dropping their usage. Such summaries carry
-`aggregation: available_case_usage`, `populated_cases`, `component_cases`, and
-`partial` (whether any case has no usage). Prompt/completion fields describe
-only the available breakdown; zero does not establish a provider-reported
-zero cost. `--check` recomputes both the amount and coverage metadata, so a
-complete total-only report can verify without pretending a breakdown exists.
-Previously recorded historical reports and metrics remain unchanged.
+The evaluation harness normalizes captured counts with the same rules as the
+auditor. Unknown components and totals remain null in rows. Complete positive
+prompt/completion breakdowns are preferred, including when the reported total
+differs. An available total is used when the breakdown is incomplete. The
+historical all-zero breakdown convention still permits a total-only fallback.
+
+If only part of a breakdown is available and no total exists, its known
+subtotal contributes partial usage. These summaries carry
+`aggregation: available_case_usage`, `populated_cases` (rows with any available
+count), `component_cases` (complete positive breakdowns), and `partial`
+(whether any row lacks complete usage). Partial coverage can be true even
+when every row contributes a known subtotal, including zero. An incomplete
+breakdown that exceeds its reported total is rejected as contradictory.
+
+Raw checking and publication recompute the amount and coverage metadata.
+Publication keeps nullable components as required fields. Previously recorded
+historical reports and metrics remain unchanged.
