@@ -86,6 +86,11 @@ Auditor reservations belong to one ledger instance and UTC day. Releasing an
 old reservation cannot subtract from a later day's usage. Budget checks and
 reservations are atomic within that instance.
 
+Aliases use the resolved provider name for budget accounting.
+`RUN_CREATED.details.token_budget.agent_profile` retains the configured name.
+The snapshot's `budget_profile` identifies the counter used for its counts
+and budget.
+
 Run creation and single-tier audit budget refusals return
 `429 {"error": "token_budget_exhausted"}`, naming the profile and UTC-midnight
 rollover. Two-tier routing records `TOKEN_BUDGET_EXCEEDED` for a refused tier
