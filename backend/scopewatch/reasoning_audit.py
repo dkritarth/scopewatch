@@ -580,6 +580,16 @@ def validate_grounded_excerpts(
     return resolve_grounded_excerpts(excerpts, trace_text) is not None
 
 
+def _unique_auditor_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous members before JSON decoding can discard evidence."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Auditor JSON contains duplicate members.")
+        result[key] = value
+    return result
+
+
 def parse_auditor_output(
     response_text: str,
     bounded_trace_text: str,
@@ -615,7 +625,7 @@ def parse_auditor_output(
         cleaned = "\n".join(lines).strip()
 
     try:
-        data = json.loads(cleaned)
+        data = json.loads(cleaned, object_pairs_hook=_unique_auditor_json_object)
     except (ValueError, UnicodeError):
         return ReasoningAuditResult(
             verdict=ReasoningAuditVerdict.FAILED,
