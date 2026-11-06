@@ -493,6 +493,7 @@ let liveStreamHandle = null;
 let isLiveMode = false;
 // Every bootstrap invalidates reads and stream callbacks from the prior view.
 let liveReadGeneration = 0;
+let runRefreshRequestId = 0;
 let pendingApprovals = [];
 
 export function getPendingApprovals() {
@@ -2347,10 +2348,12 @@ function subscribeToRun(runId) {
         targetRun.events.push(formatted);
         reconcileRunActionStates(targetRun.events);
         if (apiEvent.event_type === "RUN_COMPLETED" || formatted.eventType === "RUN_COMPLETED" || formatted.type === "RUN_COMPLETED") {
+          runRefreshRequestId += 1;
           targetRun.status = "COMPLETED";
           renderRunButtons();
           renderScope();
         } else if (apiEvent.event_type === "SYSTEM_ERROR" || formatted.eventType === "SYSTEM_ERROR" || formatted.type === "SYSTEM_ERROR") {
+          runRefreshRequestId += 1;
           targetRun.status = "FAILED";
           renderRunButtons();
           renderScope();
@@ -2795,23 +2798,32 @@ function gatewayLiveFlag() {
 export async function refreshRuns() {
   if (!isLiveMode) return;
   const generation = liveReadGeneration;
+  const requestId = ++runRefreshRequestId;
+  const isCurrent = () => generation === liveReadGeneration && requestId === runRefreshRequestId;
   try {
     const backendRuns = await getRuns();
-    if (generation !== liveReadGeneration) return;
+    if (!isCurrent()) return;
     if (!backendRuns || !Array.isArray(backendRuns)) return;
-    let runsChanged = false;
+    // Stage history reads before changing shared state. An older refresh
+    // must not leave partial updates behind while a newer one completes.
+    const discoveredRuns = new Map();
     for (const bRun of backendRuns) {
-      let existing = activeRuns.find((r) => r.id === bRun.id);
-      if (!existing) {
+      if (!activeRuns.some((r) => r.id === bRun.id)) {
         let events = [];
         try {
           events = await getEvents(bRun.id);
         } catch {
           events = [];
         }
-        if (generation !== liveReadGeneration) return;
-        const formatted = formatLiveRun(bRun, events);
-        activeRuns.push(formatted);
+        if (!isCurrent()) return;
+        discoveredRuns.set(bRun.id, events);
+      }
+    }
+    let runsChanged = false;
+    for (const bRun of backendRuns) {
+      const existing = activeRuns.find((r) => r.id === bRun.id);
+      if (!existing) {
+        activeRuns.push(formatLiveRun(bRun, discoveredRuns.get(bRun.id)));
         runsChanged = true;
       } else {
         const currentStatus = bRun.status || "ACTIVE";
@@ -2826,6 +2838,7 @@ export async function refreshRuns() {
       renderScope();
     }
   } catch (err) {
+    if (!isCurrent()) return;
     console.warn("Could not refresh live runs:", err);
   }
 }

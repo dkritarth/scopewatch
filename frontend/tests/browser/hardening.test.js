@@ -472,3 +472,145 @@ test("armed state and note survive an SSE frame (#208)", { timeout: 30000 }, asy
     server.close();
   }
 });
+
+for (const delayed of ["history", "run-list", "terminal-stream"]) {
+  test(`run refresh discards stale ${delayed} responses`, { timeout: 30000 }, async () => {
+    const server = createStaticServer();
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    let browser;
+    let heldRoute;
+    let heldBody;
+    let unblock;
+    const blocked = new Promise(resolve => { unblock = resolve; });
+    let discovery = delayed === "terminal-stream";
+    let status = "ACTIVE";
+    let delayNext = false;
+    const run = { id: "synthetic-refresh-run", name: "Refresh ordering",
+      task_scope: { task_description: "Synthetic refresh ordering", allowed_paths: ["outputs"],
+        allowed_tools: ["workspace"], allowed_operations: ["read_text"], requires_approval: [] } };
+    const event = { id: "refresh-created", sequence: 1, run_id: run.id, event_type: "RUN_CREATED",
+      timestamp: "2026-11-05T00:00:00Z", summary: "Synthetic run created", details: {} };
+    try {
+      browser = await chromium.launch();
+      const page = await browser.newPage();
+      const errors = [];
+      page.on("pageerror", error => errors.push(error.message));
+      await page.addInitScript(() => {
+        window.EventSource = class {
+          constructor() { this.handlers = {}; window.__runStream = this; }
+          addEventListener(type, handler) { this.handlers[type] = handler; }
+          close() {}
+        };
+      });
+      await page.route("**/api/v1/**", async route => {
+        const path = new URL(route.request().url()).pathname;
+        const json = value => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
+        if (path.endsWith("/health")) return json({ status: "ok" });
+        if (path.endsWith("/approvals")) return json([]);
+        const runs = discovery ? [{ ...run, status }] : [];
+        if (delayNext && (delayed === "history" ? path.endsWith("/events") : path.endsWith("/runs"))) {
+          heldRoute = route;
+          heldBody = delayed === "history" ? [event] : runs;
+          delayNext = false;
+          unblock();
+          return;
+        }
+        if (path.endsWith("/runs")) return json(runs);
+        if (path.endsWith("/events")) return json([event]);
+        return route.fulfill({ status: 404 });
+      });
+      await page.goto(`http://127.0.0.1:${server.address().port}/?live=1`);
+      await page.waitForFunction(() => Boolean(window.__runRefreshInterval));
+      await page.evaluate(() => clearInterval(window.__runRefreshInterval));
+      await page.locator('.rail-nav [data-view-target="activity"]').click();
+      discovery = true;
+      delayNext = true;
+      await page.evaluate(() => { window.__delayedRefresh = window.__scopewatch.refreshRuns(); });
+      await blocked;
+      status = "COMPLETED";
+      if (delayed === "terminal-stream") {
+        await page.evaluate(terminal => {
+          window.__runStream.handlers.RUN_COMPLETED({ data: JSON.stringify(terminal) });
+        }, { ...event, id: "refresh-completed", sequence: 2, event_type: "RUN_COMPLETED", summary: "Run completed" });
+      } else {
+        await page.evaluate(() => window.__scopewatch.refreshRuns());
+        await page.locator('#run-buttons [data-run-id="synthetic-refresh-run"]').click();
+      }
+      const button = page.locator('#run-buttons [data-run-id="synthetic-refresh-run"]');
+      assert.equal(await button.getAttribute("data-status"), "COMPLETED");
+      assert.match(await page.locator("#run-task").innerText(), /COMPLETED/);
+      await heldRoute.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(heldBody) });
+      heldRoute = null;
+      await page.evaluate(() => window.__delayedRefresh);
+      assert.equal(await button.getAttribute("data-status"), "COMPLETED");
+      assert.match(await page.locator("#run-task").innerText(), /COMPLETED/);
+      await page.evaluate(() => window.__scopewatch.refreshRuns());
+      assert.equal(await button.getAttribute("data-status"), "COMPLETED");
+      assert.match(await page.locator("#run-task").innerText(), /COMPLETED/);
+      assert.deepEqual(errors, []);
+    } finally {
+      if (heldRoute) await heldRoute.abort().catch(() => {});
+      if (browser) await browser.close();
+      server.close();
+    }
+  });
+}
+
+test("superseded multi-run history never populates evidence caches", { timeout: 30000 }, async () => {
+  const server = createStaticServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  let browser;
+  let heldRoute;
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  let discovery = false;
+  const run = id => ({ id, name: id, status: "ACTIVE", task_scope: {
+    task_description: "Synthetic cache ordering", allowed_paths: ["outputs"],
+    allowed_tools: ["workspace"], allowed_operations: ["write_text"], requires_approval: [] } });
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.route("**/api/v1/**", async route => {
+      const path = new URL(route.request().url()).pathname;
+      const json = value => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
+      if (path.endsWith("/health")) return json({ status: "ok" });
+      if (path.endsWith("/approvals")) return json([]);
+      if (path.endsWith("/runs")) return json(discovery ? [run("first-run"), run("second-run")] : []);
+      if (path.endsWith("/first-run/events")) return json([{
+        id: "stale-action", sequence: 1, run_id: "first-run", event_type: "ACTION_REQUESTED",
+        timestamp: "2026-11-05T00:00:00Z", summary: "Superseded synthetic action",
+        details: { tool: "workspace", operation: "write_text", resource: "outputs/stale.txt" },
+      }]);
+      if (path.endsWith("/second-run/events")) {
+        heldRoute = route;
+        release();
+        return;
+      }
+      return route.fulfill({ status: 404 });
+    });
+    await page.goto(`http://127.0.0.1:${server.address().port}/?live=1`);
+    await page.waitForFunction(() => Boolean(window.__runRefreshInterval));
+    await page.evaluate(() => clearInterval(window.__runRefreshInterval));
+    discovery = true;
+    await page.evaluate(() => { window.__delayedRefresh = window.__scopewatch.refreshRuns(); });
+    await blocked;
+    discovery = false;
+    await page.evaluate(() => window.__scopewatch.refreshRuns());
+    const cacheSize = () => page.evaluate(async () => (await import("/scripts/app.js")).actionRequestStore.size);
+    assert.equal(await cacheSize(), 0);
+    await heldRoute.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+    heldRoute = null;
+    await page.evaluate(() => window.__delayedRefresh);
+    assert.equal(await cacheSize(), 0);
+    assert.equal(await page.locator("#run-buttons button").count(), 0);
+    assert.deepEqual(errors, []);
+  } finally {
+    if (heldRoute) await heldRoute.abort().catch(() => {});
+    if (browser) await browser.close();
+    server.close();
+  }
+});
