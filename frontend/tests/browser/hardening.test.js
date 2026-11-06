@@ -614,3 +614,68 @@ test("superseded multi-run history never populates evidence caches", { timeout: 
     server.close();
   }
 });
+
+test("first discovered run initializes evidence and streaming without a click", { timeout: 30000 }, async () => {
+  const server = createStaticServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  let browser;
+  let discovered = false;
+  let approvalReads = 0;
+  const run = { id: "first-discovered-run", name: "First discovered run", status: "ACTIVE",
+    task_scope: { task_description: "Synthetic first-run discovery", allowed_paths: ["outputs"],
+      allowed_tools: ["workspace"], allowed_operations: ["read_text"], requires_approval: [] } };
+  const created = { id: "discovered-created", sequence: 1, run_id: run.id, event_type: "RUN_CREATED",
+    timestamp: "2026-11-06T00:00:00Z", summary: "Stored event after discovery", details: {} };
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.addInitScript(() => {
+      window.__discoveryStreams = [];
+      window.EventSource = class {
+        constructor(url) { this.url = url; this.handlers = {}; window.__discoveryStreams.push(this); }
+        addEventListener(type, handler) { this.handlers[type] = handler; }
+        close() { this.closed = true; }
+      };
+    });
+    await page.route("**/api/v1/**", async route => {
+      const path = new URL(route.request().url()).pathname;
+      const json = value => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
+      if (path.endsWith("/health")) return json({ status: "ok" });
+      if (path.endsWith("/runs")) return json(discovered ? [run] : []);
+      if (path.endsWith("/events")) return json([created]);
+      if (path.endsWith("/approvals")) { approvalReads += 1; return json([]); }
+      return route.fulfill({ status: 404 });
+    });
+    await page.goto(`http://127.0.0.1:${server.address().port}/?live=1`);
+    await page.waitForFunction(() => Boolean(window.__runRefreshInterval));
+    await page.evaluate(() => clearInterval(window.__runRefreshInterval));
+    await page.locator('.rail-nav [data-view-target="activity"]').click();
+    assert.equal(await page.locator("#run-buttons button").count(), 0);
+    assert.equal(await page.evaluate(() => window.__discoveryStreams.length), 0);
+    discovered = true;
+    await page.evaluate(() => window.__scopewatch.refreshRuns());
+    const button = page.locator('#run-buttons [data-run-id="first-discovered-run"]');
+    assert.equal(await button.getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator('#timeline [data-event-id="discovered-created"]').count(), 1);
+    assert.match(await page.locator("#timeline-count").innerText(), /1 of 1 events shown/);
+    assert.match(await page.locator("#evidence-caption").innerText(), /First discovered run/);
+    assert.doesNotMatch(await page.locator("#event-evidence").innerText(), /Select a timeline event/);
+    assert.match(await page.locator("#run-task").innerText(), /Synthetic first-run discovery/);
+    assert.ok(approvalReads > 0);
+    assert.equal(await page.evaluate(() => window.__discoveryStreams.length), 1);
+    assert.equal(await page.evaluate(() => new URL(window.__discoveryStreams[0].url, location.href).searchParams.get("after_sequence")), "1");
+    await page.evaluate(() => window.__scopewatch.refreshRuns());
+    assert.equal(await page.evaluate(() => window.__discoveryStreams.length), 1);
+    await page.evaluate(event => window.__discoveryStreams[0].handlers.RUN_COMPLETED({ data: JSON.stringify(event) }),
+      { ...created, id: "discovered-completed", sequence: 2, event_type: "RUN_COMPLETED", summary: "Discovered run completed" });
+    assert.equal(await page.locator('#timeline [data-event-id="discovered-completed"]').count(), 1);
+    assert.equal(await button.getAttribute("data-status"), "COMPLETED");
+    assert.deepEqual(errors, []);
+  } finally {
+    if (browser) await browser.close();
+    server.close();
+  }
+});
