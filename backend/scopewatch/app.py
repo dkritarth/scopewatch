@@ -881,43 +881,62 @@ def create_app(
             # Readiness means the queue already accepts new publications.
             # It also precedes replay reads to preserve gap-free recovery.
             queue = await broadcaster.subscribe(run_id)
-            seen_sequences: set[int] = set()
             try:
+                # A live-only connection intentionally omits earlier history.
+                # Capture that baseline before announcing readiness, while the
+                # subscription already covers concurrent publications.
+                target_sequence = svc.get_latest_event_sequence(run_id)
+                last_sequence = target_sequence if cursor is None else max(0, min(cursor, target_sequence))
                 count = 0
                 yield ServerSentEvent(event="connected", data="ready")
                 count += 1
                 if limit is not None and count >= limit:
                     return
 
-                if cursor is not None:
-                    stored_events = svc.get_events(run_id, after_sequence=cursor)
-                    for ev in stored_events:
-                        seen_sequences.add(ev.sequence)
-                        yield ServerSentEvent(
-                            id=str(ev.sequence),
-                            event=ev.event_type.value,
-                            data=ev.model_dump_json(),
-                        )
-                        count += 1
-                        if limit is not None and count >= limit:
-                            return
-
                 while True:
+                    # Recover through a fixed tail so concurrent appends cannot
+                    # keep replay running forever. Pages and deduplication stay
+                    # bounded even when this subscriber's queue has overflowed.
+                    while last_sequence < target_sequence:
+                        page = svc.get_events(run_id, after_sequence=last_sequence, limit=100)
+                        if not page:
+                            return
+                        for event in page:
+                            if event.sequence != last_sequence + 1:
+                                # Never acknowledge a cursor across a durable hole.
+                                return
+                            if event.sequence > target_sequence:
+                                break
+                            last_sequence = event.sequence
+                            yield ServerSentEvent(
+                                id=str(event.sequence), event=event.event_type.value,
+                                data=event.model_dump_json(),
+                            )
+                            count += 1
+                            if limit is not None and count >= limit:
+                                return
+
                     try:
                         event = await asyncio.wait_for(queue.get(), timeout=15.0)
-                        if event.sequence in seen_sequences:
-                            continue
-                        seen_sequences.add(event.sequence)
+                    except asyncio.TimeoutError:
+                        # A dropped terminal tail may have no later publication
+                        # to expose the gap. Check storage before sending a ping.
+                        target_sequence = svc.get_latest_event_sequence(run_id)
+                        if target_sequence <= last_sequence:
+                            yield ServerSentEvent(comment="keepalive")
+                        continue
+                    if event.sequence <= last_sequence:
+                        continue
+                    target_sequence = event.sequence
+                    if event.sequence == last_sequence + 1:
+                        last_sequence = event.sequence
                         yield ServerSentEvent(
-                            id=str(event.sequence),
-                            event=event.event_type.value,
+                            id=str(event.sequence), event=event.event_type.value,
                             data=event.model_dump_json(),
                         )
                         count += 1
                         if limit is not None and count >= limit:
                             return
-                    except asyncio.TimeoutError:
-                        yield ServerSentEvent(comment="keepalive")
             finally:
                 await broadcaster.unsubscribe(run_id, queue)
 

@@ -2173,6 +2173,14 @@ capture_token: Optional[str] = None,
 
     # ---------------- Evidence Events ----------------
 
+    def get_latest_event_sequence(self, run_id: str) -> int:
+        """Return the durable tail without loading the run's event history."""
+        conn = self._get_conn()
+        try:
+            return ScopewatchRepository.get_latest_event_sequence(conn, run_id)
+        finally:
+            conn.close()
+
     def get_events(
         self,
         run_id: str,

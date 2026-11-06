@@ -752,6 +752,14 @@ class ScopewatchRepository:
         )
 
     @staticmethod
+    def get_latest_event_sequence(conn: sqlite3.Connection, run_id: str) -> int:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(sequence), 0) FROM evidence_events WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        return row[0]
+
+    @staticmethod
     def get_events(
         conn: sqlite3.Connection,
         run_id: str,
