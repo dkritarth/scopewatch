@@ -57,7 +57,9 @@ DB schema::
     chain = build_chain_from_events(run_id, exported_events)
     chain.export_jsonl("/tmp/run.jsonl")
 
-Then verify offline with ``scripts/verify_evidence_chain.py``.
+Then verify offline with ``scripts/verify_evidence_chain.py``. JSONL imports
+reject duplicate decoded field names before structural or hash validation;
+unique escaped names and valid Unicode retain their usual JSON meaning.
 """
 
 from __future__ import annotations
@@ -70,6 +72,17 @@ from typing import Any, Iterable, Mapping, Optional, Union
 
 
 GENESIS_HASH = "0" * 64
+
+
+def _unique_record_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguity before JSON decoding can discard a record field."""
+    record: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in record:
+            raise ValueError("Duplicate evidence record field")
+        record[name] = value
+    return record
+
 
 DECISION_EVENT_TYPES = frozenset(
     {
@@ -692,7 +705,7 @@ class EvidenceChain:
             if not line:
                 continue
             try:
-                decoded = json.loads(line)
+                decoded = json.loads(line, object_pairs_hook=_unique_record_fields)
             except RecursionError:
                 raise ValueError("JSONL nesting exceeds the supported depth") from None
             records.append(ChainRecord.from_dict(decoded))
