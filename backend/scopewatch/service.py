@@ -54,7 +54,8 @@ from scopewatch.provenance import (
     configured_capture_token,
     provenance_for_submission,
 )
-from scopewatch.providers.loader import get_auditor_profile
+from scopewatch.providers.loader import get_auditor_profile, get_profile
+from scopewatch.providers.profile import ProviderProfile
 from scopewatch.reasoning_audit import (
     AuditErrorCode,
     PlannedAction,
@@ -459,10 +460,29 @@ capture_token: Optional[str] = None,
             "Scripted (mock) scenarios are unaffected.",
         )
 
+    def _budget_profile_identity(self, requested: str, *, auditor: bool = False) -> tuple[str, bool]:
+        """Use the provider's counter name without constructing its client."""
+        try:
+            if auditor and self._auditor is not None:
+                injected = getattr(getattr(self._auditor, "provider", None), "profile", None)
+                if isinstance(injected, ProviderProfile):
+                    return injected.name, is_mock_profile(injected.name, injected.base_url)
+            profile = get_profile(requested)
+            # ReasoningAuditor looks up the resolved name once more when
+            # constructing its client. Match that actual entry's URL and
+            # counter, including aliases with divergent live/mock URLs.
+            if auditor and profile.name != "mock":
+                profile = get_profile(profile.name)
+        except Exception:
+            # Preserve existing unavailable-profile handling: auditor
+            # construction records FAILED/HOLD rather than failing here.
+            return requested, is_mock_profile(requested)
+        return profile.name, is_mock_profile(profile.name, profile.base_url)
+
     def _check_agent_token_budget(self) -> None:
         """Refuse new runs when the agent profile's daily budget is spent."""
-        profile = agent_profile_name()
-        if is_mock_profile(profile):
+        profile, scripted = self._budget_profile_identity(agent_profile_name())
+        if scripted:
             return
         budget = daily_token_budget_for(profile)
         if budget is None:
@@ -473,11 +493,13 @@ capture_token: Optional[str] = None,
 
     def _token_budget_snapshot(self) -> dict[str, Any]:
         """Counts-only budget snapshot for RUN_CREATED event details."""
-        profile = agent_profile_name()
-        budget = None if is_mock_profile(profile) else daily_token_budget_for(profile)
+        requested = agent_profile_name()
+        profile, scripted = self._budget_profile_identity(requested)
+        budget = None if scripted else daily_token_budget_for(profile)
         return {
-            "agent_profile": profile,
-            "used_today": 0 if is_mock_profile(profile) else self.tokens.used_today(profile),
+            "agent_profile": requested,
+            "budget_profile": profile,
+            "used_today": 0 if scripted else self.tokens.used_today(profile),
             "budget": budget,
         }
 
@@ -1070,10 +1092,10 @@ capture_token: Optional[str] = None,
                     # #77: check-then-reserve BEFORE spend. The auditor call
                     # below is the model spend; refuse here when the auditor
                     # profile's daily budget cannot cover an estimate.
-                    auditor_profile = auditor_profile_name()
+                    auditor_profile, scripted = self._budget_profile_identity(auditor_profile_name(), auditor=True)
                     reservation = None
                     from scopewatch.tiered_audit import routing_mode
-                    if routing_mode() == "single" and not is_mock_profile(auditor_profile):
+                    if routing_mode() == "single" and not scripted:
                         estimate = reserve_per_audit()
                         verdict, reservation = self.tokens.reserve(auditor_profile, estimate=estimate)
                         if not verdict.allowed:
