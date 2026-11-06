@@ -84,7 +84,7 @@ def _normalize_content(content: Any) -> Optional[str]:
     if isinstance(content, list):
         texts: list[str] = []
         for part in content:
-            if isinstance(part, dict):
+            if isinstance(part, dict) and part.get("type") == "text":
                 # OpenAI-style: {"type": "text", "text": "..."}
                 text = part.get("text")
                 if isinstance(text, str):
@@ -486,6 +486,14 @@ class ProviderClient:
         raw_content = message.get("content")
         if raw_content is not None and not isinstance(raw_content, (str, list)):
             raise malformed
+        if isinstance(raw_content, list):
+            for part in raw_content:
+                if not isinstance(part, dict) or not isinstance(part.get("type"), str) or not part["type"]:
+                    raise malformed
+                if part["type"] == "text" and not isinstance(part.get("text"), str):
+                    # Dropping a malformed part can turn a partial auditor
+                    # response into an apparently valid NO_CONCERN verdict.
+                    raise malformed
         content = _normalize_content(raw_content)
 
         # Tool calls: a non-list is malformed. Coercing it to [] would drop the

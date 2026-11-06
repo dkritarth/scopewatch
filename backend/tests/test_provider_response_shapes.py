@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import traceback
 from typing import Any
+from pathlib import Path
 
 import httpx
 import pytest
@@ -88,3 +89,70 @@ def test_malformed_shapes_raise_sanitized_malformed_response(message: dict[str, 
     with pytest.raises(ProviderError) as exc_info:
         client.complete([{"role": "user", "content": "hi"}])
     _assert_sanitized_malformed(exc_info)
+
+
+@pytest.mark.parametrize("part", [
+    {"type": "text", "text": {"verdict": MARKER}},
+    {"type": "text", "text": [MARKER]},
+    {"type": "text", "text": None},
+    {"type": "text"},
+    {"text": MARKER},
+    {"type": 3, "text": MARKER},
+    MARKER,
+])
+def test_malformed_part_cannot_be_discarded_after_valid_text(part):
+    with _client({"content": [{"type": "text", "text": "valid text"}, part]}) as client:
+        with pytest.raises(ProviderError) as exc_info:
+            client.complete([])
+    _assert_sanitized_malformed(exc_info)
+
+
+def test_nontext_part_does_not_contribute_incidental_text():
+    with _client({"content": [
+        {"type": "text", "text": "actual message"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/x.png"}, "text": MARKER},
+    ]}) as client:
+        assert client.complete([]).content == "actual message"
+
+
+def test_malformed_auditor_part_holds_action_before_execution(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    from scopewatch.db import init_db
+    from scopewatch.reasoning_audit import ReasoningAuditor
+    from scopewatch.schemas import SubmitActionRequest, TaskScope
+    from scopewatch.service import ScopewatchService
+
+    monkeypatch.setenv("SCOPEWATCH_REASONING_AUDIT", "true")
+    monkeypatch.setenv("SCOPEWATCH_AUDITOR_ROUTING", "single")
+    monkeypatch.setenv("SCOPEWATCH_AGENT_PROFILE", "mock")
+    monkeypatch.setenv("SCOPEWATCH_AUDITOR_PROFILE", "mock")
+    monkeypatch.setenv("SCOPEWATCH_EXECUTOR", "local")
+    database = tmp_path / "gateway.db"
+    init_db(database)
+    workspace = tmp_path / "workspace"
+    (workspace / "outputs").mkdir(parents=True)
+    clean = json.dumps({"verdict": "NO_CONCERN", "concern_type": None,
+                        "flagged_excerpts": [], "explanation": "clean"})
+    with _client({"content": [
+        {"type": "text", "text": clean},
+        {"type": "text", "text": {"verdict": MARKER}},
+    ]}) as client:
+        auditor = ReasoningAuditor(provider=client, profile="test-shapes", model="test-model")
+        service = ScopewatchService(db_path=database, workspace_root=workspace, auditor=auditor)
+        run, _ = service.create_run(name="Synthetic malformed auditor", task_scope=TaskScope(
+            task_description="Write a synthetic output", allowed_paths=["outputs"],
+            allowed_tools=["workspace"], allowed_operations=["write_text"],
+            created_at="2026-11-05T00:00:00Z"))
+        result = asyncio.run(service.submit_action(run.id, SubmitActionRequest(
+            tool="workspace", operation="write_text", resource="outputs/result.txt",
+            arguments={"content": "synthetic output"},
+            exposed_reasoning_trace="I will write the permitted output only.",
+            reasoning_provenance="SYNTHETIC_FIXTURE")))
+    assert result.reasoning_audit.verdict == "FAILED"
+    assert result.reasoning_audit.error_code == "MALFORMED_RESPONSE"
+    assert MARKER not in result.reasoning_audit.model_dump_json()
+    assert result.policy_decision.outcome == "HOLD"
+    assert result.approval_request is not None
+    assert result.execution_receipt is None
+    assert not (Path(run.workspace_path) / "outputs/result.txt").exists()
