@@ -15,34 +15,39 @@ class EventBroadcaster:
     """Manages active SSE subscriber queues per run."""
 
     def __init__(self) -> None:
-        self._subscribers: dict[str, set[asyncio.Queue]] = defaultdict(set)
+        self._subscribers: dict[str, dict[asyncio.Queue, asyncio.AbstractEventLoop]] = defaultdict(dict)
         self._lock = threading.Lock()
 
     async def subscribe(self, run_id: str) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        loop = asyncio.get_running_loop()
         with self._lock:
-            self._subscribers[run_id].add(queue)
+            self._subscribers[run_id][queue] = loop
         return queue
 
     async def unsubscribe(self, run_id: str, queue: asyncio.Queue) -> None:
         with self._lock:
             if run_id in self._subscribers:
-                self._subscribers[run_id].discard(queue)
+                self._subscribers[run_id].pop(queue, None)
                 if not self._subscribers[run_id]:
                     del self._subscribers[run_id]
 
     def publish_sync(self, run_id: str, event: EvidenceEvent) -> None:
         with self._lock:
-            queues = list(self._subscribers.get(run_id, []))
-        for q in queues:
+            subscribers = list(self._subscribers.get(run_id, {}).items())
+
+        def deliver(queue: asyncio.Queue) -> None:
             try:
-                loop = getattr(q, "_loop", None)
-                if loop and loop.is_running():
-                    loop.call_soon_threadsafe(q.put_nowait, event)
-                else:
-                    q.put_nowait(event)
+                queue.put_nowait(event)
             except asyncio.QueueFull:
                 logger.warning("Subscriber queue full for run %s; dropping event %d", run_id, event.sequence)
+
+        for queue, loop in subscribers:
+            try:
+                # Queue._loop binds lazily. Capture ownership at subscribe
+                # time instead, and always wake its loop from worker threads.
+                if loop.is_running():
+                    loop.call_soon_threadsafe(deliver, queue)
             except Exception as exc:
                 logger.warning("Failed to publish event %d for run %s: %s", event.sequence, run_id, exc)
 
