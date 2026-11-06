@@ -114,7 +114,8 @@ function nodesFor(action, index) {
   } else if (!audit) {
     nodes.push({ kind: "skip", s: "NO AUDIT", x: "none recorded" });
   } else if (audit.verdict === "CONCERN") {
-    nodes.push({ kind: "hold", s: "CONCERN", x: `${audit.concern_type}, escalates ALLOW → HOLD` });
+    const effect = det.outcome === "ALLOW" ? "escalates ALLOW → HOLD" : "policy already HOLD; no escalation";
+    nodes.push({ kind: "hold", s: "CONCERN", x: `${audit.concern_type}, ${effect}` });
   } else if (audit.verdict === "NO_CONCERN") {
     nodes.push({ kind: "allow", s: "NO CONCERN", x: "no escalation" });
   } else {
@@ -372,7 +373,11 @@ function renderEvidence() {
   if (reached >= 2) {
     const audit = action.audit;
     if (!audit) {
-      blocks.push(section("Reasoning audit", pill("NOT REACHED", "muted", "no-dot"), el("p", { class: "muted", style: "font-size:14px", text: "Policy denied this action, so it never reached the auditor. A deterministic DENY is final and no model output can change it." })));
+      const denied = action.deterministic_policy.outcome === "DENY";
+      const explanation = denied
+        ? "Policy denied this action, so it never reached the auditor. A deterministic DENY is final and no model output can change it."
+        : "No reasoning audit was recorded for this action.";
+      blocks.push(section("Reasoning audit", pill(denied ? "NOT REACHED" : "NO AUDIT", "muted", "no-dot"), el("p", { class: "muted", style: "font-size:14px", text: explanation })));
     } else {
       blocks.push(
         section(
