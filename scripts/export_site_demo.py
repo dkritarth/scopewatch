@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import json
 import shutil
 import sqlite3
@@ -43,8 +44,15 @@ def _load(raw: str | None) -> object:
 
 
 def export(db_path: Path) -> dict:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        # SELECT cursors alone can release their implicit snapshots between
+        # rows. Keep all evidence reads in one committed database snapshot.
+        conn.execute("BEGIN")
+        return _export_snapshot(conn)
+
+
+def _export_snapshot(conn: sqlite3.Connection) -> dict:
     scenario_files = sorted((REPO_ROOT / "demo" / "scenarios").glob("0[1-6]_*.json"))
     by_name = {}
     for path in scenario_files:
