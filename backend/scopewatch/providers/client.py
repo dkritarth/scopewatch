@@ -1,4 +1,8 @@
-"""OpenAI-compatible chat completion provider client with normalized reasoning extraction."""
+"""OpenAI-compatible chat completion provider client with normalized reasoning extraction.
+
+Responses with duplicate decoded JSON member names fail as MALFORMED_RESPONSE
+before content validation or token metering can discard conflicting evidence.
+"""
 
 from collections.abc import Callable
 import logging
@@ -66,6 +70,16 @@ class ReasoningExtraction(NamedTuple):
     text: Optional[str]
     provenance: str
     detail_type: Optional[str] = None
+
+
+def _unique_response_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguity before decoding can discard content or usage evidence."""
+    result: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in result:
+            raise ValueError("Duplicate provider response member")
+        result[name] = value
+    return result
 
 
 def _normalize_content(content: Any) -> Optional[str]:
@@ -356,7 +370,7 @@ class ProviderClient:
 
                 if response.status_code == 200:
                     try:
-                        data = response.json()
+                        data = response.json(object_pairs_hook=_unique_response_members)
                     except Exception:
                         raise ProviderError(
                             ProviderErrorCode.MALFORMED_RESPONSE,
