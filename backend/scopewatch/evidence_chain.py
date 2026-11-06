@@ -193,6 +193,11 @@ class ChainRecord:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ChainRecord":
+        if not isinstance(data, Mapping):
+            raise ValueError("Evidence record must be an object")
+        allowed = {"seq", "run_id", "event_type", "action_id", "payload_digest", "prev_hash", "record_hash"}
+        if data.keys() - allowed:
+            raise ValueError("Unknown evidence record fields")
         # Coercion would verify different content from the exported JSON.
         # In particular, int(1.9) and int(True) both hide sequence tampering.
         if type(data["seq"]) is not int:
@@ -202,6 +207,13 @@ class ChainRecord:
                 raise ValueError(f"{field} must be a string")
         if data.get("action_id") is not None and not isinstance(data["action_id"], str):
             raise ValueError("action_id must be a string or null")
+        for field in allowed - {"seq"}:
+            value = data.get(field)
+            if isinstance(value, str):
+                try:
+                    value.encode("utf-8")
+                except UnicodeEncodeError:
+                    raise ValueError(f"{field} must contain valid Unicode") from None
         return cls(
             seq=data["seq"],
             run_id=data["run_id"],
@@ -679,7 +691,11 @@ class EvidenceChain:
             line = line.strip()
             if not line:
                 continue
-            records.append(ChainRecord.from_dict(json.loads(line)))
+            try:
+                decoded = json.loads(line)
+            except RecursionError:
+                raise ValueError("JSONL nesting exceeds the supported depth") from None
+            records.append(ChainRecord.from_dict(decoded))
         inferred = run_id or (records[0].run_id if records else "")
         return cls(run_id=inferred, records=records)
 
