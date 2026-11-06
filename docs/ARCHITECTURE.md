@@ -81,6 +81,12 @@ Key endpoints:
 - `POST /api/v1/runs/{run_id}/actions/preview`: Side-effect-free dry run of the deterministic policy for a would-be action. Returns the same `PolicyDecision` submission would reach, with no action, decision, approval, or receipt record, no event, no demo-budget spend, and no execution. Audit-dependent escalation is out of scope by design, so a preview `ALLOW` stays provisional (issue #122).
 - `GET /api/v1/runs/{run_id}/events`: Return the stored event list as JSON (`backend/scopewatch/app.py:221`).
 - `GET /api/v1/runs/{run_id}/events/stream`: Subscribe to live SSE events for a run (`backend/scopewatch/app.py:231`). Accepts `Last-Event-ID` or `?after_sequence=` query parameter; subscribes to future broadcast queues before querying stored events to ensure gap-free continuous delivery (issues #112, #113).
+  Event cursors and limits must fit SQLite's signed 64-bit integer range.
+  SSE validates the effective cursor before sending headers. An ASCII decimal
+  `Last-Event-ID` takes precedence over the query cursor; malformed headers
+  fall back to the query. Overflow returns the sanitized JSON 422 envelope.
+  Leading zeros are accepted. Existing zero and negative query semantics
+  remain unchanged.
 - `GET /api/v1/approvals`: List pending, approved, or denied human review requests.
 - `POST /api/v1/approvals/{approval_id}/approve`: Single-use endpoint to authorize an action on hold.
 - `POST /api/v1/approvals/{approval_id}/deny`: Reject an action on hold.
