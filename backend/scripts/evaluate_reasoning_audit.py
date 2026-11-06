@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import random
@@ -574,35 +575,65 @@ def verify_evaluation_report(
         results = []
 
     seen_ids: set[str] = set()
+    valid_rows = True
     for idx, rec in enumerate(results):
         where = f"results[{idx}]"
         if not isinstance(rec, dict):
             errors.append(f"{where} is not an object")
+            valid_rows = False
             continue
         for field in REQUIRED_RESULT_FIELDS:
             if field not in rec:
                 errors.append(f"{where} missing field: {field}")
+                valid_rows = False
         for forbidden in FORBIDDEN_RESULT_KEYS:
             if forbidden in rec:
                 errors.append(f"{where} leaks forbidden key: {forbidden}")
         cid = rec.get("case_id")
-        if cid in seen_ids:
-            errors.append(f"{where} duplicate case_id: {cid!r}")
-        seen_ids.add(cid)
-        if rec.get("category") not in KNOWN_CATEGORIES:
-            errors.append(f"{where} unknown category: {rec.get('category')!r}")
-        if rec.get("expected_verdict") not in EXPECTED_VERDICTS:
-            errors.append(f"{where} bad expected_verdict: {rec.get('expected_verdict')!r}")
-        if rec.get("actual_verdict") not in ACTUAL_VERDICTS:
-            errors.append(f"{where} bad actual_verdict: {rec.get('actual_verdict')!r}")
+        if not isinstance(cid, str):
+            errors.append(f"{where}.case_id must be a string")
+            valid_rows = False
+        else:
+            if cid in seen_ids:
+                errors.append(f"{where} duplicate case_id: {cid!r}")
+            seen_ids.add(cid)
+        for field, allowed in (("category", KNOWN_CATEGORIES),
+                               ("expected_verdict", EXPECTED_VERDICTS),
+                               ("actual_verdict", ACTUAL_VERDICTS)):
+            value = rec.get(field)
+            if not isinstance(value, str) or value not in allowed:
+                label = "unknown category" if field == "category" else f"bad {field}"
+                errors.append(f"{where} {label}")
+                valid_rows = False
         if "match" in rec and not isinstance(rec["match"], bool):
             errors.append(f"{where} match is not a boolean")
+            valid_rows = False
+        elif "match" in rec and rec["match"] != (rec.get("expected_verdict") == rec.get("actual_verdict")):
+            errors.append(f"{where}.match disagrees with recorded verdicts")
+            valid_rows = False
+        latency = rec.get("latency_ms")
+        valid_latency = type(latency) in (int, float) and latency >= 0
+        if valid_latency:
+            try:
+                valid_latency = math.isfinite(latency)
+            except OverflowError:
+                valid_latency = False
+        if not valid_latency:
+            errors.append(f"{where}.latency_ms must be a finite nonnegative number")
+            valid_rows = False
+        for field in ("prompt_tokens", "completion_tokens", "total_tokens", "flagged_excerpts_count"):
+            value = rec.get(field)
+            if value is None and field != "flagged_excerpts_count":
+                continue  # Unavailable provider usage is not measured zero.
+            if type(value) is not int or value < 0:
+                errors.append(f"{where}.{field} must be a nonnegative integer")
+                valid_rows = False
 
     # Never trust totals: recompute from per-case results.
     summary = report.get("summary_metrics")
     if not isinstance(summary, dict):
         errors.append("summary_metrics block missing or not an object")
-    else:
+    elif valid_rows:
         try:
             recomputed = compute_metrics([r for r in results if isinstance(r, dict)])
         except Exception as exc:  # fail closed: unrecomputable totals do not verify
@@ -711,7 +742,7 @@ def verify_evaluation_report(
                     if set(expected) != seen_ids:
                         errors.append("result case_id coverage does not match pinned dataset")
                     for idx, rec in enumerate(results):
-                        if not isinstance(rec, dict):
+                        if not isinstance(rec, dict) or not isinstance(rec.get("case_id"), str):
                             continue
                         case = expected.get(rec.get("case_id"))
                         if case is None:
