@@ -137,7 +137,7 @@ def validate_auth_configuration(env: Mapping[str, str] | None = None) -> None:
     agent_creds = [c for c in (demo_tok, agent_k) if c]
     if rev_tok:
         for a in agent_creds:
-            if hmac.compare_digest(a, rev_tok):
+            if hmac.compare_digest(a.encode("utf-8"), rev_tok.encode("utf-8")):
                 raise ValueError(
                     "Invalid authentication configuration: Agent credential and "
                     "reviewer credential must be distinct."

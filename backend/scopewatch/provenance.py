@@ -60,7 +60,7 @@ def capture_credential_verified(
     offered = (provided or "").strip()
     if not expected or not offered:
         return False
-    return hmac.compare_digest(expected, offered)
+    return hmac.compare_digest(expected.encode("utf-8"), offered.encode("utf-8"))
 
 
 def provenance_for_submission(

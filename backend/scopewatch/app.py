@@ -194,7 +194,7 @@ def create_app(
     demo_tok = os.environ.get("DEMO_TOKEN", "").strip()
     if active_rev:
         for a in (demo_tok, active_agent):
-            if a and hmac.compare_digest(a, active_rev):
+            if a and hmac.compare_digest(a.encode("utf-8"), active_rev.encode("utf-8")):
                 raise ValueError(
                     "Invalid authentication configuration: Agent credential and "
                     "reviewer credential must be distinct."
@@ -216,7 +216,7 @@ def create_app(
         c_demo = os.environ.get("DEMO_TOKEN", "").strip()
         if c_rev:
             for a in (c_demo, c_agent):
-                if a and hmac.compare_digest(a, c_rev):
+                if a and hmac.compare_digest(a.encode("utf-8"), c_rev.encode("utf-8")):
                     raise ValueError(
                         "Invalid authentication configuration: Agent credential and "
                         "reviewer credential must be distinct."
