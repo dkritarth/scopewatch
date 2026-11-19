@@ -2,15 +2,15 @@
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 import httpx
 import pytest
 
-from scopewatch.agent.loop import AgentLoop, AgentRunResult, sanitize_failure_reason
+from scopewatch.agent.loop import AgentLoop, sanitize_failure_reason
 from scopewatch.agent.tools import GatewayDispatcher
 from scopewatch.app import create_app
-from scopewatch.models import EventType, PolicyOutcome, ReasoningProvenance, RunStatus
+from scopewatch.models import EventType, PolicyOutcome, ReasoningProvenance
 from scopewatch.providers.client import ChatResult, MockProviderClient
 from scopewatch.providers.errors import ProviderError, ProviderErrorCode
 

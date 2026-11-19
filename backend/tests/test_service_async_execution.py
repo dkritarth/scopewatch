@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from scopewatch.db import init_db
-from scopewatch.models import PolicyOutcome, ExecutionStatus, ApprovalStatus
+from scopewatch.models import PolicyOutcome, ExecutionStatus
 from scopewatch.schemas import TaskScope, SubmitActionRequest
 from scopewatch.service import ScopewatchService
 import scopewatch.service as service_mod

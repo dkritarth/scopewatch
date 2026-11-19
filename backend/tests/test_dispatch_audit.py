@@ -11,9 +11,6 @@ import json
 from pathlib import Path
 import sqlite3
 import threading
-import time
-from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,14 +21,11 @@ from scopewatch.models import (
     ExecutionStatus,
     PolicyOutcome,
     ReasonCode,
-    RunStatus,
 )
 from scopewatch.reasoning_audit import (
     AuditorChatResponse,
     MockAuditorProvider,
     ReasoningAuditor,
-    ReasoningAuditResult,
-    ReasoningAuditVerdict,
 )
 from scopewatch.repository import ScopewatchRepository
 from scopewatch.schemas import SubmitActionRequest, TaskScope
@@ -151,7 +145,6 @@ async def test_issue_110_reject_action_when_run_completes_during_audit(service_e
 async def test_issue_109_persist_decisions_and_events_before_effect(service_env, monkeypatch):
     service: ScopewatchService = service_env["service"]
     run = service_env["run"]
-    workspace_dir: Path = service_env["workspace_dir"]
     db_file: Path = service_env["db_file"]
 
     # Provide a simple clean auditor

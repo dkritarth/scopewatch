@@ -2,7 +2,6 @@
 
 import asyncio
 from datetime import datetime, timezone, timedelta
-import hashlib
 from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import MagicMock, patch
@@ -16,22 +15,17 @@ from scopewatch.models import (
     ExecutionStatus,
     PolicyOutcome,
     ReasonCode,
-    ReasoningProvenance,
-    RunStatus,
 )
 from scopewatch.reasoning_audit import (
-    AuditConcernType,
     AuditErrorCode,
     MockAuditorProvider,
     ReasoningAuditor,
-    ReasoningAuditResult,
     ReasoningAuditVerdict,
 )
 from scopewatch.repository import ScopewatchRepository
 from scopewatch.schemas import (
     ActionRequest,
     ApprovalRequest,
-    EvidenceEvent,
     SubmitActionRequest,
     TaskScope,
 )

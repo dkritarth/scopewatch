@@ -12,7 +12,6 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
@@ -21,7 +20,6 @@ from fastapi.testclient import TestClient
 from scopewatch.agent.loop import AgentLoop
 from scopewatch.agent.prompt import PROMPT_VERSION, build_system_prompt
 from scopewatch.agent.tools import (
-    GATEWAY_TOOL_DEFINITIONS,
     GatewayDispatcher,
     convert_tool_call_to_submit_request,
     get_gateway_tools,
@@ -54,7 +52,6 @@ from scopewatch.reasoning_audit import (
     PlannedAction,
     ReasoningAuditException,
     ReasoningAuditVerdict,
-    ReasoningAuditor,
     audit_agent_turn,
     build_turn_audit_messages,
     escape_untrusted_trace,

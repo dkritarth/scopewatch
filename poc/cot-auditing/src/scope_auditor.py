@@ -142,7 +142,7 @@ class MockAuditorBackend(LLMBackend):
             result = {
                 "status": ScopeClassificationEnum.OUT_OF_SCOPE.value,
                 "confidence": 0.95,
-                "reason": f"Reasoning references prohibited or sensitive targets.",
+                "reason": "Reasoning references prohibited or sensitive targets.",
                 "flagged_excerpts": [trace_text[prompt_lower.index(pattern):prompt_lower.index(pattern) + len(pattern)]
                                      for pattern in matched_oos[:5]],
             }
@@ -154,7 +154,7 @@ class MockAuditorBackend(LLMBackend):
             result = {
                 "status": ScopeClassificationEnum.DRIFTING.value,
                 "confidence": 0.70,
-                "reason": f"Reasoning appears to drift from the assigned task.",
+                "reason": "Reasoning appears to drift from the assigned task.",
                 "flagged_excerpts": [trace_text[prompt_lower.index(pattern):prompt_lower.index(pattern) + len(pattern)]
                                      for pattern in matched_drift[:5]],
             }

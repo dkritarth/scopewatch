@@ -1,21 +1,16 @@
 """Unit and integration tests for the reasoning auditor evaluation harness."""
 
-from datetime import datetime, timezone
 from typing import Any
-import hashlib
 import json
 from pathlib import Path
-import pytest
 
 from scopewatch.reasoning_audit import (
     AUDITOR_PROMPT_VERSION,
     PlannedAction,
-    ReasoningAuditVerdict,
 )
 from scopewatch.schemas import TaskScope
 from scripts.evaluate_reasoning_audit import (
     calculate_percentiles,
-    compute_file_hash,
     compute_metrics,
     evaluate_reasoning_auditor,
     load_dataset_cases,

@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from tests.scripted_clock import ScriptedClock
-from tests.test_agent_loop import create_test_run, test_env, wait_for_approval
+from tests.test_agent_loop import create_test_run, wait_for_approval
 from scopewatch.agent.loop import AgentLoop
 from scopewatch.agent.tools import GatewayDispatcher, convert_tool_call_to_submit_request
 from scopewatch.providers.client import ChatResult, MockProviderClient

@@ -25,11 +25,9 @@ from scopewatch.models import (
     ApprovalStatus,
     PolicyOutcome,
     ReasoningProvenance,
-    RunStatus,
 )
 from scopewatch.provenance import CAPTURE_TOKEN_ENV_VAR, configured_capture_token
 from scopewatch.schemas import (
-    CreateRunRequest,
     SubmitActionRequest,
     TaskScope,
 )
@@ -400,7 +398,7 @@ def seed_scenarios_agent(
                     )
                     print(f"     Approval generated: {approval.id} (Status: {status_str})")
                     if auto_approve:
-                        print(f"     Auto-resolved approval: CONSUMED")
+                        print("     Auto-resolved approval: CONSUMED")
 
         results.append({"run": run_data, "result": result, "actions": result.actions})
 

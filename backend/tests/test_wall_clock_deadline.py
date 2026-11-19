@@ -26,7 +26,7 @@ from scopewatch.providers.profile import ProviderProfile
 from scopewatch.providers.client import ChatResult, ProviderClient
 from scopewatch.providers.errors import ProviderError, ProviderErrorCode
 from tests.scripted_clock import ScriptedClock
-from tests.test_agent_loop import create_test_run, test_env
+from tests.test_agent_loop import create_test_run
 
 
 def test_final_response_without_tools_after_deadline_fails(test_env: dict[str, Any]) -> None:

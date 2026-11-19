@@ -30,7 +30,6 @@ from scopewatch.acp_adapter import (
 )
 from scopewatch.app import create_app
 from scopewatch.models import (
-    ApprovalStatus,
     PolicyOutcome,
     ReasonCode,
     ReasoningProvenance,

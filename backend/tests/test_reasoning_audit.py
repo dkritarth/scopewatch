@@ -18,16 +18,12 @@ from scopewatch.providers import (
 )
 from scopewatch.schemas import TaskScope
 from scopewatch.reasoning_audit import (
-    DEFAULT_MAX_RECENT_ACTIONS,
-    DEFAULT_MAX_TRACE_CHARS,
     TRUNCATION_MARKER,
     AuditConcernType,
     AuditErrorCode,
-    AuditorChatResponse,
     MockAuditorProvider,
     PlannedAction,
     ReasoningAuditException,
-    ReasoningAuditResult,
     ReasoningAuditVerdict,
     ReasoningAuditor,
     RecentActionSummary,

@@ -4,15 +4,12 @@ import unittest
 from src.diagnostics import AuditError, AuditErrorCode
 from src.hardened_prompt import (
     HARDENED_AUDITOR_INSTRUCTIONS,
-    ContextExtractor,
-    ExtractedTraceContext,
     build_hardened_messages,
     extract_reasoning_context,
     parse_auditor_response,
 )
 from src.models import (
     ReasoningTrace,
-    ScopeClassification,
     ScopeClassificationEnum,
     TaskScope,
     TraceType,

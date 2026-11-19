@@ -2,10 +2,8 @@
 
 import asyncio
 from collections import defaultdict
-import json
 import logging
 import threading
-from typing import AsyncGenerator, Optional
 from scopewatch.schemas import EvidenceEvent
 
 logger = logging.getLogger("scopewatch.events")

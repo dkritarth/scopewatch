@@ -1,15 +1,11 @@
 """Tests for API authentication, reviewer credential separation, CORS, and security headers (issue #185)."""
 
-import json
 from pathlib import Path
-from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
 from scopewatch.app import create_app
 from scopewatch.config import (
-    CORS_ALLOW_CREDENTIALS,
-    CORS_ALLOW_ORIGINS,
     DEMO_REVIEWER_ID,
     MAX_READ_BYTES,
     MAX_WRITE_BYTES,
@@ -22,18 +18,13 @@ from scopewatch.config import (
     get_reviewer_token,
     validate_auth_configuration,
 )
-from scopewatch.db import get_connection, init_db
+from scopewatch.db import get_connection
 from scopewatch.models import (
-    ApprovalStatus,
     EventType,
     ExecutionStatus,
-    PolicyOutcome,
-    ReasonCode,
-    ReasoningProvenance,
-    RunStatus,
 )
 from scopewatch.repository import ScopewatchRepository
-from scopewatch.schemas import ApprovalRequest, CreateRunRequest, TaskScope, ExecutionReceipt
+from scopewatch.schemas import ExecutionReceipt
 
 
 @pytest.fixture

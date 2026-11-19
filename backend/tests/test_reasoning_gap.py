@@ -6,7 +6,6 @@ import asyncio
 import os
 from unittest.mock import patch
 
-import pytest
 
 from scopewatch.agent.prompt import PROMPT_VERSION, build_system_prompt
 from scopewatch.agent.tools import convert_tool_call_to_submit_request

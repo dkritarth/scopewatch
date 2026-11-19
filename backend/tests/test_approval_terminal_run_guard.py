@@ -17,7 +17,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from scopewatch.app import create_app
 from scopewatch.db import get_connection, init_db
 from scopewatch.errors import ScopewatchAPIError
 from scopewatch.models import (
@@ -33,53 +35,10 @@ from scopewatch.service import ScopewatchService
 NOW = datetime.now(timezone.utc).isoformat()
 
 
-@pytest.fixture
-def svc_env(tmp_path: Path):
-    db_file = tmp_path / "pr67.db"
-    ws = tmp_path / "workspace"
-    (ws / "invoices" / "approved").mkdir(parents=True)
-    (ws / "invoices" / "private").mkdir(parents=True)
-    (ws / "outputs").mkdir(parents=True)
-    (ws / "invoices" / "approved" / "vendor-a.txt").write_text(
-        "Vendor A Invoice: $1000", encoding="utf-8"
-    )
-    (ws / "invoices" / "private" / "salaries.txt").write_text(
-        "Executive Salaries: Confidential", encoding="utf-8"
-    )
-    (ws / "outputs" / "old.txt").write_text("old data", encoding="utf-8")
-    init_db(db_file)
-    service = ScopewatchService(db_path=db_file, workspace_root=ws)
-    scope = TaskScope(
-        schema_version="1",
-        task_description="Audit approved invoices and produce outputs",
-        allowed_paths=["invoices/approved", "outputs"],
-        blocked_paths=["invoices/private"],
-        allowed_tools=["workspace"],
-        allowed_operations=["read_text", "write_text", "delete_path"],
-        allowed_network_destinations=[],
-        requires_approval=["delete_path"],
-        created_at=NOW,
-    )
-    run, _ = service.create_run(name="PR67 Service Run", task_scope=scope)
-    return {"service": service, "run": run, "workspace": ws, "db_file": db_file}
-
-
-def _submit_hold(svc_env: dict, resource: str = "outputs/old.txt"):
-    service: ScopewatchService = svc_env["service"]
-    run = svc_env["run"]
-    res = asyncio.run(
-        service.submit_action(
-            run.id,
-            SubmitActionRequest(
-                tool="workspace", operation="delete_path", resource=resource
-            ),
-        )
-    )
-    assert res.policy_decision.outcome == PolicyOutcome.HOLD
-    assert res.approval_request is not None
-    assert res.approval_request.status == ApprovalStatus.PENDING
-    assert res.execution_receipt is None
-    return res
+# ``svc_env`` and ``_submit_hold`` are defined once, in the second-round
+# section below, which re-declared them after this file was extended. The
+# earlier copies here were dead: module-level rebinding meant every test in
+# this file resolved to the later definitions.
 
 
 def _fail_if_executed(*args, **kwargs):
@@ -587,27 +546,6 @@ smoke test, API-level getters after rejection, and resolved_by attribution.
 No network, no docker. Service tests use the svc_env fixture style from
 test_bypass.py; HTTP tests use TestClient with raise_server_exceptions=False.
 """
-
-import asyncio
-import threading
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-
-import pytest
-from fastapi.testclient import TestClient
-
-from scopewatch.app import create_app
-from scopewatch.db import get_connection, init_db
-from scopewatch.errors import ScopewatchAPIError
-from scopewatch.models import (
-    ApprovalStatus,
-    ExecutionStatus,
-    PolicyOutcome,
-    RunStatus,
-)
-from scopewatch.repository import ScopewatchRepository
-from scopewatch.schemas import ApprovalRequest, SubmitActionRequest, TaskScope
-from scopewatch.service import ScopewatchService
 
 NOW = datetime.now(timezone.utc).isoformat()
 
