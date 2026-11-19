@@ -215,3 +215,28 @@ def test_hash_tampering_precedes_unknown_event_validation() -> None:
     result = EvidenceChain(chain.run_id, records).verify()
     assert result.code == "BAD_HASH"
     assert result.first_bad_seq == 1
+
+
+@pytest.mark.parametrize("result", ["WORKSPACE_PRUNED", "WORKSPACE_PRUNE_FAILED"])
+def test_retention_result_requires_prior_attempt(result: str) -> None:
+    """Retention records attempt evidence before any effect; a result alone is forged."""
+    chain = _chain(("RUN_CREATED", None), ("RUN_COMPLETED", None), (result, None))
+    _assert_ordering_violation(chain, 3)
+
+
+@pytest.mark.parametrize("result", ["WORKSPACE_PRUNED", "WORKSPACE_PRUNE_FAILED"])
+def test_retention_result_cannot_be_recorded_twice_for_one_attempt(result: str) -> None:
+    chain = _chain(
+        ("RUN_CREATED", None), ("RUN_COMPLETED", None),
+        ("WORKSPACE_PRUNE_ATTEMPTED", None), (result, None), (result, None),
+    )
+    _assert_ordering_violation(chain, 5)
+
+
+def test_retention_attempt_then_result_and_crashed_attempt_still_verify() -> None:
+    chain = _chain(
+        ("RUN_CREATED", None), ("RUN_COMPLETED", None),
+        ("WORKSPACE_PRUNE_ATTEMPTED", None),  # crash: no result
+        ("WORKSPACE_PRUNE_ATTEMPTED", None), ("WORKSPACE_PRUNED", None),
+    )
+    assert chain.verify().ok
