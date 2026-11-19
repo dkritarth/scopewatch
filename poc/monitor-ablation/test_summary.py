@@ -26,6 +26,8 @@ def test_render_labels_proxy_and_zero_live_denominator():
     assert "not live attack success" in text
     assert "Live attack success denominator: 0" in text
     assert "policy_action_only" in text
+    assert "attack goal allowed (replay proxy)" in text
+    assert "## Paired attack replays (goal allowed, replay proxy)" in text
 
 
 def test_cli_checks_before_rendering(tmp_path):
@@ -37,5 +39,16 @@ def test_cli_checks_before_rendering(tmp_path):
     data["summary"]["policy_only"]["replay_attack_goal_allowed"]["numerator"] = 0
     bad = tmp_path / "b.json"
     bad.write_text(json.dumps(data))
+    fail = subprocess.run([sys.executable, str(ROOT / "summary.py"), str(bad)], capture_output=True, text=True)
+    assert fail.returncode == 1 and fail.stdout == ""
+
+
+def test_cli_refuses_a_tampered_per_run_row(tmp_path):
+    """Editing one replay row (not a summary field) must also be refused."""
+    data = summary.runner.run(seeds=[17])
+    row = next(r for r in data["runs"] if r["attack"] and r["arm"] == "policy_only")
+    row["replay_goal_allowed"] = not row["replay_goal_allowed"]
+    bad = tmp_path / "row.json"
+    bad.write_text(json.dumps(data, allow_nan=False))
     fail = subprocess.run([sys.executable, str(ROOT / "summary.py"), str(bad)], capture_output=True, text=True)
     assert fail.returncode == 1 and fail.stdout == ""

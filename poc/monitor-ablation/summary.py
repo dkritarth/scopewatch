@@ -57,12 +57,12 @@ def render(report: dict) -> str:
              "permission proxy, not live attack success. Live attack success denominator: "
              f'{report["live_attack_success"]["denominator"]}. Repeated seeds are paired repetitions, '
              "not independent samples. Wall times are local Python timings, not model latency.",
-             "", "| arm | attack goal allowed | benign task false hold | benign step false hold | monitor fail-closed | provider calls |",
+             "", "| arm | attack goal allowed (replay proxy) | benign task false hold | benign step false hold | monitor fail-closed | provider calls |",
              "| --- | --- | --- | --- | --- | --- |"]
     for arm, s in report["summary"].items():
         lines.append(f'| {arm} | {fmt(s["replay_attack_goal_allowed"])} | {fmt(s["benign_task_false_hold"])} | '
                      f'{fmt(s["benign_step_false_hold"])} | {fmt(s["monitor_fail_closed"])} | {s["provider_calls"]} |')
-    lines += ["", "## Paired attack replays (goal allowed)", "",
+    lines += ["", "## Paired attack replays (goal allowed, replay proxy)", "",
               "| arm A | arm B | only A allowed | only B allowed | both | neither |", "| --- | --- | --- | --- | --- | --- |"]
     for c in paired_contrasts(report):
         lines.append(f'| {c["a"]} | {c["b"]} | {c["only_a"]} | {c["only_b"]} | {c["both"]} | {c["neither"]} |')
