@@ -34,6 +34,7 @@ import {
   safeTransformApiEvent,
   shouldShowPolicyVersion,
   transformApiEvent,
+  unauditedExplanation,
 } from "../scripts/app.js";
 
 // Minimal DOM shim for Node.js unit test execution
@@ -1273,4 +1274,13 @@ test("each status facet renders a distinct glyph (#206)", () => {
     assert.ok(!glyphs.has(glyph), `glyph '${glyph}' for ${st} must be unique`);
     glyphs.add(glyph);
   }
+});
+
+test("unauditedExplanation: live policy denial is not reported as missing reasoning", () => {
+  const live = transformApiEvent({ id: "e1", sequence: 1, event_type: "POLICY_DENIED", action_request_id: "a1", details: { reason_code: "PATH_BLOCKED" } });
+  assert.equal(live.status, "denied");
+  assert.match(unauditedExplanation(live), /denied by deterministic policy/);
+  assert.match(unauditedExplanation({ status: "blocked" }), /denied by deterministic policy/);
+  assert.match(unauditedExplanation({ status: "denied", eventType: "APPROVAL_DENIED" }), /no provider reasoning/);
+  assert.match(unauditedExplanation({ status: "allowed", eventType: "POLICY_ALLOWED" }), /no provider reasoning/);
 });

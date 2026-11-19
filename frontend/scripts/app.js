@@ -1040,10 +1040,8 @@ function renderEvidence() {
     expP.className = "audit-explanation";
     if (isAuditDisabled) {
       expP.textContent = "Reasoning audit is disabled by operator configuration.";
-    } else if (event.status === "blocked") {
-      expP.textContent = "Audit skipped: action was denied by deterministic policy prior to evaluation.";
     } else {
-      expP.textContent = "Audit skipped: no provider reasoning trace or agent summary was available to evaluate.";
+      expP.textContent = unauditedExplanation(event);
     }
     auditCard.append(expP);
 
@@ -1167,6 +1165,20 @@ function timelineButton(event, run) {
     renderEvidence();
   });
   return button;
+}
+
+/**
+ * Explain why an event carries no reasoning audit. Live policy denials arrive
+ * as status "denied" (fixtures use "blocked"); both skip the audit because the
+ * deterministic policy already decided. Reviewer denials are not policy denials.
+ */
+export function unauditedExplanation(event) {
+  const policyDenied = event?.eventType === "POLICY_DENIED"
+    || (!event?.eventType && (event?.status === "blocked" || event?.status === "denied"));
+  if (policyDenied) {
+    return "Audit skipped: action was denied by deterministic policy prior to evaluation.";
+  }
+  return "Audit skipped: no provider reasoning trace or agent summary was available to evaluate.";
 }
 
 export function reviewCounts(events = []) {
