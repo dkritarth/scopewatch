@@ -1,10 +1,13 @@
 """SQLite database initialization and connection management."""
 
+import logging
 import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -210,7 +213,13 @@ def init_db(db_path: Path | str) -> None:
                 " ON policy_decisions(action_request_id)"
             )
         except sqlite3.IntegrityError:
-            pass
+            # Visible, not silent: the store holds duplicate decisions and
+            # runs without the one-decision-per-action guard.
+            logger.warning(
+                "policy_decisions already holds more than one decision for an "
+                "action; the uniqueness guard was not added. Existing rows are "
+                "left unchanged."
+            )
 
         cur = conn.execute("SELECT version FROM schema_version WHERE version = 1")
         if cur.fetchone() is None:

@@ -66,3 +66,29 @@ def test_second_decision_for_same_action_is_rejected(conn):
     stored = ScopewatchRepository.get_policy_decision_by_action(conn, action_id)
     assert stored.outcome == PolicyOutcome.HOLD
 
+
+
+def test_legacy_duplicates_keep_working_and_are_logged(tmp_path, caplog):
+    """A store that already holds duplicates is not rewritten; init_db warns."""
+    db = tmp_path / "legacy.db"
+    init_db(db)
+    c = get_connection(db)
+    try:
+        c.execute("DROP INDEX uq_decisions_action")
+        action_id = _seed(c)
+        ScopewatchRepository.create_policy_decision(c, _decision(action_id, PolicyOutcome.HOLD))
+        ScopewatchRepository.create_policy_decision(c, _decision(action_id, PolicyOutcome.ALLOW))
+        c.commit()
+    finally:
+        c.close()
+    with caplog.at_level("WARNING", logger="scopewatch.db"):
+        init_db(db)
+    assert "uniqueness guard was not added" in caplog.text
+    c = get_connection(db)
+    try:
+        count = c.execute(
+            "SELECT COUNT(*) FROM policy_decisions WHERE action_request_id = ?", (action_id,)
+        ).fetchone()[0]
+    finally:
+        c.close()
+    assert count == 2
