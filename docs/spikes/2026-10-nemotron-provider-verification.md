@@ -74,6 +74,9 @@ this pass: the authenticated catalogue call does not authenticate (section 4).
 
 ## 4. Nebius: first key rejected, diagnosed, then resolved
 
+> **Superseded in part by [§12](#12-correction-note-2026-11-18).** The 401 measurements below are a
+> record of 2026-10-03. The key in the local `.env` authenticates as of 2026-11-18.
+
 ### 4.1 Observed: the first key was rejected, and it was the wrong *kind* of key
 
 **Observed.** Every authenticated Nebius call returned **HTTP 401**. A negative
@@ -134,7 +137,7 @@ is now measurable.**
 | --- | --- | --- | --- | --- |
 | `basic_reasoning` | SUCCESS | 1,771 ms | no | n/a |
 | `tool_calling_with_reasoning` | SUCCESS | 603 ms | yes | n/a |
-| `structured_json_auditor` | MALFORMED_OUTPUT | 1,279 ms | no | **no** |
+| `structured_json_auditor` | MALFORMED_OUTPUT *(superseded, §12)* | 1,279 ms | no | **no** |
 
 The third probe fails **identically on OpenRouter**, which is what proves it
 is a probe defect rather than a provider one: the probe never sends the
@@ -171,9 +174,9 @@ script):
 | --- | --- | --- | --- | --- | --- |
 | `basic_reasoning` | SUCCESS | 54,712 ms | `reasoning` | no | n/a |
 | `tool_calling_with_reasoning` | SUCCESS | 5,497 ms | `reasoning` | yes | n/a |
-| `structured_json_auditor` | MALFORMED_OUTPUT | 3,839 ms | `reasoning` | no | **no** |
+| `structured_json_auditor` | MALFORMED_OUTPUT *(superseded, §12)* | 3,839 ms | `reasoning` | no | **no** |
 
-The committed probe's auditor check fails for the reason in section 5.2: it sends
+*Superseded by §12: the probe now sends the profile's `auditor_body`.* The committed probe's auditor check failed on 2026-10-03 for the reason in section 5.2: it sends
 `response_format: {"type": "json_object"}` with reasoning left at its default,
 so reasoning consumes the 256-token cap.
 
@@ -568,3 +571,40 @@ how it should be read, and neither invalidates the measurements:
 - **#120/#116** made `extract_reasoning` classify by response shape rather than
   field name. `docs/agents/provider-profiles.md` was updated in that PR, so read
   the reasoning-extraction rules there rather than from the older text.
+
+## 12. Correction note (2026-11-18)
+
+Issue #175 records that the probe no longer fails the auditor check. The probe now sends the profile's
+`auditor_body` instead of the bare `response_format` it sent on 2026-10-03.
+Measurements in sections 1 to 11 are unchanged. They describe the probe before the
+fix.
+
+**Superseded passages.** These are marked inline in the sections above:
+
+- §4 (401 consequence): the key in the local `.env` authenticates as of 2026-11-18.
+  The 401 measurements in §4.1 and §4.2 stay as a dated record.
+- §4.2 and §5 `structured_json_auditor` rows reading `MALFORMED_OUTPUT`: superseded.
+- §5 sentence attributing the auditor failure to `response_format` without a
+  reasoning control: superseded.
+
+**Current result, as reported in #175.** Both providers report 3/3 SUCCESS.
+Only one probe's output is quoted verbatim in the issue. That output is the Nebius
+auditor probe below. The other five probe results are reported in #175 without
+verbatim output, and this note does not reproduce them.
+
+```
+[nebius] structured_json_auditor (nvidia/Nemotron-3_5-Lightning):
+  Status: SUCCESS | Latency: 526.3ms
+  Reasoning: UNAVAILABLE (field: None, 0 chars)
+  Reasoning note: no reasoning field returned; provider reported 0 reasoning tokens (content 84 char(s) is the answer channel, not a trace).
+  Completion tokens: 28 (reasoning tokens: 0) | finish_reason: stop
+  Tool calls: False | Valid JSON: True
+```
+
+This output matches the reasoning rule in §4.3. Thinking text in `content` is not
+promoted to a provider trace, and the reasoning field is reported as `UNAVAILABLE`.
+
+**Not re-run for this note.** No probe, provider call, or network request was made
+to write this section. The reproduction command is
+`python3 scripts/spikes/provider_probe.py --provider nebius` (and `--provider openrouter`).
+Re-run it to confirm the current state.
