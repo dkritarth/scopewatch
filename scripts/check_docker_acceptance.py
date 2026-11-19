@@ -97,7 +97,7 @@ def main() -> int:
 
     # --- 3. Mount hygiene: only the workspace copy ---
     check("mount-workspace-rw",
-          f"{{workspace_copy}}:{{CONTAINER_WORKSPACE}}:rw" in job_src
+          "{workspace_copy}:{CONTAINER_WORKSPACE}:rw" in job_src
           and 'CONTAINER_WORKSPACE = "/workspace"' in job_src,
           "single :rw mount onto the container workspace")
     for bad, label in [("docker.sock", "no-docker-socket"),
