@@ -135,6 +135,26 @@ RUN_COMMAND_ALLOWED_FLAGS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] =
     (("python",), ("-c", "-m")),
 )
 
+# pytest ``-o key=value`` ini keys the gateway accepts (default-deny: any
+# other key, including ``addopts``, ``pythonpath``, ``confcutdir``,
+# ``testpaths`` and ``required_plugins``, is denied). Only keys that the
+# repository's tests and scenarios use, plus keys that only tune output or
+# reporting and cannot add code, plugins, or search roots. ``cache_dir`` is
+# listed because it is path valued; its value still goes through the path
+# rules, and policy denies a cache_dir value that starts with ``~`` or
+# contains ``$`` because pytest expands both. Declared here so the
+# fingerprint below covers it.
+RUN_COMMAND_ALLOWED_PYTEST_INI_KEYS: tuple[str, ...] = (
+    "cache_dir",
+    "console_output_style",
+    "junit_family",
+    "junit_suite_name",
+    "log_cli",
+    "log_level",
+    "strict_xfail",
+    "xfail_strict",
+)
+
 
 # ---------------------------------------------------------------------------
 # Deterministic policy identity (issue #119)
@@ -173,7 +193,7 @@ RUN_COMMAND_ALLOWED_FLAGS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] =
 #    reported as ``LEGACY_POLICY_VERSION_LABEL``. They are never backfilled:
 #    stamping today's revision onto a past decision would assert something
 #    untrue about when it was evaluated.
-POLICY_RULES_REVISION = "2026-10-28.1"
+POLICY_RULES_REVISION = "2026-11-18.2"
 
 #: Display label for decisions recorded before policy versions were stored.
 LEGACY_POLICY_VERSION_LABEL = "unknown (legacy)"
@@ -201,6 +221,7 @@ def policy_rules_fingerprint() -> str:
             {"prefix": list(prefix), "flags": list(flags)}
             for prefix, flags in RUN_COMMAND_ALLOWED_FLAGS
         ],
+        "run_command_allowed_pytest_ini_keys": list(RUN_COMMAND_ALLOWED_PYTEST_INI_KEYS),
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:POLICY_FINGERPRINT_LENGTH]

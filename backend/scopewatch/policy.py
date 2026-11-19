@@ -25,6 +25,7 @@ from scopewatch.path_access import (
 )
 from scopewatch.models import (
     RUN_COMMAND_ALLOWED_FLAGS,
+    RUN_COMMAND_ALLOWED_PYTEST_INI_KEYS,
     RUN_COMMAND_METACHARACTERS,
     PolicyOutcome,
     ReasonCode,
@@ -392,6 +393,51 @@ def _is_pytest_prefix(prefix: list[str]) -> bool:
     return False
 
 
+def _ini_override_value(argv: list[str], i: int) -> tuple[str, int]:
+    """Return ``(value, extra_tokens_consumed)`` for the ``-o`` token at ``i``.
+
+    Normalises ``-o VALUE`` and ``-o=VALUE``; argparse hands pytest the same
+    ``VALUE`` for both. ``-oVALUE`` never reaches here (its option name is
+    not on the flag allowlist).
+    """
+    item = argv[i]
+    if item.startswith("-o="):
+        return item[3:], 0
+    if i + 1 < len(argv):
+        return argv[i + 1], 1
+    return "", 0
+
+
+def _run_command_path_candidates(argv: list[str], start: int) -> list[str]:
+    """Return every string of ``argv[start:]`` the path rules must check.
+
+    Shared by policy evaluation and dispatch revalidation. Each token is
+    checked whole and after its first ``=``. A ``-o=KEY=VALUE`` token also
+    yields ``KEY=VALUE`` and ``VALUE``, because argparse passes that form to
+    pytest as the ini override ``KEY=VALUE`` (the separate-token form
+    ``-o KEY=VALUE`` is already covered by the generic split).
+    """
+    candidates: list[str] = []
+    for index in range(start, len(argv)):
+        item = argv[index]
+        candidates.append(item)
+        if "=" in item:
+            candidates.append(item.split("=", 1)[1])
+        if item.startswith("-o="):
+            value, _ = _ini_override_value(argv, index)
+            candidates.append(value)
+            if "=" in value:
+                candidates.append(value.split("=", 1)[1])
+    return candidates
+
+
+# Allowlisted pytest options whose value pytest may pass through
+# os.path.expanduser/expandvars. Their values must not contain "~" or "$".
+_PYTEST_EXPANDED_VALUE_OPTIONS = frozenset(
+    {"-o", "--rootdir", "--junitxml", "--confcutdir", "--basetemp"}
+)
+
+
 def _check_run_command_flags(
     argv: list[str], matched_len: int, allowed_flags: tuple[str, ...]
 ) -> tuple[ReasonCode, str, str] | None:
@@ -416,22 +462,42 @@ def _check_run_command_flags(
                     f"Option '{option}' is not in the allowlist for this command.",
                     "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
                 )
-            if option == "-o":
+            if is_pytest and option in _PYTEST_EXPANDED_VALUE_OPTIONS:
                 if "=" in item:
-                    value = item.split("=", 1)[1]
-                elif i + 1 < n:
-                    value = argv[i + 1]
-                    i += 1
+                    option_value = item.split("=", 1)[1]
                 else:
-                    value = ""
+                    option_value = argv[i + 1] if i + 1 < n else ""
+                if option == "-o":
+                    option_value = option_value.split("=", 1)[-1]
+                if option_value.startswith("~") or "$" in option_value:
+                    # pytest runs these values (e.g. cache_dir, --junitxml,
+                    # --rootdir) through expanduser/expandvars before resolving
+                    # them, so "~/x" or "$HOME/x" passes the relative-path rules
+                    # here but lands outside the workspace. Positional
+                    # arguments stay literal and are not affected.
+                    return (
+                        ReasonCode.PATH_OUTSIDE_WORKSPACE,
+                        f"Option '{option}' value uses home-directory or "
+                        "environment-variable expansion.",
+                        "RULE_RUN_COMMAND_PATH_EXPANSION_REJECTED",
+                    )
+            if option == "-o":
+                value, consumed = _ini_override_value(argv, i)
+                i += consumed
                 if is_pytest:
-                    key = value.split("=", 1)[0].strip() if value else ""
-                    if key.lower() == "addopts" or value.strip().lower().startswith(
+                    key = value.split("=", 1)[0]
+                    if key.strip().lower() == "addopts" or value.strip().lower().startswith(
                         "addopts"
                     ):
                         return (
                             ReasonCode.COMMAND_NOT_ALLOWED,
                             "Option '-o addopts=...' (ini override) is not allowed.",
+                            "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
+                        )
+                    if "=" not in value or key not in RUN_COMMAND_ALLOWED_PYTEST_INI_KEYS:
+                        return (
+                            ReasonCode.COMMAND_NOT_ALLOWED,
+                            "Option '-o' names an ini key that is not in the allowlist.",
                             "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
                         )
         i += 1
@@ -684,36 +750,32 @@ def revalidate_run_command_in_workspace(
     flag_denial = _check_run_command_flags(argv, matched_len, allowed_flags)
     if flag_denial is not None:
         return flag_denial
-    for item in argv[matched_len:]:
-        candidates = [item]
-        if "=" in item:
-            candidates.append(item.split("=", 1)[1])
-        for candidate in candidates:
-            try:
-                denial = _check_run_command_path(
-                    candidate,
-                    describe=f"Command argument '{candidate}'",
-                    scope=scope,
-                    workspace_root=staged,
-                    case_insensitive=volume_is_case_insensitive(str(staged)),
-                )
-            except (OSError, RuntimeError):
-                return (
-                    ReasonCode.MALFORMED_REQUEST,
-                    f"Command argument '{candidate}' could not be resolved at dispatch.",
-                    "RULE_RUN_COMMAND_MALFORMED_PATH",
-                )
-            if denial is not None:
-                return denial
-            resolved_denial = _check_staged_resolved_target(
+    for candidate in _run_command_path_candidates(argv, matched_len):
+        try:
+            denial = _check_run_command_path(
                 candidate,
                 describe=f"Command argument '{candidate}'",
                 scope=scope,
-                staged_root=staged,
+                workspace_root=staged,
                 case_insensitive=volume_is_case_insensitive(str(staged)),
             )
-            if resolved_denial is not None:
-                return resolved_denial
+        except (OSError, RuntimeError):
+            return (
+                ReasonCode.MALFORMED_REQUEST,
+                f"Command argument '{candidate}' could not be resolved at dispatch.",
+                "RULE_RUN_COMMAND_MALFORMED_PATH",
+            )
+        if denial is not None:
+            return denial
+        resolved_denial = _check_staged_resolved_target(
+            candidate,
+            describe=f"Command argument '{candidate}'",
+            scope=scope,
+            staged_root=staged,
+            case_insensitive=volume_is_case_insensitive(str(staged)),
+        )
+        if resolved_denial is not None:
+            return resolved_denial
 
     cwd_raw = action.resource or ""
     cwd_value = "." if not cwd_raw.strip() else cwd_raw
@@ -880,21 +942,17 @@ def _evaluate_run_command(
     # post-prefix arguments are checked; flag values after '=' are checked
     # as well so '--output=/abs/path' cannot smuggle an absolute path.
     case_insensitive = volume_is_case_insensitive(str(workspace_root))
-    for item in argv[matched_len:]:
-        candidates = [item]
-        if "=" in item:
-            candidates.append(item.split("=", 1)[1])
-        for candidate in candidates:
-            denial = _check_run_command_path(
-                candidate,
-                describe=f"Command argument '{candidate}'",
-                scope=scope,
-                workspace_root=workspace_root,
-                case_insensitive=case_insensitive,
-            )
-            if denial is not None:
-                reason_code, explanation, matched_rule = denial
-                return deny(reason_code, explanation, matched_rule)
+    for candidate in _run_command_path_candidates(argv, matched_len):
+        denial = _check_run_command_path(
+            candidate,
+            describe=f"Command argument '{candidate}'",
+            scope=scope,
+            workspace_root=workspace_root,
+            case_insensitive=case_insensitive,
+        )
+        if denial is not None:
+            reason_code, explanation, matched_rule = denial
+            return deny(reason_code, explanation, matched_rule)
 
     # R8: resource is the cwd: workspace root or a validated subdirectory.
     cwd_raw = action.resource or ""
