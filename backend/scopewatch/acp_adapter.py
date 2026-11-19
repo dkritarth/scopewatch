@@ -278,19 +278,31 @@ class AcpClientAdapter:
 
     def handle_jsonrpc(self, request: dict[str, Any]) -> dict[str, Any]:
         """Dispatch a single JSON-RPC 2.0 request and return the JSON-RPC response."""
-        req_id = request.get("id")
+        if not isinstance(request, dict):
+            return self._rpc_error(None, -32600, "Invalid Request: expected a JSON object")
+        raw_id = request.get("id")
+        # Only a string, integer, or null id may be echoed; anything else
+        # (object, array, bool, float) is not a valid JSON-RPC id.
+        id_valid = raw_id is None or isinstance(raw_id, str) or type(raw_id) is int
+        req_id = raw_id if id_valid else None
         method = request.get("method")
-        params = request.get("params") or {}
+        raw_params = request.get("params")
 
-        if request.get("jsonrpc") != "2.0" or not method:
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {
-                    "code": -32600,
-                    "message": "Invalid Request: expected jsonrpc 2.0 with a method",
-                },
-            }
+        if (
+            not id_valid
+            or request.get("jsonrpc") != "2.0"
+            or not method
+            or not isinstance(method, str)
+        ):
+            return self._rpc_error(
+                req_id, -32600, "Invalid Request: expected jsonrpc 2.0 with a method"
+            )
+        if raw_params is None:
+            params: dict[str, Any] = {}
+        elif isinstance(raw_params, dict):
+            params = raw_params
+        else:
+            return self._rpc_error(req_id, -32602, "Invalid params: expected an object")
 
         try:
             result = self.dispatch_method(method, params)
@@ -315,6 +327,10 @@ class AcpClientAdapter:
                     "data": {"error_type": type(exc).__name__},
                 },
             }
+
+    @staticmethod
+    def _rpc_error(req_id: Any, code: int, message: str) -> dict[str, Any]:
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
     def dispatch_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Route an ACP method call to its gateway-mediated handler."""
@@ -808,6 +824,14 @@ class AcpClientAdapter:
             )
 
         if outcome == "HOLD":
+            if not isinstance(action_id, str) or not action_id:
+                # Without a stored action there is nothing to poll or approve;
+                # polling /actions/None would never resolve. Fail closed now.
+                raise AcpRpcError(
+                    code=-32000,
+                    message="Held action has no usable action ID; failing closed",
+                    data={"action_id": None, "reason_code": "HOLD_MISSING_ACTION_ID"},
+                )
             return self._poll_hold(action_id, initial_response=data)
 
         if outcome == "ALLOW":
