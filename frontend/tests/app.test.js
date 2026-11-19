@@ -6,6 +6,7 @@ import {
   STATUS_GLYPHS,
   getStatusGlyph,
   reconcileRunActionStates,
+  insertEventBySequence,
   LEGACY_POLICY_VERSION_LABEL,
   NOT_APPLICABLE_LABEL,
   POLICY_DECISION_EVENT_TYPES,
@@ -1273,4 +1274,37 @@ test("each status facet renders a distinct glyph (#206)", () => {
     assert.ok(!glyphs.has(glyph), `glyph '${glyph}' for ${st} must be unique`);
     glyphs.add(glyph);
   }
+});
+
+test("an expired approval is not reported as a failed execution", () => {
+  const events = [
+    transformApiEvent({
+      id: "ev-x1",
+      sequence: 1,
+      action_request_id: "act-expired-noexec",
+      event_type: "POLICY_HELD",
+      details: { reason_code: "APPROVAL_REQUIRED" },
+    }),
+    transformApiEvent({
+      id: "ev-x2",
+      sequence: 2,
+      action_request_id: "act-expired-noexec",
+      event_type: "APPROVAL_EXPIRED",
+      details: { reason: "TTL exceeded" },
+    }),
+  ];
+  reconcileRunActionStates(events);
+  for (const ev of events) {
+    assert.notEqual(ev.executionStatus, "FAILED", `${ev.eventType} must not claim a failed execution`);
+    assert.doesNotMatch(String(ev.execution), /Execution failed/);
+  }
+  assert.equal(events[0].statusLabel, "Reviewer: expired");
+});
+
+test("insertEventBySequence keeps order and drops duplicates for out-of-order frames", () => {
+  const events = [{ sequence: 1 }, { sequence: 3 }];
+  assert.equal(insertEventBySequence(events, { sequence: 2 }), true);
+  assert.equal(insertEventBySequence(events, { sequence: 3 }), false);
+  assert.equal(insertEventBySequence(events, { sequence: 4 }), true);
+  assert.deepEqual(events.map((e) => e.sequence), [1, 2, 3, 4]);
 });
