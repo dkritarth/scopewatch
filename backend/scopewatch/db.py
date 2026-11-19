@@ -200,6 +200,18 @@ def init_db(db_path: Path | str) -> None:
         if run_cols and "workspace_path" not in run_cols:
             conn.execute("ALTER TABLE runs ADD COLUMN workspace_path TEXT")
 
+        # At most one policy decision per action, so readers that pick a single
+        # row never face an ambiguous history. A legacy database that already
+        # holds duplicates keeps working without the guard; its rows are never
+        # rewritten or deleted.
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_decisions_action"
+                " ON policy_decisions(action_request_id)"
+            )
+        except sqlite3.IntegrityError:
+            pass
+
         cur = conn.execute("SELECT version FROM schema_version WHERE version = 1")
         if cur.fetchone() is None:
             conn.execute(
