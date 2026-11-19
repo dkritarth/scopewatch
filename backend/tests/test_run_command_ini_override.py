@@ -103,6 +103,9 @@ def test_ini_override_denied_at_both_layers(
     assert decision.outcome == PolicyOutcome.DENY
     reval = revalidate_run_command_in_workspace(action, run.task_scope, ws)
     assert reval is not None and isinstance(reval[0], ReasonCode)
+    if "~" in command or "$" in command:
+        assert decision.matched_rule == "RULE_RUN_COMMAND_PATH_EXPANSION_REJECTED"
+        assert reval[2] == "RULE_RUN_COMMAND_PATH_EXPANSION_REJECTED"
 
 
 @pytest.mark.parametrize("command", ALLOWED)

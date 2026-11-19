@@ -141,7 +141,9 @@ RUN_COMMAND_ALLOWED_FLAGS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] =
 # repository's tests and scenarios use, plus keys that only tune output or
 # reporting and cannot add code, plugins, or search roots. ``cache_dir`` is
 # listed because it is path valued; its value still goes through the path
-# rules. Declared here so the fingerprint below covers it.
+# rules, and policy denies a cache_dir value that starts with ``~`` or
+# contains ``$`` because pytest expands both. Declared here so the
+# fingerprint below covers it.
 RUN_COMMAND_ALLOWED_PYTEST_INI_KEYS: tuple[str, ...] = (
     "cache_dir",
     "console_output_style",
