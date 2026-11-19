@@ -2168,6 +2168,29 @@ export function transformApiEvent(ev, context = null) {
   };
 }
 
+/**
+ * Insert a live event into a run timeline ordered by sequence. Frames can
+ * arrive out of order (SSE replay plus polling); appending would show an
+ * execution row before its decision row. Returns false for a duplicate.
+ */
+export function insertEventBySequence(events, event) {
+  const seq = event.sequence;
+  // Without a numeric sequence there is nothing to dedupe or order by:
+  // append rather than drop it as a "duplicate" of another unsequenced event.
+  if (typeof seq !== "number" || !Number.isFinite(seq)) {
+    events.push(event);
+    return true;
+  }
+  if (events.some((e) => e.sequence === seq)) return false;
+  let index = events.length;
+  while (index > 0 && !(events[index - 1].sequence <= seq)) {
+    if (typeof events[index - 1].sequence !== "number") break;
+    index -= 1;
+  }
+  events.splice(index, 0, event);
+  return true;
+}
+
 export function reconcileRunActionStates(events) {
   if (!Array.isArray(events) || events.length === 0) return events;
   const liveEvents = events.filter((ev) => ev && ev.isFixture === false && !ev.operatorRetention);
@@ -2206,7 +2229,10 @@ export function reconcileRunActionStates(events) {
         ev.eventType === "EXECUTION_FAILED" ||
         ev.eventType === "SYSTEM_ERROR" ||
         ev.executionStatus === "FAILED" ||
-        ev.status === "failed"
+        // An expired approval never executed. Its hold row is relabelled
+        // "failed" with approvalStatus "Expired" on the first pass, so check
+        // both markers or a later pass would misread it as an execution failure.
+        (ev.status === "failed" && ev.eventType !== "APPROVAL_EXPIRED" && ev.approvalStatus !== "Expired")
       ) {
         executionResult = "FAILED";
         break;
@@ -2339,8 +2365,7 @@ function subscribeToRun(runId) {
       // Malformed frames are logged + skipped, never crash the timeline.
       const formatted = safeTransformApiEvent(apiEvent, { runId });
       if (!formatted) return;
-      if (!targetRun.events.some((e) => e.sequence === formatted.sequence)) {
-        targetRun.events.push(formatted);
+      if (insertEventBySequence(targetRun.events, formatted)) {
         reconcileRunActionStates(targetRun.events);
         if (apiEvent.event_type === "RUN_COMPLETED" || formatted.eventType === "RUN_COMPLETED" || formatted.type === "RUN_COMPLETED") {
           targetRun.status = "COMPLETED";
@@ -2668,9 +2693,7 @@ if (typeof document !== "undefined") {
                 actionRequest: result.action_request,
                 reasoningAudit: result.reasoning_audit,
               });
-              if (!targetRun.events.some((e) => e.sequence === formatted.sequence)) {
-                targetRun.events.push(formatted);
-              }
+              insertEventBySequence(targetRun.events, formatted);
             }
             renderTimeline();
             renderEvidence();
