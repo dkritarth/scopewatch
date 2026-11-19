@@ -136,11 +136,29 @@ def test_m2_backend_unset_means_local(monkeypatch: pytest.MonkeyPatch) -> None:
     assert get_executor_backend() == "local"
 
 
-def test_m2_unknown_backend_falls_through_to_local(
+@pytest.mark.parametrize("raw", ["bogus-backend", "dockr", "remote-runner", "containers"])
+def test_m2_unknown_backend_fails_closed(
+    accept_workspace: Path, monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """An unknown backend is refused, never run on the host.
+
+    This replaced an earlier fall-through-to-local test: a typo such as
+    ``dockr`` used to run the action locally, silently dropping the
+    isolation the operator configured.
+    """
+    monkeypatch.setenv("SCOPEWATCH_EXECUTOR", raw)
+    target = accept_workspace / "docs" / "file_a.txt"
+    before = target.read_bytes() if target.exists() else None
+    with pytest.raises(ExecutionSecurityError) as exc:
+        execute_action(_action(), accept_workspace, policy_decision=_allow_decision())
+    assert exc.value.code == "UNKNOWN_EXECUTOR_BACKEND"
+    assert (target.read_bytes() if target.exists() else None) == before
+
+
+def test_m2_known_local_backend_still_executes(
     accept_workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Anything != docker uses the local backend (no third path)."""
-    monkeypatch.setenv("SCOPEWATCH_EXECUTOR", "bogus-backend")
+    monkeypatch.setenv("SCOPEWATCH_EXECUTOR", "  LOCAL ")
     receipt = execute_action(
         _action(), accept_workspace, policy_decision=_allow_decision()
     )

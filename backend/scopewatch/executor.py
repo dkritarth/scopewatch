@@ -488,6 +488,13 @@ def execute_action(
             db_path=db_path,
             task_scope=task_scope,
         )
+    if backend != "local":
+        # Fail closed: a typo such as ``dockr`` must not silently drop the
+        # isolation the operator asked for by running on the host instead.
+        raise ExecutionSecurityError(
+            "Unknown executor backend configured; refusing to execute.",
+            "UNKNOWN_EXECUTOR_BACKEND",
+        )
     return _execute_local(
         action,
         workspace_root,

@@ -13,7 +13,8 @@ point. It dispatches on `SCOPEWATCH_EXECUTOR`:
 | --- | --- | --- |
 | unset / empty / `local` | `LocalWorkspaceExecutor` | Current synthetic behaviour; default for tests. |
 | `docker` | `DockerExecutor` (`executor_docker.py`) | Per-run hardened container. |
-| anything else | local | Falls through to the local backend (no third path). |
+| `remote` | `RemoteExecutor` (`executor_remote.py`) | Separate runner over authenticated HTTP. |
+| anything else | none | Refused with `UNKNOWN_EXECUTOR_BACKEND`; nothing runs. A typo never falls back to the host. |
 
 The variable is stripped and lower-cased, so `DOCKER` and `  docker  `
 both select the container backend.
