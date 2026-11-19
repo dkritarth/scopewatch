@@ -1242,6 +1242,7 @@ class ReasoningAuditor:
         )
 
         usage_recorded = False
+        request_not_sent = False
         try:
             # Query provider
             if hasattr(self.provider, "audit_chat"):
@@ -1317,6 +1318,7 @@ class ReasoningAuditor:
             latency_ms = (time.monotonic() - start_time) * 1000
             exc_type = type(exc).__name__
             if exc_type == "ProviderError":
+                request_not_sent = getattr(exc, "request_not_sent", False) is True
                 code_val = getattr(exc, "code", AuditErrorCode.PROVIDER_ERROR.value)
                 err_code_str = code_val.value if hasattr(code_val, "value") else str(code_val)
                 result = ReasoningAuditResult(
@@ -1342,7 +1344,10 @@ class ReasoningAuditor:
                     error_code=AuditErrorCode.AUDIT_ERROR.value,
                 )
 
-        result._provider_attempted = not isinstance(self.provider, MockAuditorProvider)
+        # A call that provably never reached the provider cannot have been billed.
+        result._provider_attempted = (
+            not isinstance(self.provider, MockAuditorProvider) and not request_not_sent
+        )
         result._usage_recorded = usage_recorded
         if raise_on_failure and result.verdict == ReasoningAuditVerdict.FAILED:
             raise ReasoningAuditException(result.error_code or "AUDIT_ERROR", result.explanation)
