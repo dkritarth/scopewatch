@@ -164,6 +164,9 @@ class Decision:
     code: str = ""
     message: str = ""
     retry_after_s: int = 0
+    # UTC day key (YYYY-MM-DD) of an allowed reservation. Pass it back to
+    # release_run/release_action so a refund after midnight is a no-op.
+    day: str = ""
 
     def raise_if_denied(self) -> None:
         if not self.allowed:
@@ -334,11 +337,19 @@ class DemoGuardPolicy:
             if ip is not None:
                 self._run_creations_by_ip.setdefault(ip, deque()).append(now)
             self._runs_today += 1
-        return Decision(allowed=True)
+            day = self._day
+        return Decision(allowed=True, day=day)
 
-    def release_run(self) -> None:
-        """Refund one daily-run reservation (creation failed after reserving)."""
+    def release_run(self, day: str) -> None:
+        """Refund one daily-run reservation made on UTC ``day``.
+
+        No-op when the UTC day has rolled over since the reservation: the
+        counter now belongs to the new day and must not be decremented.
+        """
         with self._lock:
+            self._rollover()
+            if day != self._day:
+                return
             self._runs_today = max(0, self._runs_today - 1)
 
     # -- concurrency cap (DB count + in-flight reservations, service-held) ---
@@ -397,12 +408,20 @@ class DemoGuardPolicy:
                 )
             self._turns_by_run[run_id] = used + 1
             self._actions_today += 1
-        return Decision(allowed=True)
+            day = self._day
+        return Decision(allowed=True, day=day)
 
-    def release_action(self, run_id: str) -> None:
-        """Refund one action reservation (submission failed after reserving)."""
+    def release_action(self, run_id: str, day: str) -> None:
+        """Refund one action reservation made on UTC ``day``.
+
+        The daily counter is refunded only when the UTC day has not rolled
+        over since the reservation. The run's turn count is not day-scoped
+        (``_rollover`` never resets it), so it is always refunded.
+        """
         with self._lock:
-            self._actions_today = max(0, self._actions_today - 1)
+            self._rollover()
+            if day == self._day:
+                self._actions_today = max(0, self._actions_today - 1)
             used = self._turns_by_run.get(run_id, 0)
             if used <= 1:
                 self._turns_by_run.pop(run_id, None)

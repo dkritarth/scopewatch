@@ -406,6 +406,78 @@ def test_daily_counters_roll_over_at_utc_midnight_unit() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Refunds across UTC midnight must not touch the new day's counters
+# ---------------------------------------------------------------------------
+
+
+def _policy_at(now: list[float], *, max_runs: int = 1, max_actions: int = 1) -> DemoGuardPolicy:
+    config = DemoGuardConfig(
+        enabled=True,
+        demo_token="x",
+        max_concurrent_runs=5,
+        max_turns_per_run=40,
+        rate_limit_runs_per_min_per_ip=100,
+        max_runs_per_day=max_runs,
+        max_actions_per_day=max_actions,
+        valid=True,
+        error="",
+    )
+    return DemoGuardPolicy(config, now=lambda: now[0])
+
+
+def test_run_refund_after_utc_midnight_does_not_consume_new_day_budget() -> None:
+    # Reserve at 23:59:30 UTC on 2026-11-18, refund after midnight.
+    now = [datetime(2026, 11, 18, 23, 59, 30, tzinfo=timezone.utc).timestamp()]
+    policy = _policy_at(now, max_runs=1)
+    reservation = policy.try_begin_run("10.0.0.7")
+    assert reservation.allowed is True
+
+    now[0] += 60.0  # now 2026-11-19 00:00:30 UTC; counters rolled over
+    assert policy.try_begin_run("10.0.0.8").allowed is True  # new day: 1 of 1 used
+
+    policy.release_run(reservation.day)  # stale refund from the old day
+
+    assert policy.snapshot()["runs_today"] == 1
+    denied = policy.try_begin_run("10.0.0.9")
+    assert denied.allowed is False
+    assert denied.code == "budget_exhausted"
+
+
+def test_action_refund_after_utc_midnight_does_not_consume_new_day_budget() -> None:
+    now = [datetime(2026, 11, 18, 23, 59, 30, tzinfo=timezone.utc).timestamp()]
+    policy = _policy_at(now, max_actions=1)
+    reservation = policy.try_action("run-old")
+    assert reservation.allowed is True
+
+    now[0] += 60.0  # cross UTC midnight
+    assert policy.try_action("run-new").allowed is True  # new day: 1 of 1 used
+
+    policy.release_action("run-old", reservation.day)  # stale refund
+
+    assert policy.snapshot()["actions_today"] == 1
+    denied = policy.try_action("run-new")
+    assert denied.allowed is False
+    assert denied.code == "budget_exhausted"
+
+
+def test_same_day_refunds_still_restore_budget() -> None:
+    now = [datetime(2026, 11, 19, 12, 0, tzinfo=timezone.utc).timestamp()]
+    policy = _policy_at(now, max_runs=1, max_actions=1)
+
+    run = policy.try_begin_run("10.0.0.1")
+    assert run.allowed is True
+    assert policy.try_begin_run("10.0.0.2").allowed is False
+    policy.release_run(run.day)
+    assert policy.try_begin_run("10.0.0.2").allowed is True
+
+    action = policy.try_action("run-same")
+    assert action.allowed is True
+    assert policy.try_action("run-same").allowed is False
+    policy.release_action("run-same", action.day)
+    assert policy.try_action("run-same").allowed is True
+
+
+# ---------------------------------------------------------------------------
 # Fail-closed misconfiguration: deny new runs, allow health
 # ---------------------------------------------------------------------------
 
@@ -478,3 +550,20 @@ def test_scripted_scenario_needs_no_token_when_demo_off(
         )
         resp = asyncio.run(service.submit_action(run.id, req))
         assert resp.policy_decision.outcome.value == "ALLOW"
+
+
+def test_turn_refund_is_not_day_scoped() -> None:
+    """Per-run turns never roll over, so a cross-midnight refund returns the turn."""
+    now = [datetime(2026, 11, 18, 23, 59, 30, tzinfo=timezone.utc).timestamp()]
+    config = DemoGuardConfig(
+        enabled=True, demo_token="x", max_concurrent_runs=5, max_turns_per_run=1,
+        rate_limit_runs_per_min_per_ip=100, max_runs_per_day=10, max_actions_per_day=10,
+        valid=True, error="",
+    )
+    policy = DemoGuardPolicy(config, now=lambda: now[0])
+    reservation = policy.try_action("run-1")
+    assert reservation.allowed is True
+    now[0] += 60.0  # cross UTC midnight
+    policy.release_action("run-1", reservation.day)
+    assert policy.snapshot()["actions_today"] == 0
+    assert policy.try_action("run-1").allowed is True  # turn was refunded
