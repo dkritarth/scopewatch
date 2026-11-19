@@ -51,8 +51,8 @@ MUTATIONS: list[Mutation] = [
         name="policy-deny-becomes-allow",
         invariant="1. Deterministic policy first",
         file="backend/scopewatch/policy.py",
-        old='reason_code=ReasonCode.BLOCKED_PATH,',
-        new='reason_code=ReasonCode.ALLOWED_TOOL_AND_RESOURCE,',
+        old="outcome=PolicyOutcome.DENY,\n            reason_code=reason,",
+        new="outcome=PolicyOutcome.ALLOW,  # MUTATION\n            reason_code=ReasonCode.ALLOWED_TOOL_AND_RESOURCE,",
         test="backend/tests/test_agent_end_to_end.py::test_invariant_1_denied_action_never_reaches_executor",
     ),
     Mutation(
@@ -180,8 +180,10 @@ def run_one(m: Mutation) -> bool:
     target = REPO_ROOT / m.file
     original = target.read_text(encoding="utf-8")
     if m.old not in original:
-        print(f"SKIP {m.name}: pattern not found in {m.file}")
-        return True
+        # An unapplied mutation proves nothing; counting it as caught let the
+        # script report "All mutations caught" with a stale pattern.
+        print(f"STALE {m.name}: pattern not found in {m.file}", file=sys.stderr)
+        return False
     mutated = original.replace(m.old, m.new, 1)
     target.write_text(mutated, encoding="utf-8")
     try:
