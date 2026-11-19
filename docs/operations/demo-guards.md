@@ -88,6 +88,11 @@ reservations are atomic within that instance.
 
 An estimate is released only after the provider hook confirms recorded usage,
 or when local preflight/client construction confirms no provider call occurred.
+A provider call that failed with a connection error before any attempt
+reached the provider (connection refused, DNS failure) is also released, so an
+outage that never sends a request cannot drain the budget. Timeouts, HTTP
+errors, mid-request transport errors, and any retry sequence containing one of
+those retain the estimate, because the provider may have billed them.
 Unknown usage and recording failures retain the estimate until rollover or
 reset. Unknown fresh audit usage appears as null in `details.tokens_used`.
 A worker that finishes after the gateway timeout can add measured usage on

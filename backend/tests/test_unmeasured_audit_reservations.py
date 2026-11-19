@@ -16,7 +16,7 @@ from scopewatch.schemas import SubmitActionRequest, TaskScope
 from scopewatch.service import ScopewatchService
 
 
-def gateway(tmp_path, monkeypatch, routing, usage, *, metering_fails=False, malformed_content=False, preflight=False, barrier=None):
+def gateway(tmp_path, monkeypatch, routing, usage, *, metering_fails=False, malformed_content=False, preflight=False, barrier=None, transport_error=None, status=None, shared_client=False):
     ledger = TokenLedger()
     monkeypatch.setattr(budget_store, "_ledger", ledger)
     for key, value in {
@@ -30,6 +30,10 @@ def gateway(tmp_path, monkeypatch, routing, usage, *, metering_fails=False, malf
     calls = []
     def handler(request):
         calls.append(request)
+        if transport_error is not None:
+            raise transport_error("Synthetic transport failure", request=request)
+        if status is not None:
+            return httpx.Response(status, json={"error": "synthetic"})
         if barrier is not None:
             entered, release = barrier
             entered.set()
@@ -39,7 +43,9 @@ def gateway(tmp_path, monkeypatch, routing, usage, *, metering_fails=False, malf
         return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": usage})
     client = ProviderClient(profile, transport=httpx.MockTransport(handler))
     monkeypatch.setattr("scopewatch.tiered_audit.get_profile", lambda name: profile)
-    monkeypatch.setattr("scopewatch.tiered_audit.ProviderClient", lambda configured: client)
+    # Each tier closes its client, so tiers must not share one instance.
+    monkeypatch.setattr("scopewatch.tiered_audit.ProviderClient",
+                        lambda configured: client if shared_client else ProviderClient(profile, transport=httpx.MockTransport(handler)))
     if metering_fails:
         def fail_recording(*args): raise OSError("Synthetic counter failure")
         monkeypatch.setattr("scopewatch.providers.client.record_completion", fail_recording)
@@ -115,7 +121,7 @@ async def test_timed_out_worker_cannot_refund_before_late_completion(tmp_path, m
     release = threading.Event()
     completed = threading.Event()
     service, run, request, ledger, client, calls = gateway(
-        tmp_path, monkeypatch, routing, {"total_tokens": 5000}, barrier=(entered, release))
+        tmp_path, monkeypatch, routing, {"total_tokens": 5000}, barrier=(entered, release), shared_client=True)
     real_complete = client.complete
 
     def slow_adapter(messages, **kwargs):
@@ -149,3 +155,59 @@ async def test_timed_out_worker_cannot_refund_before_late_completion(tmp_path, m
             await asyncio.wait_for(task, 5)
         await asyncio.to_thread(completed.wait, 5)
         client.close()
+
+
+@pytest.mark.parametrize("routing", ["single", "two-tier"])
+@pytest.mark.parametrize("failure,expected_charge", [
+    # Connection never established: the request provably was not sent.
+    ({"transport_error": httpx.ConnectError}, 0),
+    # Request may have been sent and billed: stay reserved.
+    ({"transport_error": httpx.ReadTimeout}, 8000),
+    ({"transport_error": httpx.ConnectTimeout}, 8000),
+    ({"transport_error": httpx.ReadError}, 8000),
+    ({"status": 503}, 8000),
+    ({"status": 429}, 8000),
+    ({"status": 500}, 8000),
+], ids=["connect-refused", "read-timeout", "connect-timeout", "read-error", "http-503", "http-429", "http-500"])
+def test_failed_provider_call_release_depends_on_whether_request_was_sent(
+    tmp_path, monkeypatch, routing, failure, expected_charge
+):
+    service, run, request, ledger, client, calls = gateway(tmp_path, monkeypatch, routing, None, **failure)
+    try:
+        response = asyncio.run(service.submit_action(run.id, request))
+    finally: client.close()
+    assert response.policy_decision.outcome.value == "HOLD"
+    assert response.reasoning_audit.verdict == "FAILED"
+    # A released reservation lets the second tier run; a retained one makes the budget refuse it.
+    assert len(calls) == (2 if routing == "two-tier" and expected_charge == 0 else 1)
+    assert ledger.used_today("paid") == expected_charge
+
+
+def test_connect_failures_do_not_exhaust_budget_but_timeouts_do(tmp_path, monkeypatch):
+    service, run, request, ledger, client, calls = gateway(
+        tmp_path, monkeypatch, "single", None, transport_error=httpx.ConnectError)
+    try:
+        for _ in range(5):
+            asyncio.run(service.submit_action(run.id, request))
+    finally: client.close()
+    assert len(calls) == 5  # Budget never refused a later audit.
+    assert ledger.used_today("paid") == 0
+
+
+def test_connect_error_after_retried_timeout_stays_reserved(tmp_path, monkeypatch):
+    """A retry whose first attempt may have been sent must not be released on a later connect failure."""
+    from scopewatch.providers.client import ProviderClient as PC
+    profile = ProviderProfile(name="paid", base_url="https://synthetic.invalid", model="m", max_retries=1)
+    attempts = []
+    def handler(request):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise httpx.ReadTimeout("Synthetic", request=request)
+        raise httpx.ConnectError("Synthetic", request=request)
+    client = PC(profile, transport=httpx.MockTransport(handler), sleep_fn=lambda s: None)
+    try:
+        with pytest.raises(Exception) as info:
+            client.complete([{"role": "user", "content": "x"}])
+    finally: client.close()
+    assert len(attempts) == 2
+    assert info.value.request_not_sent is False

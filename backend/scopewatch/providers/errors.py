@@ -25,7 +25,17 @@ class ProviderError(Exception):
     and potential secrets are strictly excluded.
     """
 
-    def __init__(self, code: str | ProviderErrorCode, message: Optional[str] = None):
+    def __init__(
+        self,
+        code: str | ProviderErrorCode,
+        message: Optional[str] = None,
+        *,
+        request_not_sent: bool = False,
+    ):
+        # True only when no attempt of this call can have reached the provider
+        # (connection never established). Callers may then release spend
+        # reservations; every other failure may have been billed.
+        self.request_not_sent = request_not_sent
         self.code = str(code.value if isinstance(code, ProviderErrorCode) else code)
         self.message = message or f"Provider error: {self.code}"
         super().__init__(self.message)

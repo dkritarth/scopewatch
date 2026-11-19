@@ -331,6 +331,7 @@ class ProviderClient:
             else None
         )
 
+        request_possibly_sent = False
         while True:
             if call_deadline is not None:
                 remaining_call = call_deadline - time.monotonic()
@@ -351,6 +352,7 @@ class ProviderClient:
                     headers=headers,
                     timeout=timeout_val,
                 )
+                request_possibly_sent = True  # A response arrived, so it was sent.
                 latency_ms = (time.perf_counter() - t0) * 1000.0
 
                 if call_deadline is not None and time.monotonic() > call_deadline:
@@ -422,6 +424,10 @@ class ProviderClient:
                     )
 
             except (httpx.TimeoutException, httpx.NetworkError) as e:
+                if not isinstance(e, httpx.ConnectError):
+                    # Only a failed connection proves nothing was sent. Timeouts
+                    # and mid-request errors may already have been billed.
+                    request_possibly_sent = True
                 if attempt < max_retries:
                     delay = min(
                         self.max_backoff_s,
@@ -443,6 +449,7 @@ class ProviderClient:
                 raise ProviderError(
                     ProviderErrorCode.PROVIDER_UNAVAILABLE,
                     f"Provider '{self.profile.name}' network connection failed.",
+                    request_not_sent=not request_possibly_sent,
                 ) from None
 
     def audit_chat(
