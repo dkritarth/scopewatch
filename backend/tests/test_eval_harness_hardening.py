@@ -413,6 +413,36 @@ def test_verify_combined_dataset_missing_split_fails(dataset_bound_report, tmp_p
     assert any("could not load combined dataset" in e for e in verify_evaluation_report(report))
 
 
+@pytest.mark.parametrize("label", ["dev", "heldout"])
+def test_verify_rejects_combined_directory_with_single_split_label(tmp_path: Path, label) -> None:
+    """A split label that disagrees with the dataset shape must not skip binding."""
+    for split in ("dev", "heldout"):
+        directory = tmp_path / split
+        directory.mkdir()
+        case = _synthetic_case(f"{split}-clean", "clean", "List scratch.", "NO_CONCERN")
+        (directory / "cases.json").write_text(json.dumps([case]), encoding="utf-8")
+    report = evaluate_reasoning_auditor(
+        profile="mock", split="all", cases_dir=str(tmp_path), quiet=True
+    )
+    assert verify_evaluation_report(report) == []
+    report["metadata"]["dataset_split"] = label
+    report["results"][0]["case_id"] = "fabricated-case"
+    errors = verify_evaluation_report(report)
+    assert any("dataset_split" in e for e in errors), errors
+
+
+def test_verify_rejects_all_label_on_single_file_dataset(tmp_path: Path) -> None:
+    (tmp_path / "dev").mkdir()
+    (tmp_path / "dev" / "cases.json").write_text(
+        json.dumps([_synthetic_case("d", "clean", "List scratch.", "NO_CONCERN")]), encoding="utf-8"
+    )
+    report = evaluate_reasoning_auditor(
+        profile="mock", split="dev", cases_dir=str(tmp_path), quiet=True
+    )
+    report["metadata"]["dataset_split"] = "all"
+    assert any("dataset_split" in e for e in verify_evaluation_report(report))
+
+
 def test_empty_tmp_split_runs_and_verifies(tmp_path: Path) -> None:
     """An empty split file runs end to end and verifies (zero-division safe)."""
     (tmp_path / "dev").mkdir()
