@@ -48,7 +48,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     # Error locations and validator messages can contain submitted keys or values.
     # Keep the public envelope independent of all untrusted validation details.
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=422,  # literal: the constant name differs across Starlette versions
         content={
             "error": {
                 "code": "SCHEMA_VALIDATION_ERROR",
