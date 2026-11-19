@@ -115,6 +115,9 @@ def reap_workspaces(
             with db_transaction(conn):
                 run = Repository.get_run(conn, run_id)
                 reason = "missing_run" if run is None else _guard(conn, run, cutoff)
+                # Only a started delete can leave a partial removal. A recheck
+                # that blocks before delete() must not claim possible damage.
+                removal_started = False
                 try:
                     if reason is None:
                         with manager.retention_target(run_id, run.workspace_path) as target:
@@ -122,17 +125,25 @@ def reap_workspaces(
                                 reason = "retention_window"
                             else:
                                 details["bytes"] = target.size_bytes
+                                removal_started = True
                                 target.delete()
                 except (RunWorkspaceError, ValueError):
-                    reason = "workspace_removal_failed"
+                    reason = "workspace_removal_failed" if removal_started else "unsafe_or_unavailable_workspace"
                 success = reason is None
-                result_details = {**details, "outcome": "pruned" if success else "failed"}
+                result_details = {**details, "outcome": "pruned" if success else "failed",
+                                  "removal_started": removal_started}
                 if reason is not None:
                     result_details["reason"] = reason
+                if success:
+                    summary = "Workspace pruned."
+                elif removal_started:
+                    summary = "Workspace pruning failed; removal may be partial."
+                else:
+                    summary = "Workspace pruning stopped before removal; recheck blocked deletion."
                 Repository.append_event(
                     conn, run_id, EventType.WORKSPACE_PRUNED if success else EventType.WORKSPACE_PRUNE_FAILED,
                     "workspace-retention-operator",
-                    "Workspace pruned." if success else "Workspace pruning failed; removal may be partial.",
+                    summary,
                     datetime.now(timezone.utc).isoformat(), result_details,
                 )
             report["reaped_count" if success else "failed_count"] += 1

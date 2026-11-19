@@ -73,8 +73,10 @@ The lock remains held until the result commits. Scans and large removals can
 delay other gateway writes, so invoke retention during a quiet period.
 
 `WORKSPACE_PRUNE_ATTEMPTED` commits before deletion. `WORKSPACE_PRUNED` records a
-successful removal. `WORKSPACE_PRUNE_FAILED` records a failed attempt and warns
-that removal may be partial. These events share an `attempt_id`, contain a
+successful removal. `WORKSPACE_PRUNE_FAILED` records a failed attempt. Its
+`removal_started` detail says whether deletion began: if it did, the event warns
+that removal may be partial; if a recheck blocked the attempt first, the event
+says pruning stopped before removal. These events share an `attempt_id`, contain a
 workspace key and byte count, and omit host paths and exception bodies. A crash
 or database failure may leave only an attempt event, even after deletion. An
 attempt alone never proves success, and the command does not invent a result

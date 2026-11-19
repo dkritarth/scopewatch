@@ -49,3 +49,23 @@ test('retention failures use failed filter while attempts and success keep separ
     assert.deepEqual(filterEvents(events, { status }), []);
   }
 });
+
+test('a failure blocked before deletion does not warn of partial removal', () => {
+  clearStores();
+  const failure = (removalStarted) => transformApiEvent({ id: `blocked-${removalStarted}`, run_id: 'synthetic-run',
+    sequence: 9, event_type: 'WORKSPACE_PRUNE_FAILED', actor: 'synthetic-retention-operator',
+    timestamp: '2026-10-28T04:00:00Z', summary: 'Synthetic operator workspace retention.',
+    details: { attempt_id: 'attempt-blocked', outcome: 'failed', reason: 'pending_approval',
+      removal_started: removalStarted } });
+  const blocked = failure(false);
+  assert.equal(blocked.status, 'failed');
+  assert.doesNotMatch(blocked.statusDescription, /partial/i);
+  assert.match(blocked.statusDescription, /before removal/i);
+  assert.equal(blocked.operatorRetention.removalStarted, false);
+  const started = failure(true);
+  assert.match(started.statusDescription, /partial/i);
+  assert.equal(started.operatorRetention.removalStarted, true);
+  // Older events without the flag keep the cautious wording.
+  assert.equal(event('WORKSPACE_PRUNE_FAILED', 2).operatorRetention.removalStarted, null);
+  assert.match(event('WORKSPACE_PRUNE_FAILED', 2).statusDescription, /partial/i);
+});
