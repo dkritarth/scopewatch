@@ -572,6 +572,18 @@ def main() -> None:
             )
         )
 
+    selected = _select_scenario_files(args.scenarios_dir, include_prefixes)
+    if not selected or len(results) != len(selected):
+        # A scenario that failed to parse or create its run is skipped above
+        # with a printed message; without a non-zero exit, validate.sh and
+        # run_demo.sh would report success on a partially seeded database.
+        print(
+            f"\nSeeding FAILED: {len(results)} of {len(selected)} selected "
+            f"scenarios in {args.scenarios_dir} were seeded.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     print("\n------------------------------------------------------------------")
     print(f"Seeding completed: {len(results)} scenarios loaded successfully.")
     print("------------------------------------------------------------------\n")
