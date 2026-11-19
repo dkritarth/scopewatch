@@ -450,10 +450,18 @@ class RemoteExecutor:
             body: dict[str, Any] = response.json()
         except Exception:
             return _failed("EXECUTION_FAILED", "Remote runner returned malformed output.")
+        if not isinstance(body, dict):
+            return _failed("EXECUTION_FAILED", "Remote runner returned malformed output.")
         status = body.get("status")
-        result = body.get("result") or {}
+        result = body.get("result")
+        if result is None:
+            result = {}
         error_code = body.get("error_code")
-        if status not in ("EXECUTED", "FAILED") or not isinstance(result, dict):
+        if (
+            status not in ("EXECUTED", "FAILED")
+            or not isinstance(result, dict)
+            or not (error_code is None or isinstance(error_code, str))
+        ):
             return _failed("EXECUTION_FAILED", "Remote runner returned malformed output.")
         completed_at = datetime.now(timezone.utc).isoformat()
         return ExecutionReceipt(

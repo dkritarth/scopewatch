@@ -569,3 +569,27 @@ def test_run_command_local_still_refuses(
             tmp_path,
             policy_decision=_allow_decision(),
         )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        httpx.Response(200, json=[]),
+        httpx.Response(200, json=["EXECUTED"]),
+        httpx.Response(200, json="EXECUTED"),
+        httpx.Response(200, json={"status": "EXECUTED", "result": [1]}),
+        httpx.Response(200, json={"status": "EXECUTED", "result": {}, "error_code": {"x": 1}}),
+        httpx.Response(200, json={"status": "EXECUTED", "result": {}, "error_code": 7}),
+    ],
+)
+def test_remote_non_object_or_ill_typed_body_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad: httpx.Response
+) -> None:
+    """A 200 with a non-object body or ill-typed fields must yield a FAILED receipt, never raise."""
+    _remote_env(monkeypatch)
+    receipt = RemoteExecutor(transport=httpx.MockTransport(lambda req: bad)).execute(
+        _action(), tmp_path, policy_decision=_allow_decision()
+    )
+    assert receipt.status == ExecutionStatus.FAILED
+    assert receipt.error_code == "EXECUTION_FAILED"
+    assert receipt.sanitized_result == {"error": "Remote runner returned malformed output."}
