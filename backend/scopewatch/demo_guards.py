@@ -84,8 +84,8 @@ class DemoGuardConfig:
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "DemoGuardConfig":
         src: dict[str, str] = dict(env) if env is not None else dict(os.environ)
-        token = str(src.get("DEMO_TOKEN", "") or "")
-        if not token.strip():
+        token = str(src.get("DEMO_TOKEN", "") or "").strip()
+        if not token:
             return cls(enabled=False)
 
         values: dict[str, int] = {}
