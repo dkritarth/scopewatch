@@ -190,7 +190,7 @@ def token_matches(provided: str | None, expected: str) -> bool:
     """Constant-time token comparison; never true when either side is empty."""
     if not expected or not provided:
         return False
-    return hmac.compare_digest(provided.strip(), expected)
+    return hmac.compare_digest(provided.strip().encode("utf-8"), expected.encode("utf-8"))
 
 
 def token_fingerprint(token: str) -> str:
