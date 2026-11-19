@@ -412,7 +412,15 @@ class RunWorkspaceManager:
         """
         segment = workspace_segment(run_id)
         target = self.root / segment
-        if self.read_marker(target) is not None:
+        marker = self.read_marker(target)
+        if marker is not None:
+            # An existing workspace is reused only when it is this run's own
+            # real directory. A symlink, or a marker naming another run, would
+            # make two run ids share one writable tree.
+            if target.is_symlink() or marker.get("run_id") != segment:
+                raise RunWorkspaceError(
+                    "Existing run workspace does not belong to this run."
+                )
             return target
         if not self.source_root.is_dir():
             raise RunWorkspaceError("Scenario workspace fixture is unavailable.")
