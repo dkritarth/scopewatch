@@ -2174,9 +2174,19 @@ export function transformApiEvent(ev, context = null) {
  * execution row before its decision row. Returns false for a duplicate.
  */
 export function insertEventBySequence(events, event) {
-  if (events.some((e) => e.sequence === event.sequence)) return false;
+  const seq = event.sequence;
+  // Without a numeric sequence there is nothing to dedupe or order by:
+  // append rather than drop it as a "duplicate" of another unsequenced event.
+  if (typeof seq !== "number" || !Number.isFinite(seq)) {
+    events.push(event);
+    return true;
+  }
+  if (events.some((e) => e.sequence === seq)) return false;
   let index = events.length;
-  while (index > 0 && events[index - 1].sequence > event.sequence) index -= 1;
+  while (index > 0 && !(events[index - 1].sequence <= seq)) {
+    if (typeof events[index - 1].sequence !== "number") break;
+    index -= 1;
+  }
   events.splice(index, 0, event);
   return true;
 }
@@ -2219,7 +2229,10 @@ export function reconcileRunActionStates(events) {
         ev.eventType === "EXECUTION_FAILED" ||
         ev.eventType === "SYSTEM_ERROR" ||
         ev.executionStatus === "FAILED" ||
-        (ev.status === "failed" && ev.eventType !== "APPROVAL_EXPIRED")
+        // An expired approval never executed. Its hold row is relabelled
+        // "failed" with approvalStatus "Expired" on the first pass, so check
+        // both markers or a later pass would misread it as an execution failure.
+        (ev.status === "failed" && ev.eventType !== "APPROVAL_EXPIRED" && ev.approvalStatus !== "Expired")
       ) {
         executionResult = "FAILED";
         break;

@@ -1294,6 +1294,8 @@ test("an expired approval is not reported as a failed execution", () => {
     }),
   ];
   reconcileRunActionStates(events);
+  // Live frames re-run reconciliation; the second pass must agree with the first.
+  reconcileRunActionStates(events);
   for (const ev of events) {
     assert.notEqual(ev.executionStatus, "FAILED", `${ev.eventType} must not claim a failed execution`);
     assert.doesNotMatch(String(ev.execution), /Execution failed/);
@@ -1307,4 +1309,11 @@ test("insertEventBySequence keeps order and drops duplicates for out-of-order fr
   assert.equal(insertEventBySequence(events, { sequence: 3 }), false);
   assert.equal(insertEventBySequence(events, { sequence: 4 }), true);
   assert.deepEqual(events.map((e) => e.sequence), [1, 2, 3, 4]);
+});
+
+test("insertEventBySequence keeps events without a numeric sequence", () => {
+  const events = [{ id: "a" }, { sequence: 1 }];
+  assert.equal(insertEventBySequence(events, { id: "b" }), true);
+  assert.equal(insertEventBySequence(events, { id: "c", sequence: undefined }), true);
+  assert.deepEqual(events.map((e) => e.id ?? e.sequence), ["a", 1, "b", "c"]);
 });
