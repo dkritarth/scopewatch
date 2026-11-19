@@ -2,7 +2,6 @@
 
 import subprocess
 
-import pytest
 
 from scopewatch.executor_docker import preflight_executor_image
 

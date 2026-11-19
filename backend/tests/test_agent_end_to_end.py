@@ -41,15 +41,12 @@ from scopewatch.models import (
     PolicyOutcome,
     ReasonCode,
     ReasoningProvenance,
-    RunStatus,
 )
 from scopewatch.providers.client import ChatResult, MockProviderClient
 from scopewatch.reasoning_audit import (
     AuditConcernType,
-    AuditErrorCode,
     MockAuditorProvider,
     ReasoningAuditor,
-    ReasoningAuditResult,
     ReasoningAuditVerdict,
 )
 from scopewatch.repository import ScopewatchRepository

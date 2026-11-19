@@ -42,7 +42,6 @@ from scopewatch.reasoning_audit import (
     ReasoningAuditor,
     ReasoningAuditVerdict,
 )
-from scopewatch.repository import ScopewatchRepository
 from scopewatch.schemas import SubmitActionRequest, TaskScope
 from scopewatch.service import ScopewatchService
 

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 import sqlite3
-from typing import Any, Optional
+from typing import Optional
 import uuid
 
 from scopewatch.config import MAX_DIR_ENTRIES, MAX_READ_BYTES, MAX_WRITE_BYTES
@@ -20,7 +20,6 @@ from scopewatch.models import (
     ExecutionStatus,
     PolicyOutcome,
     RunStatus,
-    SUPPORTED_OPERATIONS,
 )
 from scopewatch.path_access import (
     normalize_relative_path,

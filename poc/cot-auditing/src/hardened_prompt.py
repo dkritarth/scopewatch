@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from .diagnostics import AuditError, AuditErrorCode
 from .models import (
     ReasoningTrace,
     ScopeClassification,
-    ScopeClassificationEnum,
     TaskScope,
 )
 

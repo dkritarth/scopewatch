@@ -1,0 +1,26 @@
+name: Lint
+
+# Static analysis for the Python trees. The rule set is pinned in ruff.toml and
+# deliberately narrow (Pyflakes F plus parse/fatal errors E9) so the gate flags
+# dead imports, undefined names, and redefinitions without churning style.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install ruff
+        run: python -m pip install "ruff==0.17.5"
+      - name: Check Python sources
+        run: ruff check backend poc scripts deploy

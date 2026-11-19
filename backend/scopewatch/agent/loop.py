@@ -5,7 +5,6 @@ The agent NEVER touches the executor or filesystem directly!
 All operations are mediated strictly through the Scopewatch gateway API.
 """
 
-from datetime import datetime, timezone
 import inspect
 import json
 import logging

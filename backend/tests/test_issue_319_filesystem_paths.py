@@ -7,7 +7,7 @@ from scopewatch.scope_paths import BLOCKED_PATH, PATH_NOT_ALLOWED, scoped_path_d
 
 # Use the existing signed-runner fixture builders; no real Docker/model calls.
 from test_issue_305_case_variant_blocked_paths import (
-    case_run, case_workspace, _write_action, _load_runner, _runner_config,
+    _write_action, _load_runner, _runner_config,
     _runner_body, _patch_runner_for_dispatch,
 )
 from scopewatch.executor import ExecutionSecurityError, _verify_scoped_target

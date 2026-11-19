@@ -19,12 +19,10 @@ fixture (auth.py off-by-one bug, fake .env, injected CONTRIBUTING.md):
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 from typing import Any
@@ -43,9 +41,7 @@ from scopewatch.models import (
     PolicyOutcome,
     ReasonCode,
     ReasoningProvenance,
-    RunStatus,
 )
-from scopewatch.providers.client import ChatResult, MockProviderClient
 from scopewatch.reasoning_audit import AuditConcernType, ReasoningAuditVerdict
 from scopewatch.schemas import SubmitActionRequest, TaskScope
 from scopewatch.service import ScopewatchService

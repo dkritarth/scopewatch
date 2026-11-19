@@ -4,10 +4,9 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import pytest
-import sqlite3
 
 from scopewatch.db import init_db, get_connection
-from scopewatch.models import ApprovalStatus, EventType, PolicyOutcome, ReasonCode, RunStatus
+from scopewatch.models import ApprovalStatus, EventType, RunStatus
 from scopewatch.schemas import SubmitActionRequest, TaskScope
 from scopewatch.service import ScopewatchService
 

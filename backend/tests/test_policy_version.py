@@ -242,7 +242,6 @@ def test_identity_carries_no_provider_or_credential_detail() -> None:
 def test_every_rule_path_stamps_the_identity(
     env: dict, overrides: dict, expected_outcome: PolicyOutcome
 ) -> None:
-    service: ScopewatchService = env["service"]
     run = env["run"]
     ws: Path = env["workspace"]
 

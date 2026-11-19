@@ -22,16 +22,13 @@ import uuid
 
 import pytest
 
-from scopewatch import config, docker_job
+from scopewatch import config
 from scopewatch.docker_job import (
-    MAX_CONTAINER_OUTPUT_BYTES,
-    MAX_COPY_BACK_BYTES,
     MAX_DIR_ENTRIES,
     OutputOverrunError,
     OversizedCopyBackError,
     check_staged_workspace_size,
     helper_code,
-    prepare_docker_job,
     run_docker_process,
     sync_copy_back,
 )

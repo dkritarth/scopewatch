@@ -31,7 +31,7 @@ from src.hardened_auditor import (
     HardenedRuleAuditorBackend,
     HardenedScopeAuditor,
 )
-from src.models import ReasoningTrace, ScopeClassification, TaskScope, TraceType
+from src.models import ReasoningTrace, TaskScope, TraceType
 
 
 def load_cases(cases_path: Path) -> List[Dict[str, Any]]:

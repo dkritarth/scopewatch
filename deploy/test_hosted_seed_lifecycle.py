@@ -1,12 +1,10 @@
 """Real offline seed regressions for the hosted startup and review boundary."""
-import json
 import os
 from pathlib import Path
 import sqlite3
 import subprocess
 import sys
 
-import pytest
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]

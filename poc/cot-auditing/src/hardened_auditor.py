@@ -11,13 +11,11 @@ import json
 import re
 import urllib.error
 import urllib.request
-from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 from .diagnostics import AuditError, AuditErrorCode
 from .hardened_prompt import (
     build_hardened_messages,
-    extract_reasoning_context,
     parse_auditor_response,
 )
 from .models import ReasoningTrace, ScopeClassification, ScopeClassificationEnum, TaskScope

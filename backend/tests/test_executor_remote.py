@@ -26,7 +26,7 @@ from scopewatch.executor_remote import (
     compute_action_digest,
     sign_dispatch_payload,
 )
-from scopewatch.models import ApprovalStatus, ExecutionStatus, PolicyOutcome, ReasonCode
+from scopewatch.models import ExecutionStatus, PolicyOutcome, ReasonCode
 from scopewatch.schemas import ActionRequest, PolicyDecision
 
 RUNNER_PATH = (

@@ -11,9 +11,7 @@ from scopewatch.agent.loop import AgentLoop
 from scopewatch.agent.tools import GatewayDispatcher
 from scopewatch.app import create_app
 from scopewatch.config import MAX_READ_BYTES
-from scopewatch.models import PolicyOutcome
 from scopewatch.providers.client import ChatResult
-from scopewatch.schemas import ActionRequest, ExecutionReceipt, ExecutionStatus, PolicyDecision
 
 
 def test_agent_loop_sees_full_content_over_500_chars(tmp_path: Path) -> None:

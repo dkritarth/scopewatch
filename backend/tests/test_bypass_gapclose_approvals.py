@@ -99,7 +99,6 @@ def test_gapclose_consumed_approval_same_action_replay_refused(
     assert consumed.status == ApprovalStatus.CONSUMED
     assert resolved.execution_receipt is not None
     assert resolved.execution_receipt.status == ExecutionStatus.EXECUTED
-    from scopewatch.db import get_connection
     from scopewatch.repository import ScopewatchRepository
 
     conn = service._get_conn()

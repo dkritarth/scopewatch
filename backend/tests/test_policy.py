@@ -8,7 +8,6 @@ import uuid
 from scopewatch.models import (
     PolicyOutcome,
     ReasonCode,
-    ReasoningProvenance,
     RunStatus,
 )
 from scopewatch.policy import evaluate_policy

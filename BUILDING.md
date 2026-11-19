@@ -25,10 +25,14 @@ npx --prefix frontend playwright install --with-deps chromium
 ./scripts/validate.sh            # full, incl. Playwright browser suite
 ./scripts/validate.sh --quick   # same except the browser suite (use while iterating)
 
-# 4. Docs consistency — also run automatically by ./scripts/validate.sh (step 8)
+# 4. Docs consistency — also run automatically by ./scripts/validate.sh (step 1)
 python3 scripts/check_docs_links.py
 
-# 5. Launch the integrated demonstration
+# 5. Python static analysis (ruff.toml) — also part of ./scripts/validate.sh
+python3 -m pip install ruff==0.17.5   # or: uvx ruff check backend poc scripts deploy
+ruff check backend poc scripts deploy
+
+# 6. Launch the integrated demonstration
 ./scripts/run_demo.sh                       # scripted invoice scenarios 01-06
 ./scripts/run_demo.sh --agent               # agent loop, offline mock provider
 ./scripts/run_demo.sh --coding              # M2 coding scenarios 10-13

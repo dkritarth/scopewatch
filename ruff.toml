@@ -1,0 +1,23 @@
+# Static analysis for the Python trees in this repository.
+#
+# The rule set is deliberately narrow. This codebase grew without a linter, so
+# the gate starts with the Pyflakes family (F) plus the fatal/parse errors (E9):
+# undefined names, unused imports and locals, redefinitions, and f-strings with
+# no placeholders. Those findings are either real defects or dead weight, and
+# every one of them can be fixed without changing behaviour. Style and layout
+# rules stay out so the gate cannot churn files for taste.
+#
+# Run it the way CI does:  ruff check backend poc scripts deploy
+
+target-version = "py312"
+line-length = 120
+
+[lint]
+select = ["E9", "F"]
+
+[lint.per-file-ignores]
+# Re-export surface: the gateway's monkeypatch-based tests patch the Docker
+# helpers through this module's namespace, so several `docker_job` names are
+# imported here without being referenced locally. See the comment above that
+# import block and backend/tests/test_docker_job_share.py.
+"backend/scopewatch/executor_docker.py" = ["F401"]

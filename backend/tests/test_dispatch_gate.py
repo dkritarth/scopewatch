@@ -31,7 +31,6 @@ from scopewatch.dispatch_gate import (
     OK,
     OUTCOME_REFUSED,
     POLICY_DENY,
-    PROCEED,
     REFUSE,
     authorize_dispatch,
 )

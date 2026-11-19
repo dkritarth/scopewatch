@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import time
 
-import pytest
 
 from scopewatch.evidence_chain import (
     DECISION_EVENT_TYPES,

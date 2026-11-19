@@ -16,10 +16,8 @@ from src.hardened_auditor import (
     HardenedScopeAuditor,
     SemanticMockBackend,
 )
-from src.hardened_prompt import build_hardened_messages
 from src.models import (
     ReasoningTrace,
-    ScopeClassification,
     ScopeClassificationEnum,
     TaskScope,
     TraceType,
@@ -217,7 +215,7 @@ class TestHardenedAuditorCLI(unittest.TestCase):
             out_file = Path(temp_dir) / "output.json"
             with patch("sys.argv", ["evaluate_hardened_auditor", "--output", str(out_file)]), patch(
                 "sys.stdout", new_callable=io.StringIO
-            ) as stdout:
+            ):
                 exit_code = evaluate_hardened_auditor.main()
                 self.assertEqual(exit_code, 0)
 

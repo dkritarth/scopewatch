@@ -12,8 +12,6 @@ import hashlib
 import html
 import json
 import logging
-import os
-from pathlib import Path
 import re
 import time
 from typing import Any, Optional, Protocol, Union, runtime_checkable

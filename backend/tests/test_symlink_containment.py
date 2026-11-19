@@ -122,17 +122,6 @@ def edge_cmd_run() -> Run:
 # ---------------------------------------------------------------------
 
 
-def _read_action(run: Run, resource: str, operation: str = "read_text") -> ActionRequest:
-    return ActionRequest(
-        id=str(uuid.uuid4()),
-        run_id=run.id,
-        tool="workspace",
-        operation=operation,
-        resource=resource,
-        requested_at=datetime.now(timezone.utc).isoformat(),
-    )
-
-
 def _op_action(
     run: Run, resource: str, operation: str, arguments: dict | None = None
 ) -> ActionRequest:
@@ -147,23 +136,10 @@ def _op_action(
     )
 
 
-def _run_command_action(
-    run: Run, resource: str = ".", command=None, argv=None
-) -> ActionRequest:
-    arguments: dict = {}
-    if command is not None:
-        arguments["command"] = command
-    if argv is not None:
-        arguments["argv"] = argv
-    return ActionRequest(
-        id=str(uuid.uuid4()),
-        run_id=run.id,
-        tool="workspace",
-        operation="run_command",
-        resource=resource,
-        arguments=arguments,
-        requested_at=datetime.now(timezone.utc).isoformat(),
-    )
+# ``_read_action`` and ``_run_command_action`` are defined once, in the
+# second-round section below, which re-declared them after this file was
+# extended. The earlier copies here were dead: module-level rebinding meant
+# every test in this file resolved to the later definitions.
 
 
 def _sensitive_snapshot(ws: Path) -> dict[str, str]:
@@ -695,14 +671,11 @@ raising (fail-closed).
 
 from datetime import datetime, timezone
 from pathlib import Path
-import uuid
 
 import pytest
 
-from scopewatch.executor import execute_action
-from scopewatch.models import ExecutionStatus, PolicyOutcome, ReasonCode, RunStatus
-from scopewatch.policy import evaluate_policy
-from scopewatch.schemas import ActionRequest, Run, TaskScope
+from scopewatch.models import ReasonCode
+from scopewatch.schemas import ActionRequest, Run
 
 NOW = datetime.now(timezone.utc).isoformat()
 

@@ -53,6 +53,16 @@ echo "     Checking documentation links, model IDs, claims, and secrets..."
 "${PYTHON}" "${REPO_ROOT}/scripts/check_docs_links.py"
 echo "  ✓ Documentation consistency verified"
 
+# Static analysis (ruff.toml). CI enforces this unconditionally; locally it is
+# skipped when ruff is absent so a plain pytest loop still works on a fresh box.
+if command -v ruff >/dev/null 2>&1; then
+  echo "     Checking Python static analysis..."
+  ruff check --quiet "${REPO_ROOT}/backend" "${REPO_ROOT}/poc" "${REPO_ROOT}/scripts" "${REPO_ROOT}/deploy"
+  echo "  ✓ Python static analysis clean"
+else
+  echo "  (ruff not installed; the Lint workflow enforces this gate in CI)"
+fi
+
 # 2. Run backend pytest suite
 echo ""
 echo "[2/7] Running backend pytest suite..."

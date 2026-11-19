@@ -10,7 +10,7 @@ import re
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from fastapi import Depends, FastAPI, Header, Query, Request, Response, status
+from fastapi import Depends, FastAPI, Header, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -18,17 +18,23 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from scopewatch import __version__
+# The bare constants below are not read here: they stay bound in this module's
+# namespace as test seams. ``_active_*`` helpers resolve configuration through
+# ``getattr(scopewatch.app, <NAME>)`` first, so a test can pin a value with
+# ``monkeypatch.setattr("scopewatch.app.CORS_ALLOW_ORIGINS", ...)`` and the
+# environment-variable getters stay the production source of truth. Removing
+# the rebound names would make those monkeypatches raise AttributeError.
 from scopewatch.config import (
-    ALLOW_DEMO_RESET,
-    API_KEY,
+    ALLOW_DEMO_RESET,  # noqa: F401 (test seam, see above)
+    API_KEY,  # noqa: F401 (test seam, see above)
     DEFAULT_EXPIRY_SECONDS,
-    CORS_ALLOW_CREDENTIALS,
-    CORS_ALLOW_ORIGINS,
     DB_PATH,
-    DEFAULT_REVIEWER_IDENTITY,
+    DEFAULT_REVIEWER_IDENTITY,  # noqa: F401 (test seam, see above)
+    CORS_ALLOW_CREDENTIALS,  # noqa: F401 (test seam, see above)
+    CORS_ALLOW_ORIGINS,  # noqa: F401 (test seam, see above)
     DEMO_REVIEWER_ID,
-    ENABLE_HSTS,
-    REVIEWER_TOKEN,
+    ENABLE_HSTS,  # noqa: F401 (test seam, see above)
+    REVIEWER_TOKEN,  # noqa: F401 (test seam, see above)
     WORKSPACE_ROOT,
     get_allow_demo_reset,
     get_api_key,

@@ -1,9 +1,7 @@
 """Unit tests for Scopewatch provider profiles, loader, and client layer."""
 
 import json
-import os
 import time
-from pathlib import Path
 from typing import Any
 import httpx
 import pytest

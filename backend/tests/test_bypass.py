@@ -24,7 +24,6 @@ from scopewatch.executor_docker import (
     DOCKER_USER,
     RUN_COMMAND_OUTPUT_LIMIT,
     build_docker_command,
-    is_docker_available,
 )
 from scopewatch.models import (
     ApprovalStatus,

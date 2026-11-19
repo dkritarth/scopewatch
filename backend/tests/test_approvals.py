@@ -15,7 +15,6 @@ from scopewatch.models import (
 )
 from scopewatch.repository import (
     RepositoryConflictError,
-    RepositoryNotFoundError,
     ScopewatchRepository,
 )
 from scopewatch.schemas import (

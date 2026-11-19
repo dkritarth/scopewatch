@@ -12,7 +12,7 @@ from scopewatch.service import ScopewatchService
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
-from seed_demo import seed_coding_workspace_files, seed_workspace_files, seed_scenarios
+from seed_demo import seed_coding_workspace_files, seed_workspace_files
 
 
 def run_scenario(tmp_path, monkeypatch, name):

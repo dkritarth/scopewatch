@@ -25,7 +25,6 @@ from scopewatch.executor_docker import (
     _helper_code,
     clamp_run_command_timeout,
     extract_run_command_argv,
-    is_docker_available,
 )
 from scopewatch.models import ExecutionStatus, PolicyOutcome, ReasonCode
 from scopewatch.schemas import ActionRequest, PolicyDecision

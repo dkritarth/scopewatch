@@ -1,9 +1,7 @@
 """Tests for Issue #126: Persist the agent prompt version with run evidence."""
 
-import json
 from pathlib import Path
 from fastapi.testclient import TestClient
-import pytest
 
 from scopewatch.agent.loop import AgentLoop
 from scopewatch.agent.prompt import PROMPT_VERSION
@@ -12,7 +10,6 @@ from scopewatch.app import create_app
 from scopewatch.evidence_chain import build_chain_from_events
 from scopewatch.models import ReasoningProvenance
 from scopewatch.providers.client import ChatResult, MockProviderClient
-from scopewatch.schemas import CreateRunRequest, TaskScope
 from scopewatch.service import ScopewatchService
 
 

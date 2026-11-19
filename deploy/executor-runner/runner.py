@@ -114,18 +114,24 @@ from scopewatch.docker_job import (  # noqa: E402
     RUN_COMMAND_DEFAULT_TIMEOUT_S,
     best_effort_remove,
     build_docker_command,
-    check_staged_workspace_size,
+    check_staged_workspace_size,  # noqa: F401 - identity-pinned re-export
     clamp_run_command_timeout,
     StagingScopeError,
-    make_world_accessible,
+    make_world_accessible,  # noqa: F401 - identity-pinned re-export
     normalize_blocked_paths,
     prepare_docker_job,
-    replace_link,
+    replace_link,  # noqa: F401 - identity-pinned re-export
     resolve_workspace_target,
     run_docker_process,
     stage_workspace_copy,
     sync_copy_back,
 )
+
+# The three names marked above are imported and never called in this file. They
+# stay bound on purpose: ``backend/tests/test_docker_job_share.py`` asserts by
+# identity that this module and the gateway both resolve those helpers to the
+# one shared implementation in ``docker_job`` (#106). Deleting the bindings
+# silently removes that guarantee, so the imports carry an explicit noqa.
 
 # Shared pre-dispatch authorization gate (issue #105). The approval-status and
 # outcome rules are authored once, in ``backend/scopewatch/dispatch_gate.py``,
