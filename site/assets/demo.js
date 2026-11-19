@@ -56,6 +56,18 @@ function el(tag, props = {}, ...children) {
   return node;
 }
 
+// Re-rendering replaces nodes, which drops keyboard focus to <body>. Remember
+// the focused row by container and index, and focus its replacement afterwards.
+function keepFocus(container, rebuild, fallback) {
+  const active = document.activeElement;
+  const inside = container.contains(active) && active !== container;
+  const index = inside ? active.dataset.index : null;
+  rebuild();
+  if (!inside) return;
+  const target = (index !== undefined && container.querySelector(`[data-index="${index}"]`)) || fallback?.();
+  target?.focus({ preventScroll: true });
+}
+
 // Let long reason codes wrap at underscores instead of mid-word.
 function breakable(text) {
   return String(text ?? "").replace(/_/g, "_\u200b");
@@ -142,7 +154,7 @@ function finalPill(action, index) {
 
 // ---------- rendering ----------
 function renderScenarioList() {
-  els.list.replaceChildren(
+  keepFocus(els.list, () => els.list.replaceChildren(
     ...state.runs.map((run, i) => {
       const outcomes = run.actions.map((a) => a.gateway_decision.outcome);
       const worst = outcomes.includes("HOLD") ? "HOLD" : outcomes.includes("DENY") ? "DENY" : "ALLOW";
@@ -152,13 +164,14 @@ function renderScenarioList() {
           class: "scn",
           type: "button",
           "aria-pressed": String(i === state.scenario),
+          "data-index": String(i),
           onclick: () => selectScenario(i, true),
         },
         el("span", { class: "top" }, el("span", { class: "no", text: `Scenario ${scenarioNumber(run)}` }), pill(worst, outcomeKind(worst))),
         el("span", { class: "nm", text: run.name }),
       );
     }),
-  );
+  ));
 }
 
 function chips(values, cls = "") {
@@ -222,7 +235,10 @@ function renderReviewBar(action, index, reached) {
   const awaiting = reached >= 3 && isPendingHold(action) && !state.resolutions.has(index);
   els.review.hidden = !awaiting;
   if (!awaiting) {
+    const hadFocus = els.review.contains(document.activeElement);
     els.review.replaceChildren();
+    // The decision buttons are gone; keep the reviewer's place on the action just decided.
+    if (hadFocus) els.timeline.querySelector(`[data-index="${index}"]`)?.focus({ preventScroll: true });
     return;
   }
   els.review.replaceChildren(
@@ -239,7 +255,7 @@ function renderReviewBar(action, index, reached) {
 function renderTimeline() {
   const run = currentRun();
   const focus = focusedIndex();
-  els.timeline.replaceChildren(
+  keepFocus(els.timeline, () => els.timeline.replaceChildren(
     ...run.actions.map((action, i) => {
       const reached = stageReached(i);
       const started = reached >= 0;
@@ -249,6 +265,7 @@ function renderTimeline() {
           class: `tl ${started ? "" : "pending"}`.trim(),
           "aria-current": String(i === focus),
           tabindex: "0",
+          "data-index": String(i),
           onclick: () => inspect(i),
           onkeydown: (event) => {
             if (event.key === "Enter" || event.key === " ") {
@@ -268,7 +285,7 @@ function renderTimeline() {
               : pill("queued", "muted", "no-dot"),
       );
     }),
-  );
+  ));
 }
 
 function kv(key, value, missingText) {
