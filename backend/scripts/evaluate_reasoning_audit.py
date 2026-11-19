@@ -676,13 +676,26 @@ def verify_evaluation_report(
             cases = None
             dataset_loaded = False
             if candidate.is_file():
+                if meta.get("dataset_split") == "all":
+                    errors.append(
+                        f"metadata.dataset_split='all' does not match single-file "
+                        f"dataset_file {dataset_file}; expected 'dev' or 'heldout'"
+                    )
                 actual = compute_file_hash(candidate)
                 try:
                     cases = json.loads(candidate.read_text(encoding="utf-8"))
                     dataset_loaded = True
                 except (ValueError, OSError) as exc:
                     errors.append(f"could not load pinned dataset: {exc}")
-            elif candidate.is_dir() and meta.get("dataset_split") == "all":
+            elif candidate.is_dir() and meta.get("dataset_split") != "all":
+                # A combined directory dataset can only come from split "all".
+                # Any other label must not select the unbound branch below.
+                errors.append(
+                    f"metadata.dataset_split={meta.get('dataset_split')!r} does not match "
+                    f"directory dataset_file {dataset_file}; expected 'all'"
+                )
+                actual = None
+            elif candidate.is_dir():
                 try:
                     cases, actual, _ = load_dataset_cases(candidate, "all")
                     dataset_loaded = True

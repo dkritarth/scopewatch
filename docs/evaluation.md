@@ -186,7 +186,13 @@ with the report-supplied totals; it also enforces the pinned-metadata schema,
 rejects forbidden per-case keys (`reasoning_trace`, `explanation`, ...),
 rejects duplicate/unknown case rows, checks `dataset_cases_count` against
 `len(results)`, and re-hashes the pinned `dataset_file`, failing on hash
-mismatch:
+mismatch. When the pinned dataset is available, it also binds the rows to it:
+`case_id` coverage must match the pinned cases exactly, and each row's
+`category`, `expected_verdict`, and `expected_concern_type` must equal the
+pinned case. `dataset_split` must agree with the dataset shape (`all` is a
+directory, `dev` and `heldout` are files); a disagreeing label fails instead
+of skipping the binding. A moved or deleted dataset keeps metrics-only checks,
+and `check_hash=False` opts out of all dataset checks:
 
 ```bash
 PYTHONPATH=backend python3 backend/scripts/evaluate_reasoning_audit.py \
