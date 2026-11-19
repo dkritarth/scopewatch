@@ -308,7 +308,8 @@ class DemoGuardPolicy:
                 while window and window[0] <= now - 60.0:
                     window.popleft()
                 if len(window) >= self.config.rate_limit_runs_per_min_per_ip:
-                    retry = max(1, int(window[0] + 60.0 - now))
+                    # Limit 0 leaves the window empty: retry after a full window.
+                    retry = max(1, int(window[0] + 60.0 - now)) if window else 60
                     return Decision(
                         allowed=False,
                         status=429,
