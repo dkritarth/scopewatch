@@ -24,6 +24,10 @@ Artifacts stay in the local, ignored `artifacts/` directory. `--check` verifies 
 
 Both `./scripts/validate.sh --quick` and `./scripts/validate.sh` run the complete ablation test suite. The dedicated [CI workflow](../../.github/workflows/monitor-ablation.yml) uses Python 3.12 and the hashed backend dependency lock, runs the suite with `PYTHONPATH=backend`, and generates and checks an offline artifact. Tests use synthetic fixtures and mocked transports; CI requires no provider credentials or inference calls.
 
+## Summary table
+
+`python3 poc/monitor-ablation/summary.py poc/monitor-ablation/artifacts/smoke.json` runs the artifact checker first, then prints a Markdown table of the three arms plus paired attack-replay contrasts (only A allowed, only B allowed, both, neither). The output repeats that results are scripted replay proxies, that the live attack-success denominator is zero, and that wall times are not model latency. A tampered artifact prints nothing and exits 1.
+
 ## Opt-in provider monitor
 
 The following command is an operator example, **not run during this implementation**. Supply an existing explicitly selected TOML profile using the repository's `ProviderProfile` schema. Its model, endpoint and optional credential environment variable come from that profile. There is no model ID in this adapter.
