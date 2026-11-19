@@ -452,10 +452,11 @@ def execute_action(
 
     ``SCOPEWATCH_EXECUTOR=docker`` selects the Docker-isolated backend,
     ``SCOPEWATCH_EXECUTOR=remote`` selects the executor-runner sidecar
-    client (issue #78; the only socket-holding process), and anything else
-    (including unset) selects the local backend. Remote and Docker failures
-    fail closed inside their own backend and never fall back to local
-    execution.
+    client (issue #78; the only socket-holding process), and unset, empty or
+    ``local`` selects the local backend. Any other value is refused with
+    ``UNKNOWN_EXECUTOR_BACKEND`` rather than run locally. Remote and Docker
+    failures fail closed inside their own backend and never fall back to
+    local execution.
 
     ``workspace_root`` is the run's own workspace directory. ``run_workspace``
     is the key naming that directory on the wire (issue #117): it is passed
