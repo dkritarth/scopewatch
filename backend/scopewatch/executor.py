@@ -158,6 +158,73 @@ def _verify_stored_approval_single_use(
     finally:
         if should_close:
             conn.close()
+def verify_stored_authorization(
+    action: ActionRequest,
+    policy_decision: Optional[PolicyDecision],
+    approval_request: Optional[ApprovalRequest],
+    db_path: Path | str | sqlite3.Connection,
+) -> None:
+    """Shared stored-state gate for every gateway executor backend.
+
+    "No decision, no execution" at the executor boundary: with a store
+    handle, the executor does not trust the in-memory decision. It requires
+    a stored decision for this exact action id whose outcome is not DENY and
+    agrees with the presented outcome, refuses a replay when an execution
+    receipt already exists, and for HOLD requires the stored APPROVED
+    approval bound to this action. The run must not be terminal. Any store
+    failure fails closed. Messages are static so stored content never leaks.
+    """
+    from scopewatch.repository import ScopewatchRepository
+
+    _verify_stored_run_not_terminal(action, db_path)
+    try:
+        conn, should_close = _resolve_connection(db_path)
+    except Exception as exc:
+        raise ExecutionSecurityError(
+            "Stored decision authorization is unavailable; failing closed.", "STORE_UNAVAILABLE"
+        ) from exc
+    try:
+        stored = ScopewatchRepository.get_policy_decision_by_action(conn, action.id)
+        if stored is None:
+            raise ExecutionSecurityError(
+                "No stored decision for this action; execution refused.", "NO_STORED_DECISION"
+            )
+        stored_outcome = stored.outcome
+        if stored_outcome == PolicyOutcome.DENY:
+            raise ExecutionSecurityError(
+                "Stored decision is DENY; execution refused.", "STORED_DECISION_DENY"
+            )
+        if stored_outcome not in (PolicyOutcome.ALLOW, PolicyOutcome.HOLD):
+            raise ExecutionSecurityError(
+                "Stored decision does not authorize execution.", "STORED_DECISION_REFUSED"
+            )
+        if policy_decision is None or policy_decision.outcome != stored_outcome:
+            raise ExecutionSecurityError(
+                "Presented decision does not match the stored decision; execution refused.",
+                "DECISION_MISMATCH",
+            )
+        receipt = ScopewatchRepository.get_execution_receipt_by_action(conn, action.id)
+        if receipt is not None:
+            raise ExecutionSecurityError(
+                "Action was already executed; replay refused.", "ALREADY_EXECUTED"
+            )
+    except ExecutionSecurityError:
+        raise
+    except Exception as exc:
+        raise ExecutionSecurityError(
+            "Stored decision authorization could not be verified; failing closed.", "STORE_ERROR"
+        ) from exc
+    finally:
+        if should_close:
+            conn.close()
+    if stored_outcome == PolicyOutcome.HOLD:
+        if approval_request is None:
+            raise ExecutionSecurityError(
+                "Held action requires valid approved status to execute.", "APPROVAL_REQUIRED"
+            )
+        _verify_stored_approval_single_use(action, approval_request, db_path)
+
+
 def _verify_scoped_target(
     workspace_root: Path, resource: str, task_scope: Optional[TaskScope],
     *, require_allowed: bool = True,
@@ -232,11 +299,8 @@ def _execute_local(
     # status instead of trusting the in-memory object alone. Non-held
     # actions carry no approval, but a store handle still binds them to
     # the run lifecycle: terminal runs execute nothing.
-    if policy_decision is not None and policy_decision.outcome == PolicyOutcome.HOLD:
-        if db_path is not None:
-            _verify_stored_approval_single_use(action, approval_request, db_path)
-    elif db_path is not None:
-        _verify_stored_run_not_terminal(action, db_path)
+    if db_path is not None:
+        verify_stored_authorization(action, policy_decision, approval_request, db_path)
 
     # Invariant: run_command is Docker-only (policy denies it for the local
     # backend, but the executor refuses it too as defence in depth).

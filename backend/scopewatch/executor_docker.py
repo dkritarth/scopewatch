@@ -287,19 +287,12 @@ class DockerExecutor:
             from scopewatch.executor import ExecutionSecurityError
 
             raise ExecutionSecurityError(verdict.reason)
-        if policy_decision is not None and policy_decision.outcome == PolicyOutcome.HOLD:
-            # Verifiable single-use: with a store handle, consult the stored
-            # approval, the execution receipt, and the run status.
-            if db_path is not None:
-                from scopewatch.executor import _verify_stored_approval_single_use
+        if db_path is not None:
+            # Verifiable authorization: with a store handle, consult the
+            # stored decision, approval, execution receipt, and run status.
+            from scopewatch.executor import verify_stored_authorization
 
-                _verify_stored_approval_single_use(action, approval_request, db_path)
-        elif db_path is not None:
-            # Non-held actions carry no approval, but a store handle still
-            # binds them to the run lifecycle.
-            from scopewatch.executor import _verify_stored_run_not_terminal
-
-            _verify_stored_run_not_terminal(action, db_path)
+            verify_stored_authorization(action, policy_decision, approval_request, db_path)
 
         from scopewatch.executor import ExecutionSecurityError, _verify_scoped_target
 
