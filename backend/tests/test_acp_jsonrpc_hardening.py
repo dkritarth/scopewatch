@@ -77,3 +77,14 @@ def test_hold_without_usable_action_id_fails_closed_without_polling(action_reque
     )
     assert resp["error"]["data"]["reason_code"] == "HOLD_MISSING_ACTION_ID"
     assert [r.method for r in seen] == ["POST"], "must not poll /actions/None"
+
+
+def test_unknown_method_message_does_not_echo_caller_input() -> None:
+    adapter, seen = _adapter(_never)
+    method = "x/" + "A" * 5000
+    resp = adapter.handle_jsonrpc({"jsonrpc": "2.0", "id": 9, "method": method})
+    assert resp["id"] == 9
+    assert resp["error"]["code"] == -32601
+    assert "A" * 10 not in resp["error"]["message"]
+    assert len(resp["error"].get("data", {}).get("method", "")) <= 64
+    assert not seen

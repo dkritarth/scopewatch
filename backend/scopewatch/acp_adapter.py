@@ -336,9 +336,12 @@ class AcpClientAdapter:
         """Route an ACP method call to its gateway-mediated handler."""
         handler = self._dispatch_map.get(method)
         if handler is None:
+            # Fixed message: never echo the caller's unbounded method string.
+            # A bounded copy goes in ``data`` for debugging.
             raise AcpRpcError(
                 code=-32601,
-                message=f"Method not found or unsupported by Scopewatch ACP adapter: {method}",
+                message="Method not found or unsupported by Scopewatch ACP adapter.",
+                data={"method": method[:64]},
             )
         return handler(params)
 
