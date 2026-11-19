@@ -198,7 +198,12 @@ def verify_stored_authorization(
             raise ExecutionSecurityError(
                 "Stored decision does not authorize execution.", "STORED_DECISION_REFUSED"
             )
-        if policy_decision is None or policy_decision.outcome != stored_outcome:
+        if (
+            policy_decision is None
+            or policy_decision.outcome != stored_outcome
+            or policy_decision.id != stored.id
+            or policy_decision.action_request_id != action.id
+        ):
             raise ExecutionSecurityError(
                 "Presented decision does not match the stored decision; execution refused.",
                 "DECISION_MISMATCH",
@@ -223,6 +228,62 @@ def verify_stored_authorization(
                 "Held action requires valid approved status to execute.", "APPROVAL_REQUIRED"
             )
         _verify_stored_approval_single_use(action, approval_request, db_path)
+    _claim_execution(action, db_path)
+
+
+def _claim_execution(
+    action: ActionRequest,
+    db_path: Path | str | sqlite3.Connection,
+) -> None:
+    """Atomically claim the single execution of this action before any effect.
+
+    The claim row's primary key makes the claim exclusive, so a concurrent
+    second caller is refused even when both passed the read-only checks.
+    The receipt re-check and the insert run in one BEGIN IMMEDIATE
+    transaction (or inside the caller's open transaction). Any store failure
+    fails closed.
+    """
+    from scopewatch.repository import ScopewatchRepository
+
+    try:
+        conn, should_close = _resolve_connection(db_path)
+    except Exception as exc:
+        raise ExecutionSecurityError(
+            "Execution claim is unavailable; failing closed.", "STORE_UNAVAILABLE"
+        ) from exc
+    own_txn = not conn.in_transaction
+    try:
+        if own_txn:
+            conn.execute("BEGIN IMMEDIATE")
+        try:
+            if ScopewatchRepository.get_execution_receipt_by_action(conn, action.id) is not None:
+                raise ExecutionSecurityError(
+                    "Action was already executed; replay refused.", "ALREADY_EXECUTED"
+                )
+            try:
+                conn.execute(
+                    "INSERT INTO execution_claims (action_request_id, claimed_at) VALUES (?, ?)",
+                    (action.id, datetime.now(timezone.utc).isoformat()),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ExecutionSecurityError(
+                    "Action execution already claimed; replay refused.", "ALREADY_EXECUTED"
+                ) from exc
+            if own_txn:
+                conn.execute("COMMIT")
+        except BaseException:
+            if own_txn and conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    except ExecutionSecurityError:
+        raise
+    except Exception as exc:
+        raise ExecutionSecurityError(
+            "Execution claim could not be recorded; failing closed.", "STORE_ERROR"
+        ) from exc
+    finally:
+        if should_close:
+            conn.close()
 
 
 def _verify_scoped_target(
