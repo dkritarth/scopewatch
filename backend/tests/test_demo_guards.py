@@ -478,3 +478,20 @@ def test_scripted_scenario_needs_no_token_when_demo_off(
         )
         resp = asyncio.run(service.submit_action(run.id, req))
         assert resp.policy_decision.outcome.value == "ALLOW"
+
+
+def test_zero_rate_limit_refuses_with_429_instead_of_crashing() -> None:
+    """A per-IP limit of 0 is a valid config (>= 0): refuse, never raise."""
+    policy = DemoGuardPolicy(
+        config=DemoGuardConfig(
+            enabled=True,
+            demo_token="t",
+            rate_limit_runs_per_min_per_ip=0,
+        ),
+        now=lambda: 1000.0,
+    )
+    decision = policy.try_begin_run("1.2.3.4")
+    assert decision.allowed is False
+    assert decision.status == 429
+    assert decision.code == "rate_limited"
+    assert decision.retry_after_s >= 1
