@@ -314,3 +314,91 @@ def test_stored_hold_with_approved_approval_still_executes(
     approval = env.store_approval(stored, ApprovalStatus.APPROVED)
     receipt = _run(backend, env, calls, stored, approval)
     assert receipt.status == ExecutionStatus.EXECUTED
+
+
+# ---- #390 follow-up: decision identity binding and atomic execution claim ----
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_forged_allow_with_other_decision_id_refused(
+    backend: str, env: _Env, calls: _Calls
+) -> None:
+    stored = env.store_decision(PolicyOutcome.ALLOW)
+    forged = stored.model_copy(update={"id": str(uuid.uuid4())})
+    _assert_refused(backend, env, calls, forged, "DECISION_MISMATCH")
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_forged_allow_for_another_action_refused(
+    backend: str, env: _Env, calls: _Calls
+) -> None:
+    env.store_decision(PolicyOutcome.ALLOW)
+    forged = _decision("some-other-action", PolicyOutcome.ALLOW)
+    _assert_refused(backend, env, calls, forged, "DECISION_MISMATCH")
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_stored_id_with_other_action_id_refused(
+    backend: str, env: _Env, calls: _Calls
+) -> None:
+    stored = env.store_decision(PolicyOutcome.ALLOW)
+    forged = stored.model_copy(update={"action_request_id": "some-other-action"})
+    _assert_refused(backend, env, calls, forged, "DECISION_MISMATCH")
+
+
+def test_concurrent_direct_calls_execute_exactly_once(env: _Env, calls: _Calls) -> None:
+    import threading
+
+    stored = env.store_decision(PolicyOutcome.ALLOW)
+    n = 8
+    barrier = threading.Barrier(n)
+    results: list[object] = []
+    lock = threading.Lock()
+
+    def worker() -> None:
+        barrier.wait()
+        try:
+            out: object = execute_action(
+                env.action, env.ws, policy_decision=stored,
+                approval_request=None, db_path=env.db,
+            )
+        except ExecutionSecurityError as exc:
+            out = exc
+        with lock:
+            results.append(out)
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    executed = [r for r in results if isinstance(r, ExecutionReceipt)]
+    refused = [r for r in results if isinstance(r, ExecutionSecurityError)]
+    assert len(executed) == 1
+    assert len(refused) == n - 1
+    assert all(r.code == "ALREADY_EXECUTED" for r in refused)
+
+
+def test_sequential_second_call_refused_by_claim_without_receipt(env: _Env, calls: _Calls) -> None:
+    stored = env.store_decision(PolicyOutcome.ALLOW)
+    assert _run("local", env, calls, stored).status == ExecutionStatus.EXECUTED
+    _assert_refused("local", env, calls, stored, "ALREADY_EXECUTED")
+
+
+def test_init_db_adds_claims_table_to_existing_database(tmp_path: Path) -> None:
+    db = tmp_path / "old.db"
+    init_db(db)
+    conn = get_connection(db)
+    try:
+        conn.execute("DROP TABLE execution_claims")
+    finally:
+        conn.close()
+    init_db(db)
+    init_db(db)  # idempotent
+    conn = get_connection(db)
+    try:
+        names = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        conn.close()
+    assert "execution_claims" in names

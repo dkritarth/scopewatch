@@ -102,6 +102,14 @@ CREATE TABLE IF NOT EXISTS execution_receipts (
     operation TEXT NOT NULL
 );
 
+-- Atomic execution claim: at most one dispatch per action, enforced by the
+-- primary key. Inserted by the executor in the same transaction as its
+-- stored-authorization check, before any effect.
+CREATE TABLE IF NOT EXISTS execution_claims (
+    action_request_id TEXT PRIMARY KEY REFERENCES action_requests(id) ON DELETE CASCADE,
+    claimed_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS evidence_events (
     sequence INTEGER NOT NULL,
     id TEXT PRIMARY KEY,
