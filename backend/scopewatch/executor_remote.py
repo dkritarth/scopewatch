@@ -50,6 +50,7 @@ import hmac
 import json
 import os
 import secrets
+import sqlite3
 import time
 import uuid
 from datetime import datetime, timezone
