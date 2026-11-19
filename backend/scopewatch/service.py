@@ -507,9 +507,12 @@ capture_token: Optional[str] = None,
         self._check_agent_token_budget()
 
         # #76: demo-mode rate limit + daily run budget (atomic reserve).
+        reserved_day = ""
         if self.guards.config.enabled:
-            self.guards.try_begin_run(client_ip).raise_if_denied()
+            reservation = self.guards.try_begin_run(client_ip)
+            reservation.raise_if_denied()
             reserved = True
+            reserved_day = reservation.day
         else:
             reserved = False
 
@@ -604,7 +607,7 @@ capture_token: Optional[str] = None,
                 conn.close()
         except BaseException:
             if reserved:
-                self.guards.release_run()
+                self.guards.release_run(reserved_day)
             raise
         finally:
             if pending_added:
