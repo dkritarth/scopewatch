@@ -282,3 +282,24 @@ def test_coding_scenario_command_allowlist_reaches_the_store(
     assert row is not None, f"run {CODING_RUN_NAME!r} was not seeded"
     scope = json.loads(row[0])
     assert scope["allowed_commands"] == [["python", "-m", "pytest"]]
+
+
+@pytest.mark.parametrize("coding", [True, False])
+def test_an_unknown_executor_value_stops_the_launcher_before_seeding(
+    tmp_path: Path, coding: bool
+) -> None:
+    """A typo is one clear launcher error, not a FAILED receipt per action."""
+    paths = _seed_dirs(tmp_path)
+    env = dict(os.environ)
+    env["SCOPEWATCH_EXECUTOR"] = "Dockr"
+    env["SCOPEWATCH_RUN_WORKSPACES_DIR"] = str(paths["run_workspaces"])
+    env["SCOPEWATCH_CAPTURE_TOKEN"] = "synthetic-capture-token"
+    args = ["bash", str(RUN_DEMO)] + (["--coding"] if coding else []) + [
+        "--seed-only", "--db-path", str(paths["db"]),
+        "--workspace-root", str(paths["workspace"]),
+    ]
+    proc = subprocess.run(args, cwd=str(REPO_ROOT), env=env,
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 2
+    assert "SCOPEWATCH_EXECUTOR='Dockr' is not a known backend" in proc.stderr
+    assert not paths["db"].exists()

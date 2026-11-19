@@ -148,6 +148,23 @@ fi
 #
 # An explicit SCOPEWATCH_EXECUTOR always wins: the operator may be pointing at
 # a remote runner on purpose.
+# The gateway refuses unknown executor backends (UNKNOWN_EXECUTOR_BACKEND)
+# instead of running them locally. Catch a typo here, before seeding, so the
+# operator sees one clear error rather than a FAILED receipt per action.
+# Pure bash (no tr/xargs): the launcher must work with a minimal PATH.
+_executor_normalized="${SCOPEWATCH_EXECUTOR:-}"
+_executor_normalized="${_executor_normalized#"${_executor_normalized%%[![:space:]]*}"}"
+_executor_normalized="${_executor_normalized%"${_executor_normalized##*[![:space:]]}"}"
+_executor_normalized="${_executor_normalized,,}"
+case "${_executor_normalized}" in
+  ""|local|docker|remote) ;;
+  *)
+    echo "ERROR: SCOPEWATCH_EXECUTOR='${SCOPEWATCH_EXECUTOR}' is not a known backend." >&2
+    echo "Use local, docker or remote (or leave it unset for local)." >&2
+    exit 2
+    ;;
+esac
+
 if [[ "${CODING}" -eq 1 ]]; then
   if [[ -z "${SCOPEWATCH_EXECUTOR:-}" ]]; then
     if "${PYTHON}" -c 'import sys
