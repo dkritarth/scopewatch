@@ -110,3 +110,31 @@ def test_transport_error_and_malformed_json_fail_closed(tmp_path: Path) -> None:
             result = preflight(payload(), client, 'run-1', tmp_path)
             assert verdict(result) == 'deny'
             assert 'sensitive diagnostics' not in json.dumps(result)
+
+
+def test_blocked_alias_is_denied_even_when_canonical_target_is_allowed(tmp_path: Path) -> None:
+    """The gateway checks the alias and the canonical target; the hook must send the alias."""
+    workspace = tmp_path / 'workspace'
+    (workspace / 'docs').mkdir(parents=True)
+    (workspace / 'private').mkdir()
+    (workspace / 'docs' / 'README.md').write_text('synthetic')
+    (workspace / 'private' / 'docs-alias').symlink_to(workspace / 'docs', target_is_directory=True)
+    app = create_app(db_path=tmp_path / 'test.db', workspace_root=workspace,
+                     demo_config=DemoGuardConfig(enabled=False))
+    with TestClient(app) as client:
+        run = client.post('/api/v1/runs', json={'name': 'hook-alias', 'task_scope': {
+            'task_description': 'Review docs', 'allowed_paths': ['docs', 'private/docs-alias'],
+            'blocked_paths': ['private'], 'allowed_tools': ['workspace'],
+            'allowed_operations': ['read_text'], 'created_at': '2026-10-25T00:00:00Z'}}).json()
+        rid = run['id']
+        assert verdict(preflight(payload(path='private/docs-alias/README.md'), client, rid, workspace)) == 'deny'
+        assert verdict(preflight(payload(), client, rid, workspace)) == 'ask'
+        assert map_tool(payload(path='private/docs-alias/README.md'), workspace)['resource'] == 'private/docs-alias/README.md'
+
+
+def test_absolute_path_through_symlinked_workspace_prefix(tmp_path: Path) -> None:
+    real = tmp_path / 'real'
+    (real / 'docs').mkdir(parents=True)
+    link = tmp_path / 'link'
+    link.symlink_to(real, target_is_directory=True)
+    assert map_tool(payload(path=str(link / 'docs/a.txt')), link)['resource'] == 'docs/a.txt'

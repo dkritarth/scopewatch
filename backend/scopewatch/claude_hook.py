@@ -36,7 +36,18 @@ def map_tool(payload: dict[str, Any], workspace: Path) -> dict[str, Any]:
     native = Path(path)
     if not native.is_absolute():
         native = root / native
-    resource = native.resolve(strict=False).relative_to(root).as_posix()
+    # Keep the alias the caller named: the gateway checks both the submitted
+    # alias and its canonical target, so sending only the resolved target would
+    # hide a blocked alias from policy. The target must still stay in the root.
+    try:
+        relative = native.relative_to(root)
+    except ValueError:
+        # Absolute path spelled through an unresolved (symlinked) workspace prefix.
+        relative = native.relative_to(workspace.absolute())
+    if any(part == '..' for part in relative.parts):
+        raise ValueError("Invalid path")
+    native.resolve(strict=False).relative_to(root)
+    resource = relative.as_posix()
     arguments: dict[str, Any] = {"path": resource}
     if name == "Write":
         if not isinstance(args.get("content"), str):
