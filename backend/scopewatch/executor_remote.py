@@ -334,17 +334,13 @@ class RemoteExecutor:
         from scopewatch.executor import (
             ExecutionSecurityError,
             _verify_scoped_target,
-            _verify_stored_approval_single_use,
-            _verify_stored_run_not_terminal,
+            verify_stored_authorization,
         )
 
         # 1. Stored single-use and run lifecycle. A missing or broken store is
         #    refused, exactly as local and Docker do.
-        if policy_decision is not None and policy_decision.outcome == PolicyOutcome.HOLD:
-            if db_path is not None:
-                _verify_stored_approval_single_use(action, approval_request, db_path)
-        elif db_path is not None:
-            _verify_stored_run_not_terminal(action, db_path)
+        if db_path is not None:
+            verify_stored_authorization(action, policy_decision, approval_request, db_path)
 
         # 2. Scoped-target revalidation on this host: the resolved target must
         #    stay inside the workspace AND inside the task scope, so a symlink

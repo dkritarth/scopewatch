@@ -407,16 +407,40 @@ def test_docker_executor_uses_stored_scope_when_none_is_passed(
     (ws / "tests" / "conftest.py").write_text("print(open('.env').read())\n")
     scope = _scenario_10_scope()
     monkeypatch.setattr(docker_mod, "_load_scope_from_store", lambda action, db: scope)
-    monkeypatch.setattr(
-        "scopewatch.executor._verify_stored_run_not_terminal", lambda action, db: None
-    )
     seen: dict = {}
     _fake_pytest_container(monkeypatch, docker_mod, seen)
     monkeypatch.setattr(docker_mod, "is_docker_available", lambda *a, **k: True)
 
+    # The executor now verifies the stored decision itself, so seed a real
+    # store (active run, action, stored ALLOW) instead of stubbing the check.
+    from scopewatch.db import get_connection, init_db
+    from scopewatch.models import RunStatus
+    from scopewatch.repository import ScopewatchRepository
+
     action = _run_command_action()
+    decision = _decision(action.id)
+    db_path = tmp_path / "stored.db"
+    init_db(db_path)
+    conn = get_connection(db_path)
+    try:
+        ScopewatchRepository.create_run(
+            conn,
+            Run(
+                id=action.run_id,
+                name="staging",
+                task_scope=scope,
+                status=RunStatus.ACTIVE,
+                created_at=_now(),
+                updated_at=_now(),
+            ),
+        )
+        ScopewatchRepository.create_action_request(conn, action)
+        ScopewatchRepository.create_policy_decision(conn, decision)
+        conn.commit()
+    finally:
+        conn.close()
     receipt = DockerExecutor().execute(
-        action, ws, policy_decision=_decision(action.id), db_path=tmp_path / "unused.db"
+        action, ws, policy_decision=decision, db_path=db_path
     )
 
     assert receipt.status == ExecutionStatus.EXECUTED, receipt.sanitized_result
