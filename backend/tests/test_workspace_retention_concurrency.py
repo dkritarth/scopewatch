@@ -146,3 +146,79 @@ def test_concurrent_reapers_cannot_both_report_success(tmp_path):
     attempts = {e.details["attempt_id"] for e in history if e.event_type == EventType.WORKSPACE_PRUNE_ATTEMPTED}
     results = {e.details["attempt_id"] for e in history if e.event_type != EventType.WORKSPACE_PRUNE_ATTEMPTED}
     assert attempts == results
+
+
+def test_recheck_blocked_before_delete_does_not_claim_partial_removal(tmp_path, monkeypatch):
+    """A recheck that stops pruning before delete() left the workspace intact.
+
+    The failure event must not warn that removal may be partial.
+    """
+    db, manager, workspace = seed(tmp_path)
+    first = True
+
+    @contextmanager
+    def approval_after_attempt(conn):
+        nonlocal first
+        with db_transaction(conn):
+            yield conn
+        if first:
+            first = False
+            with db_transaction(conn):
+                add_approval(conn, ApprovalStatus.PENDING)
+
+    monkeypatch.setattr(retention, "db_transaction", approval_after_attempt)
+    report = retention.reap_workspaces(db, manager, now=NOW, apply=True)
+    assert report["failed_count"] == 1
+    assert workspace.is_dir()
+    failed = events(db)[-1]
+    assert failed.event_type.value == "WORKSPACE_PRUNE_FAILED"
+    assert failed.details["removal_started"] is False
+    assert "partial" not in failed.summary
+    assert "before removal" in failed.summary
+    assert report["results"][0]["removal_started"] is False
+
+
+def test_failed_delete_still_warns_removal_may_be_partial(tmp_path, monkeypatch):
+    from scopewatch.workspaces import RunWorkspaceError, WorkspacePruneTarget
+
+    db, manager, workspace = seed(tmp_path)
+
+    def failing_delete(target):
+        raise RunWorkspaceError("synthetic removal failure")
+
+    monkeypatch.setattr(WorkspacePruneTarget, "delete", failing_delete)
+    report = retention.reap_workspaces(db, manager, now=NOW, apply=True)
+    assert report["failed_count"] == 1
+    failed = events(db)[-1]
+    assert failed.event_type.value == "WORKSPACE_PRUNE_FAILED"
+    assert failed.details["removal_started"] is True
+    assert failed.details["reason"] == "workspace_removal_failed"
+    assert "removal may be partial" in failed.summary
+
+
+def test_inspection_failure_on_recheck_is_reported_before_removal(tmp_path, monkeypatch):
+    """If the pre-delete inspection fails, nothing was removed and the event says so."""
+    from contextlib import contextmanager as _cm
+    from scopewatch.workspaces import RunWorkspaceError, RunWorkspaceManager
+
+    db, manager, workspace = seed(tmp_path)
+    real_target = RunWorkspaceManager.retention_target
+    calls = 0
+
+    @_cm
+    def flaky_target(self, run_id, stored_path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RunWorkspaceError("synthetic inspection failure")
+        with real_target(self, run_id, stored_path) as target:
+            yield target
+
+    monkeypatch.setattr(RunWorkspaceManager, "retention_target", flaky_target)
+    report = retention.reap_workspaces(db, manager, now=NOW, apply=True)
+    assert report["failed_count"] == 1
+    assert workspace.is_dir()
+    failed = events(db)[-1]
+    assert failed.details["removal_started"] is False
+    assert failed.details["reason"] == "unsafe_or_unavailable_workspace"
+    assert "partial" not in failed.summary

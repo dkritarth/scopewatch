@@ -1758,6 +1758,8 @@ export function transformApiEvent(ev, context = null) {
     const outcome = type === "WORKSPACE_PRUNED" ? "pruned" : type === "WORKSPACE_PRUNE_FAILED" ? "failed" : "attempted";
     const statusDescription = outcome === "pruned"
       ? "Operator retention completed: run workspace removed."
+      : outcome === "failed" && d.removal_started === false
+      ? "Operator retention stopped before removal; a recheck blocked deletion."
       : outcome === "failed"
       ? "Operator retention failed; workspace removal may be partial."
       : "Operator retention attempted; no result is recorded in this event. Outcome remains unresolved.";
@@ -1771,7 +1773,7 @@ export function transformApiEvent(ev, context = null) {
       operatorRetention: { outcome, attemptId: d.attempt_id ?? null,
         bytes: d.bytes ?? null, reason: d.reason ?? null, actor: ev.actor ?? null,
         workspaceKey: d.workspace_key ?? null, retentionDays: d.retention_days ?? null,
-        cutoff: d.cutoff ?? null },
+        cutoff: d.cutoff ?? null, removalStarted: typeof d.removal_started === "boolean" ? d.removal_started : null },
       actionRequestId: null, action_request_id: null, policyOutcome: null,
       executionStatus: null, approvalStatus: null, reasoningAudit: null,
     };
