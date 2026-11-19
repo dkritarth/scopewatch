@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from scopewatch.workspaces import RunWorkspaceError, RunWorkspaceManager
+from scopewatch.workspaces import WORKSPACE_MARKER_NAME, RunWorkspaceError, RunWorkspaceManager
 
 
 def _manager(tmp_path: Path) -> RunWorkspaceManager:
@@ -46,3 +46,29 @@ def test_initialize_still_idempotent_for_own_workspace(tmp_path: Path) -> None:
     (first / "out.txt").write_text("kept", encoding="utf-8")
     assert manager.initialize("run-a") == first
     assert (first / "out.txt").read_text(encoding="utf-8") == "kept"
+
+
+def test_initialize_refuses_symlinked_marker_file(tmp_path: Path) -> None:
+    """A marker that is a link (retention opens it O_NOFOLLOW) is not ownership."""
+    import json
+
+    manager = _manager(tmp_path)
+    (manager.root / "run-a").mkdir(parents=True)
+    forged = tmp_path / "forged-marker.json"
+    forged.write_text(json.dumps({"version": 1, "run_id": "run-a"}), encoding="utf-8")
+    (manager.root / "run-a" / WORKSPACE_MARKER_NAME).symlink_to(forged)
+    with pytest.raises(RunWorkspaceError):
+        manager.initialize("run-a")
+
+
+def test_initialize_refuses_marker_with_wrong_or_missing_version(tmp_path: Path) -> None:
+    import json
+
+    manager = _manager(tmp_path)
+    own = manager.initialize("run-a")
+    marker_path = own / WORKSPACE_MARKER_NAME
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    for bad in ({**marker, "version": "not-a-version"}, {k: v for k, v in marker.items() if k != "version"}):
+        marker_path.write_text(json.dumps(bad), encoding="utf-8")
+        with pytest.raises(RunWorkspaceError):
+            manager.initialize("run-a")
