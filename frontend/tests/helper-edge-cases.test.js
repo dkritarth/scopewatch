@@ -202,7 +202,17 @@ test("shipped scripts avoid every HTML-parsing and dynamic-code sink", () => {
   const banned = /innerHTML|outerHTML|insertAdjacentHTML|document\.write|\.srcdoc\b|new Function\s*\(|\beval\s*\(/;
   for (const name of readdirSync(scriptsDir).filter((f) => f.endsWith(".js"))) {
     const src = readFileSync(join(scriptsDir, name), "utf-8");
-    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    // Strip block comments and whole-line // comments only. A trailing
+    // `//.*$` strip would also eat code after a URL string ("http://..."),
+    // hiding a sink on the same line.
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     assert.ok(!banned.test(code), `${name} must not use an HTML-parsing or dynamic-code sink`);
   }
+});
+
+test("sink guard comment stripping cannot hide a sink after a URL string", () => {
+  const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const sneaky = 'const u = "https://example.invalid/"; el.innerHTML = u;';
+  assert.match(strip(sneaky), /innerHTML/);
+  assert.doesNotMatch(strip("  // innerHTML is banned"), /innerHTML/);
 });
