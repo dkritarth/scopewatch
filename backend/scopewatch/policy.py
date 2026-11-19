@@ -431,6 +431,13 @@ def _run_command_path_candidates(argv: list[str], start: int) -> list[str]:
     return candidates
 
 
+# Allowlisted pytest options whose value pytest may pass through
+# os.path.expanduser/expandvars. Their values must not contain "~" or "$".
+_PYTEST_EXPANDED_VALUE_OPTIONS = frozenset(
+    {"-o", "--rootdir", "--junitxml", "--confcutdir", "--basetemp"}
+)
+
+
 def _check_run_command_flags(
     argv: list[str], matched_len: int, allowed_flags: tuple[str, ...]
 ) -> tuple[ReasonCode, str, str] | None:
@@ -455,6 +462,25 @@ def _check_run_command_flags(
                     f"Option '{option}' is not in the allowlist for this command.",
                     "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
                 )
+            if is_pytest and option in _PYTEST_EXPANDED_VALUE_OPTIONS:
+                if "=" in item:
+                    option_value = item.split("=", 1)[1]
+                else:
+                    option_value = argv[i + 1] if i + 1 < n else ""
+                if option == "-o":
+                    option_value = option_value.split("=", 1)[-1]
+                if option_value.startswith("~") or "$" in option_value:
+                    # pytest runs these values (e.g. cache_dir, --junitxml,
+                    # --rootdir) through expanduser/expandvars before resolving
+                    # them, so "~/x" or "$HOME/x" passes the relative-path rules
+                    # here but lands outside the workspace. Positional
+                    # arguments stay literal and are not affected.
+                    return (
+                        ReasonCode.PATH_OUTSIDE_WORKSPACE,
+                        f"Option '{option}' value uses home-directory or "
+                        "environment-variable expansion.",
+                        "RULE_RUN_COMMAND_PATH_EXPANSION_REJECTED",
+                    )
             if option == "-o":
                 value, consumed = _ini_override_value(argv, i)
                 i += consumed

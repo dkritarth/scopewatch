@@ -68,6 +68,18 @@ DENIED = [
     "pytest -o=cache_dir",
     "python -m pytest -o=cache_dir=/tmp/x",
     "python -m pytest -o=pythonpath=/opt/evil tests",
+    # pytest expands ~ and $VAR in cache_dir and --junitxml before resolving.
+    "pytest tests -o=cache_dir=~/x",
+    "pytest tests -o cache_dir=~/x",
+    "pytest tests -o cache_dir=$HOME/x",
+    "pytest tests -o=cache_dir=${HOME}/x",
+    "pytest tests -o=cache_dir=$TMPDIR",
+    "pytest tests --junitxml=~/j.xml",
+    "pytest tests --junitxml=$HOME/j.xml",
+    "pytest tests --junitxml ~/j.xml",
+    "pytest tests --rootdir=$HOME",
+    "pytest tests --basetemp=~/t",
+    "pytest tests --confcutdir $TMPDIR",
 ]
 
 ALLOWED = [
@@ -76,6 +88,9 @@ ALLOWED = [
     "pytest tests/ -o cache_dir=outputs/.cache",
     "pytest tests/ -o=cache_dir=outputs/.cache",
     "python -m pytest tests/ -o=xfail_strict=true",
+    # Positional arguments are passed literally (no expansion), so "$" there
+    # stays allowed; only expanded option values are denied.
+    "pytest tests/ -o cache_dir=outputs/.cache tests/test_$x.py",
 ]
 
 
