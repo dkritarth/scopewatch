@@ -550,3 +550,20 @@ def test_scripted_scenario_needs_no_token_when_demo_off(
         )
         resp = asyncio.run(service.submit_action(run.id, req))
         assert resp.policy_decision.outcome.value == "ALLOW"
+
+
+def test_turn_refund_is_not_day_scoped() -> None:
+    """Per-run turns never roll over, so a cross-midnight refund returns the turn."""
+    now = [datetime(2026, 11, 18, 23, 59, 30, tzinfo=timezone.utc).timestamp()]
+    config = DemoGuardConfig(
+        enabled=True, demo_token="x", max_concurrent_runs=5, max_turns_per_run=1,
+        rate_limit_runs_per_min_per_ip=100, max_runs_per_day=10, max_actions_per_day=10,
+        valid=True, error="",
+    )
+    policy = DemoGuardPolicy(config, now=lambda: now[0])
+    reservation = policy.try_action("run-1")
+    assert reservation.allowed is True
+    now[0] += 60.0  # cross UTC midnight
+    policy.release_action("run-1", reservation.day)
+    assert policy.snapshot()["actions_today"] == 0
+    assert policy.try_action("run-1").allowed is True  # turn was refunded

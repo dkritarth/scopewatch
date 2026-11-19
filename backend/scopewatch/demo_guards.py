@@ -414,14 +414,14 @@ class DemoGuardPolicy:
     def release_action(self, run_id: str, day: str) -> None:
         """Refund one action reservation made on UTC ``day``.
 
-        No-op when the UTC day has rolled over since the reservation (the
-        daily counter and the run's turn count are both left as reserved).
+        The daily counter is refunded only when the UTC day has not rolled
+        over since the reservation. The run's turn count is not day-scoped
+        (``_rollover`` never resets it), so it is always refunded.
         """
         with self._lock:
             self._rollover()
-            if day != self._day:
-                return
-            self._actions_today = max(0, self._actions_today - 1)
+            if day == self._day:
+                self._actions_today = max(0, self._actions_today - 1)
             used = self._turns_by_run.get(run_id, 0)
             if used <= 1:
                 self._turns_by_run.pop(run_id, None)
