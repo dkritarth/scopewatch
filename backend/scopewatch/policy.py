@@ -408,6 +408,16 @@ def _check_run_command_flags(
     n = len(argv)
     while i < n:
         item = argv[i]
+        if is_pytest and item.startswith("@"):
+            # pytest expands "@file" tokens (argparse fromfile_prefix_chars)
+            # into that file's lines before option parsing, in any position
+            # including option values. The file's options would bypass this
+            # allowlist and every path rule, so deny the token outright.
+            return (
+                ReasonCode.COMMAND_NOT_ALLOWED,
+                "pytest argument files ('@file') are not allowed.",
+                "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
+            )
         if item.startswith("-"):
             option = item.split("=", 1)[0]
             if option not in allowed_flags:
@@ -421,6 +431,12 @@ def _check_run_command_flags(
                     value = item.split("=", 1)[1]
                 elif i + 1 < n:
                     value = argv[i + 1]
+                    if is_pytest and value.startswith("@"):
+                        return (
+                            ReasonCode.COMMAND_NOT_ALLOWED,
+                            "pytest argument files ('@file') are not allowed.",
+                            "RULE_RUN_COMMAND_FLAG_NOT_ALLOWED",
+                        )
                     i += 1
                 else:
                     value = ""
