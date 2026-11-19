@@ -378,6 +378,7 @@ def verify_records(
     seen_prev: dict[str, int] = {}
     actions: dict[str, _ActionLifecycle] = {}
     run_terminal: Optional[str] = None
+    prune_attempt_open = False
     prev_hash = GENESIS_HASH
 
     for idx, rec in enumerate(recs):
@@ -486,6 +487,15 @@ def verify_records(
         retention_event = rec.event_type in WORKSPACE_RETENTION_EVENT_TYPES
         if retention_event and (run_terminal is None or rec.action_id is not None):
             violation = "workspace retention requires a terminal run and no action ID"
+        elif retention_event:
+            # Attempt evidence is committed before any effect; a result is only
+            # legitimate against an open attempt and resolves it once.
+            if rec.event_type == "WORKSPACE_PRUNE_ATTEMPTED":
+                prune_attempt_open = True
+            elif not prune_attempt_open:
+                violation = f"{rec.event_type} without a prior WORKSPACE_PRUNE_ATTEMPTED"
+            else:
+                prune_attempt_open = False
         if run_terminal is not None and rec.event_type not in RUN_TERMINAL_EVENT_TYPES:
             state = actions.get(rec.action_id) if rec.action_id is not None else None
             pending_expiry = (
