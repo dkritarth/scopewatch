@@ -1,62 +1,59 @@
 ---
 name: orchestrate
-version: 1.0.0
-description: Routes subagent workflows across provider-neutral reasoning tiers and frontier models from Anthropic (Opus 5, Sonnet 5, Fable 5.1) and OpenAI (GPT-6 Astra, GPT-5.6 Sol, GPT-5.6 Luna). Matches tasks to calibrated reasoning budgets to eliminate token waste and guarantee execution reliability.
-allowed-tools: [Agent, Read, Grep, Glob, Bash]
+version: 2.1.0
+description: Route T3 Code agent workflows using Kritarth's account priority, model limits, and reasoning preferences. Use for delegation or complex workflow coordination; routine tasks need no Opus consultation.
+allowed-tools: [Agent, Read, Grep, Glob, Bash, "mcp__t3_code__*"]
 disable-model-invocation: true
 ---
 
-# Orchestrate
+# Orchestrate for T3 Code
 
-Task decomposition and reasoning-budget routing for multi-agent workflows.
+Account-aware T3 delegation replaces PLAN.md's generic model tiers.
 
-Rather than running every subagent on maximum frontier compute or defaulting blindly to session inheritance, this skill breaks complex tasks into delegable sub-tasks, classifies each by required reasoning depth, and routes to appropriate models with calibrated thinking levels.
+## When to use
 
-## The five reasoning tiers
+Apply when orchestrating or delegating work in T3 Code.
 
-Classify every delegable unit of work into one tier before spawning an agent:
+## When not to use
 
-| Tier | Purpose | Target scope and characteristics | Reasoning depth |
-|------|---------|----------------------------------|-----------------|
-| 0 | Orchestration & Synthesis | Task decomposition, drafting subagent specs, parallel planning, synthesizing conflicting diffs, final integration. Always runs in the primary session. | Extended / Maximum |
-| 1 | Deep Reasoning & Architecture | System boundary design, multi-process concurrency, cryptographic protocols, complex optimization, subtle state-machine bugs, security audits. | Maximum / High |
-| 2 | Standard Implementation | Bounded feature development against defined specs, localized refactoring, writing unit and integration tests, code reviews against documented conventions. | Medium / Balanced |
-| 3 | Mechanical Execution | Type annotations, lint fixes, renaming symbols, boilerplate replication, applying established patterns across known files. | Low / Fast |
-| 4 | Bulk Retrieval & Extraction | Tree grepping, call-graph tracing, structured JSON extraction from documentation, log filtering, wide repository scans. | Minimal / Raw Speed |
+Outside T3 Code, follow the current environment's delegation rules.
 
-## Provider and model routing
+## Routing policy
 
-### OpenAI mapping
+Conversation instructions override this policy, including earlier model-specific high-reasoning requests. Propagate overrides to children.
 
-Routes across the GPT-6 (`gpt-6-astra`) and GPT-5.6 (`gpt-5.6-sol`, `gpt-5.6-luna`) generations using calibrated `reasoning_effort`:
+```yaml
+routes: # Verified against T3 Code orchestrator_capabilities, 2026-11-24.
+  orchestrator:
+    providerInstanceId: claudeAgent
+    model: claude-opus-5-5
+    options: {effort: medium}
+  implementation:
+    providerInstanceId: codex
+    model: gpt-6.2-sol
+    options: {reasoningEffort: medium} # High (or higher) is also permitted when useful.
+  routine:
+    providerInstanceIds: [antigravity, antigravity_2]
+    model: gemini-4-hydrogen
+    options: {thought_level: high} # Always high.
+  research:
+    providerInstanceIds: [antigravity, antigravity_2]
+    model: gemini-4-hydrogen
+    options: {thought_level: high} # Always high.
+```
 
-| Tier | Model | Reasoning effort | Guidance & operational role |
-|------|-------|------------------|-----------------------------|
-| 0 | Astra (`gpt-6-astra`) | `xhigh` / `high` | Master orchestrator. Manages overall context, coordinates multi-hour workflows, evaluates subagent outputs, and maintains end-to-end task coherence. |
-| 1 | Astra / Sol (`gpt-5.6-sol`) | `high` | Frontier reasoning engine for complex mathematical logic, deep architectural refactors, and elusive race conditions. |
-| 2 | Sol (`gpt-5.6-sol`) | `medium` | The core software engineering workhorse. Implements multi-file features, writes regression suites, and refactors components against specifications. |
-| 3 | Luna (`gpt-5.6-luna`) | `low` | High-speed, lightweight execution. Applies localized fixes, handles repetitive boilerplate, and transforms established code patterns quickly. |
-| 4 | Luna (`gpt-5.6-luna`) | `minimal` | Instantaneous batch processing, fan-out file searching, tabular data extraction, and log parsing without speculative overhead. |
+- Opus coordinates complex workflows, instructs workers, and resolves exceptionally difficult questions. Existing Opus parents coordinate directly; other parents delegate one Opus coordinator when needed. Routine work goes straight to workers. The parent model cannot be changed by this skill.
+- Sol edits codebases, implements, debugs, and validates. Opus delegates execution to Sol.
+- Gemini 4 Hydrogen (high) handles charts, reports, datasets, authorized GitHub updates/pushes, repetitive workflows, monitoring, internet lookup, source verification, and research. Prefer the first available Antigravity instance. Route codebase implementation to Sol.
+- Before Gemini 4 Hydrogen (high) monitors HPCC, load `msu-dminer-fleet` and its `references/hpcc.md`; use verified hosts and job IDs.
+- Long monitoring (HPCC jobs, gates, arrays) runs in a separate top-level monitor thread, never in the lead thread. The lead commits a brief (jobs, acceptance checks, pre-decided rules, approved submissions, file ownership, lead thread id) and starts the thread with `t3_thread_launch` (Gemini 4 Hydrogen, `thought_level: high`). The monitor thread owns its `schedule_task` bound to itself, messages the lead once with `t3_thread_send` (`mode: "queue"`) when everything ends, and earlier only for blocking events. The lead never messages it; to change the plan, delete its schedule and launch a new thread.
+- Only these models are allowed by default. Claude uses only Opus 5.5; OpenCode and other providers require a user override.
+- If multiple Codex or Antigravity instances appear in `orchestrator_capabilities`, fall back across available instances on quota/access failure without duplicating active tasks. Report unavailable routes; do not substitute unlisted models.
 
-### Anthropic mapping
+## Execution
 
-Routes across Claude 5 models (Fable 5.1, Opus 5, Sonnet 5) with explicit adaptive thinking budgets:
+1. Call `orchestrator_capabilities`; verify accounts, availability, models, and options. Set model and effort explicitly (`effort` for Claude, `reasoningEffort` for Codex, `thought_level` for Antigravity).
+2. Use T3 `delegate_task` for account-specific GPT and cross-provider work. Supply the goal, paths, edit scope, policy/overrides, deliverables, and checks. Parallelize independent work with separate file ownership; serialize dependencies.
+3. Verify artifacts and checks before integrating. For task tracking, review rounds, or missing MCP tools, read [references/t3-protocol.md](references/t3-protocol.md).
 
-| Tier | Model | Thinking budget | Guidance & operational role |
-|------|-------|-----------------|-----------------------------|
-| 0 | Fable 5.1 / Opus 5 | Extended (32k+ tokens) | Primary session orchestrator. Directs workflow execution, reconciles disparate subagent findings, and owns top-level architectural integrity. |
-| 1 | Opus 5 | Extended (16k to 32k tokens) | Frontier reasoning specialist. Solves root-cause debugging, formal specifications, and security audits before generating edits. |
-| 2 | Sonnet 5 | Medium (4k to 8k tokens) | Standard engineering workhorse. Delivers near-frontier code generation and test authoring with fast turnaround and efficient token spend. |
-| 3 | Sonnet 5 | Low (1k to 2k tokens) | Quick mechanical refactoring, pattern replication across files, and localized changes against rigid prompts. |
-| 4 | Sonnet 5 | Minimal / Off (0 to 1k tokens) | Maximum throughput for tree walks, syntax audits, and rapid summary generation. |
-
-## Dispatch rules
-
-1. **Keep subagent prompts focused**: Never pass the entire workspace context. Provide only the relevant file paths, target interfaces, expected outputs, and explicit verification criteria.
-2. **Serial vs parallel fan-out**:
-   - Tiers 3 and 4 (Luna, Sonnet 5 low/minimal) support parallel fan-out (such as analyzing separate modules concurrently across multiple workers).
-   - Tier 1 (Astra, Opus 5) must run serially when architectural foundations dictate subsequent tasks.
-3. **Escalation protocol**:
-   - If a Tier 2 task fails two successive test validation passes due to unforeseen design ambiguities, escalate immediately to Tier 1 with full failure logs.
-   - If a Tier 3 mechanical edit reveals hidden dependencies or structural variance, promote it to Tier 2 instead of looping.
-4. **Maintain provider consistency**: Stick to one provider family within an active task graph to avoid tool signature discrepancies and formatting divergence.
+Keep task IDs in workflow context; this skill stores no persistent state.
